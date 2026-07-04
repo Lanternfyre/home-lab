@@ -1,5 +1,7 @@
-# Immich v2.6.3 — self-hosted photo library. Chart 0.11.1 is built on
+# Immich v3.0.1 — self-hosted photo library. Chart 0.12.0 is built on
 # the bjw-s common library (not the old sub-chart pattern from 0.9.x).
+# The chart's appVersion still pins v2.6.3, so the image tag is overridden
+# below (shared controllers block) to run the latest Immich release.
 #
 # External dependencies:
 #   - Postgres: dedicated CNPG Cluster in this namespace (see manifests/immich-db.cluster.yaml)
@@ -17,6 +19,10 @@ controllers:
       reloader.stakater.com/auto: "true"
     containers:
       main:
+        # Run Immich v3.0.1 (chart 0.12.0 defaults to appVersion v2.6.3).
+        # This shared block applies to both server and machine-learning.
+        image:
+          tag: v3.0.1
         env:
           # --- Dedicated CNPG Postgres (cluster-internal) ---
           DB_HOSTNAME: immich-db-rw.immich.svc.cluster.local
