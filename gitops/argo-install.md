@@ -67,6 +67,14 @@ subjects:
 EOF
 
 ```
+!!!!
+Master node might need touching file to load it!!
+
+```
+sudo touch /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+```
+
+
 
 
 ## Join another node to the cluster:
@@ -117,6 +125,33 @@ DNSStubListener=yes
 sudo ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
 sudo systemctl restart systemd-resolved
 ```
+
+## Node file watch settings:
+
+```shell
+sudo mkdir -p /etc/sysctl.d && printf "fs.inotify.max_user_watches = 1048576\nfs.inotify.max_user_instances = 8192\nfs.file-max = 2097152\n" | sudo tee /etc/sysctl.d/99-inotify.conf && sudo /sbin/sysctl --system
+```
+
+## iSCSI Multipath for QNAP Trident CSI
+
+Trident v1.6.0+ expects multipath device maps even for single-path iSCSI LUNs.
+Without this config, newly attached volumes fail with "multipath device not found".
+Run on each node:
+
+```shell
+sudo bash -c 'cat > /etc/multipath.conf << "EOF"
+defaults {
+    find_multipaths no
+    user_friendly_names yes
+}
+blacklist {
+    devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)[0-9]*"
+}
+EOF
+systemctl restart multipathd'
+```
+
+Verify with: `sudo multipath -ll` (should show dm- maps for each iSCSI LUN).
 
 ## Reserved ips :
 192.168.32.2 -Kube API handled by kube vip
@@ -217,3 +252,5 @@ sudo chmod 644 /usr/local/share/ca-certificates/homelab-root-ca.crt
 ```shell
 sudo update-ca-certificates
 ```
+
+

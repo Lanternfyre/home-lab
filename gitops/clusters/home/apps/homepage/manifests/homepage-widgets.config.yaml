@@ -22,19 +22,13 @@ data:
         - Github:
             - abbr: GH
               href: https://github.com/tarjei400
-    - Work - Folx:
-        - Github:
+        - Techyon Github:
             - abbr: GH
-              href: https://github.com/folxhealth
-        - Jira:
-            - abbr: JR
-              href: https://folxhealth.atlassian.net/jira/software/c/projects/MEM/boards/130
-        - LabBilling:
-            - abbr: LB
-              href: https://folxhealth.atlassian.net/wiki/spaces/PROD/pages/3301277698/Quest+Lab+Billing+Refactor+2025
-        - LabBilling Designs:
-            - abbr: Design
-              href: https://www.figma.com/design/sE1abYmyflU6ntf04i7va6/Admin-Console-Mockups?node-id=6203-2314&t=GT3ldWO5Ieeto6K6-4
+              href: https://github.com/t3chy0n
+        - Lanternfyre Github:
+            - abbr: GH
+              href: https://github.com/Lanternfyre
+
 
   services.yaml: |
     - My First Group:

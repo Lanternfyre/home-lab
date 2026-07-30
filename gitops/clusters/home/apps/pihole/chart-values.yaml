@@ -55,6 +55,8 @@ dnsmasq:
     - address=/k8s-1.home/192.168.33.3
     - address=/k8s-2.home/192.168.33.2
     - address=/k8s-3.home/192.168.33.7
+    - address=/k8s-4.home/192.168.33.21
+    - address=/k8s-5.home/192.168.33.22
     - address=/mikrotik.home/192.168.33.19
     - address=/nas.home/192.168.33.14
     - address=/pc.home/192.168.33.8
