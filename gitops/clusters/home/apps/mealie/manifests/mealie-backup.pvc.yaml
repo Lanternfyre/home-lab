@@ -1,0 +1,20 @@
+# Destination for Mealie file backups.
+#
+# On qnap-samba (SMB) for the same reason as the database backups: SMB shares
+# are never formatted, so the backup does not share the mkfs failure mode of
+# the iSCSI volume it protects. Mealie's data IS on qnap-iscsi, so it is
+# genuinely exposed to the QNAP CSI v1.6.0 bug that v1.6.1 fixed.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mealie-backup
+  labels:
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: qnap-samba
+  resources:
+    requests:
+      storage: 5Gi

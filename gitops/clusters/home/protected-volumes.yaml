@@ -114,6 +114,24 @@ protected:
       Nightly pg_dumpall of immich-db (albums, faces, smart-search embeddings).
       Same SMB reasoning as pg-backup above.
 
+  - namespace: home-utils
+    claim: mealie-backup
+    size: 5Gi
+    class: qnap-samba
+    source: gitops/clusters/home/apps/mealie/manifests/mealie-backup.pvc.yaml
+    backup: n/a - this IS the backup
+    reason: Nightly tar of Mealie's data dir. SMB, so immune to the mkfs bug.
+
+  - namespace: dns
+    claim: pihole-backup
+    size: 5Gi
+    class: qnap-samba
+    source: gitops/clusters/home/apps/pihole/manifests/pihole-backup.pvc.yaml
+    backup: n/a - this IS the backup
+    reason: >-
+      Nightly tar of /etc/pihole. This is the only off-node copy of the LAN's
+      DNS config, whose PVC lives on local-path pinned to k8s-lab3.
+
   - namespace: dns
     claim: pihole
     size: 5Gi

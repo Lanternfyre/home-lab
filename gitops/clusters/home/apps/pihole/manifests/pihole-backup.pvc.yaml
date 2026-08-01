@@ -1,0 +1,23 @@
+# Destination for Pi-hole config backups.
+#
+# Pi-hole's own PVC is on local-path -- node-local storage pinned by
+# nodeAffinity to k8s-lab3. reclaimPolicy: Retain does NOT protect it: if that
+# node's disk fails, the data is simply gone. It is the most fragile protected
+# volume in the cluster, and this backup is the only thing that covers it.
+#
+# The backup itself lands on qnap-samba, i.e. on the NAS rather than on lab3,
+# so a node loss does not take the backup with the data.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pihole-backup
+  labels:
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: qnap-samba
+  resources:
+    requests:
+      storage: 5Gi

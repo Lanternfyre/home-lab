@@ -1,0 +1,108 @@
+# Nightly file backup of Mealie's data directory (recipes, uploaded images,
+# and its SQLite database).
+#
+# WHY POD AFFINITY: qnap-mealie is ReadWriteOnce, so this job can only attach
+# the volume if it lands on the same node as the running Mealie pod. The
+# required podAffinity below guarantees that. Without it the job would schedule
+# anywhere and fail to attach roughly 4 times out of 5.
+#
+# CONSISTENCY CAVEAT: this is a file-level copy of a live SQLite database. The
+# -wal and -shm files are included so a torn copy is recoverable, but a dump
+# taken mid-write is not guaranteed transactionally consistent. For a recipe
+# app that is an acceptable trade against the complexity of stopping the pod.
+# If Mealie is ever moved onto PostgreSQL, back it up with pg_dumpall instead
+# and delete this job.
+#
+# Restore:
+#   kubectl -n home-utils scale deploy mealie --replicas=0
+#   # extract the tarball over /app/data, then scale back to 1
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: mealie-backup
+spec:
+  # 03:15 Europe/Warsaw -- after both database jobs (02:15, 02:45).
+  schedule: "15 3 * * *"
+  timeZone: "Europe/Warsaw"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  startingDeadlineSeconds: 3600
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          # uid 0 required: the QNAP CSI driver mounts SMB with hardcoded
+          # uid=0,gid=0,file_mode=0755 and ignores StorageClass mountOptions.
+          # Verified empirically. See postgres/manifests/pg-backup.cronjob.yaml.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
+          affinity:
+            podAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                - topologyKey: kubernetes.io/hostname
+                  labelSelector:
+                    matchLabels:
+                      app.kubernetes.io/name: mealie
+          containers:
+            - name: tar
+              image: alpine:3.21
+              imagePullPolicy: IfNotPresent
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
+              env:
+                - name: RETENTION_DAYS
+                  value: "14"
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+                  out="/backup/mealie-${ts}.tar.gz"
+                  tmp="${out}.partial"
+
+                  echo "[$(date -u +%FT%TZ)] archiving /data"
+                  # Write to .partial first so an interrupted run can never be
+                  # mistaken for a complete backup.
+                  tar czf "${tmp}" -C /data .
+                  mv "${tmp}" "${out}"
+
+                  size=$(stat -c %s "${out}")
+                  echo "[$(date -u +%FT%TZ)] wrote ${out} (${size} bytes)"
+                  # An empty tar.gz is ~45 bytes; Mealie's data is >1 MiB.
+                  if [ "${size}" -lt 10240 ]; then
+                    echo "ERROR: backup implausibly small (${size} bytes)" >&2
+                    exit 1
+                  fi
+                  gzip -t "${out}"
+                  tar tzf "${out}" >/dev/null
+                  echo "[$(date -u +%FT%TZ)] gzip + tar integrity checks passed"
+
+                  echo "[$(date -u +%FT%TZ)] pruning older than ${RETENTION_DAYS} days"
+                  find /backup -name 'mealie-*.tar.gz' -type f \
+                       -mtime "+${RETENTION_DAYS}" -print -delete
+                  find /backup -name '*.partial' -type f -mtime +1 -print -delete
+
+                  echo "[$(date -u +%FT%TZ)] current backups:"
+                  ls -lh /backup/mealie-*.tar.gz
+              volumeMounts:
+                - { name: data,   mountPath: /data, readOnly: true }
+                - { name: backup, mountPath: /backup }
+              resources:
+                requests: { cpu: 50m, memory: 64Mi }
+                limits:   { memory: 256Mi }
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: qnap-mealie
+                readOnly: true
+            - name: backup
+              persistentVolumeClaim:
+                claimName: mealie-backup
