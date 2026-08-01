@@ -21,6 +21,21 @@ spec:
         - resources-finalizer.argocd.argoproj.io
       annotations:
         argocd.argoproj.io/sync-wave: "10"
+        # ServerSideDiff makes ArgoCD compute the diff via a server-side apply
+        # dry-run instead of a client-side three-way merge. That is what stops
+        # controller-defaulted and webhook-set fields being reported as drift --
+        # the cause of most of the standing OutOfSync apps here (ExternalSecrets
+        # rewritten by ESO, CNPG Cluster fields set by its webhook).
+        #
+        # Deliberately NOT adding IncludeMutationWebhook=true: gitops-engine
+        # already reverts non-Argo-managed fields from live on both sides, so
+        # plain ServerSideDiff covers the webhook case, and that flag would
+        # disable the reversion.
+        #
+        # Failure mode to watch for: the dry-run invokes admission webhooks on
+        # every diff cycle, so a webhook being down flips apps to Unknown rather
+        # than OutOfSync.
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
 
     spec:
       project: default
