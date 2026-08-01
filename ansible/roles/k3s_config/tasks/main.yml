@@ -1,0 +1,97 @@
+---
+# Owns /etc/rancher/k3s/config.yaml, and the systemd drop-in that config.yaml
+# cannot reach.
+#
+# ⚠️⚠️ THIS ROLE MUST NEVER RESTART k3s. ⚠️⚠️
+# There is deliberately no handler here. A restart handler scoped to `all`
+# would bounce the control plane on five nodes simultaneously. Restart
+# ownership belongs exclusively to the serial:1 plays that call this role and
+# gate on etcd health between nodes.
+
+- name: Ensure /etc/rancher/k3s exists
+  ansible.builtin.file:
+    path: /etc/rancher/k3s
+    state: directory
+    mode: "0755"
+
+# Capture k3s.service.env BEFORE anything touches the installer. The k3s
+# install script's systemd_disable() does `rm -f` on both the unit AND
+# k3s.service.env on every run, regenerating the env file from the invoking
+# shell's exported K3S_*/CONTAINERD_*/proxy variables. Its current contents are
+# unknown (root-only), and once lost they are unrecoverable.
+- name: Back up k3s.service.env before any installer run
+  ansible.builtin.fetch:
+    src: /etc/systemd/system/k3s.service.env
+    dest: "{{ playbook_dir }}/../_captured/{{ inventory_hostname }}/"
+    flat: true
+    fail_on_missing: false
+
+- name: Back up the k3s unit file
+  ansible.builtin.fetch:
+    src: /etc/systemd/system/k3s.service
+    dest: "{{ playbook_dir }}/../_captured/{{ inventory_hostname }}/"
+    flat: true
+    fail_on_missing: false
+
+# CLI flags override config.yaml in k3s. So a config that is a semantic superset
+# of the flags currently baked into ExecStart changes NOTHING while those flags
+# remain -- which makes this a zero-risk first step. Only once the unit is
+# normalised does this file become authoritative.
+- name: Render /etc/rancher/k3s/config.yaml
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: /etc/rancher/k3s/config.yaml
+    mode: "0600"
+    backup: true
+  register: k3s_config_file
+
+- name: Report whether a restart is needed
+  ansible.builtin.debug:
+    msg: >-
+      config.yaml CHANGED on {{ inventory_hostname }}. This role does NOT
+      restart k3s. Restart it from the calling serial:1 play, then gate on
+      node Ready + etcd quorum before touching the next node.
+  when: k3s_config_file.changed
+
+# ── The --server repoint ─────────────────────────────────────────────────────
+# lab2-lab5 have `--server https://192.168.32.2:6443` baked into ExecStart --
+# the kube-vip VIP, which today is a bare Pod on lab1 with empty
+# ownerReferences. So every other node's ability to rejoin depends on one
+# unmanaged Pod on one node.
+#
+# k3s docs: "CLI arguments will take precedence" over config.yaml. So this
+# CANNOT be fixed by config.yaml alone -- it needs the unit or a drop-in.
+# Pointing each node at a DIFFERENT peer's node IP removes the shared
+# dependency entirely.
+- name: Repoint --server off the kube-vip VIP (opt-in)
+  when:
+    - not (k3s_cluster_init | default(false))
+    - k3s_repoint_server | default(false) | bool
+  block:
+    - name: Ensure systemd drop-in dir exists
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Write --server drop-in
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/k3s.service.d/10-server-peer.conf
+        mode: "0644"
+        content: |
+          # Managed by Ansible -- ansible/roles/k3s_config
+          #
+          # Points this node at a PEER's node IP rather than the kube-vip VIP,
+          # so rejoining does not depend on a single unmanaged Pod on lab1.
+          # k3s adds node IPs to the apiserver serving-cert SANs automatically,
+          # so no tls-san change is needed -- verify with:
+          #   openssl s_client -connect {{ k3s_server_peer }}:6443 </dev/null 2>/dev/null \
+          #     | openssl x509 -noout -text | grep -A2 'Subject Alternative Name'
+          [Service]
+          Environment="K3S_URL=https://{{ k3s_server_peer }}:6443"
+      register: server_dropin
+
+    - name: Reload systemd (does NOT restart k3s)
+      ansible.builtin.systemd:
+        daemon_reload: true
+      when: server_dropin.changed

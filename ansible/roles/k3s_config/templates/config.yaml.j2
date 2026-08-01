@@ -1,0 +1,43 @@
+# Managed by Ansible -- ansible/roles/k3s_config. Do not edit on the node.
+{% if k3s_cluster_init | default(false) %}
+cluster-init: true
+{% else %}
+server: "https://{{ k3s_server_peer | default(k3s_api_vip) }}:6443"
+{% endif %}
+
+tls-san:
+  - "{{ k3s_api_vip }}"
+
+disable:
+{% for addon in k3s_disable | default(['traefik']) %}
+  - {{ addon }}
+{% endfor %}
+
+# Twice-daily etcd snapshots, retained per node. All five nodes snapshot
+# independently, so each is a complete copy of cluster state and losing one
+# node loses nothing.
+etcd-snapshot-schedule-cron: "{{ k3s_etcd_snapshot_cron | default('0 */12 * * *') }}"
+etcd-snapshot-retention: {{ k3s_etcd_snapshot_retention | default(10) }}
+
+{% if k3s_oidc_issuer_url is defined %}
+# Native OIDC on the API server, for Headlamp and per-user RBAC.
+# ⚠️ k3s REFUSES TO START on an unknown or invalid apiserver flag -- a typo
+# here bricks the server. Roll serial:1 with full gates; rollback is to remove
+# these lines and restart.
+kube-apiserver-arg:
+  - "oidc-issuer-url={{ k3s_oidc_issuer_url }}"
+  - "oidc-client-id={{ k3s_oidc_client_id }}"
+  - "oidc-username-claim={{ k3s_oidc_username_claim | default('email') }}"
+{% endif %}
+
+{% if k3s_flannel_backend is defined %}
+# ⚠️⚠️ DANGER ⚠️⚠️
+# flannel-backend: none REMOVES THE CNI. In k3s, flannel runs inside the server
+# process -- it is NOT a DaemonSet. Setting this per node during a Cilium
+# migration destroys the bridge between the two overlays and PARTITIONS the pod
+# network. It is a cleanup-phase, all-nodes-at-once change, applied only after
+# every node is migrated and validated. Never set it as part of routine config
+# convergence.
+flannel-backend: {{ k3s_flannel_backend }}
+disable-network-policy: {{ k3s_disable_network_policy | default(true) | lower }}
+{% endif %}
