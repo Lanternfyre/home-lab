@@ -43,45 +43,15 @@ each hop is verified before the next.
 
 ## 🔴 Blocks the k3s upgrade (Phase 2)
 
-### 1. Switch the Google OAuth consent screen to "Internal"
-**CHECKED 2026-08-01 — it is currently External. The assumption did not hold.**
+### ~~1. Switch the Google OAuth consent screen to "Internal"~~ ✅ DONE
+Verified 2026-08-01 after you changed it: the IAP brands API now returns
+`orgInternalOnly: true` for `projects/138732748534/brands/138732748534`
+("Techyon"). Google now rejects non-`techyon.dev` accounts **server-side** with
+`org_internal`, before any of your apps see the request.
 
-Evidence:
-- The project **is** under the `techyon.dev` organization (org `185150869552`),
-  so "Internal" is available.
-- `orgInternalOnly` is **absent** from both `gcloud iap oauth-brands list` and
-  the raw `iap.googleapis.com/v1/.../brands` response. Google's APIs omit
-  `false` booleans (proto3 default-value omission), so the brand is External.
-  Brand: `projects/138732748534/brands/138732748534` ("Techyon").
-
-Action: GCP Console → project `techyon-393614` → APIs & Services →
-OAuth consent screen → **User type → Internal**.
-
-The `techyon.dev`-only behaviour you observe today comes entirely from
-application-level config, not from Google:
-
-| Where | Setting |
-|---|---|
-| `oauth2-proxy/chart-values.yaml:17` | `email-domain: techyon.dev` |
-| `prometheus/chart-values.yaml:33-34` | `allowed_domains` + `hosted_domain` |
-| `argocd-values.yaml:25-27` | `hd` claim marked `essential: true` |
-
-So today's restriction would look identical whether the client is Internal or
-External. **This matters because Phase 6 retires oauth2-proxy**, and if the
-client turns out to be External, that layer disappears with it.
-
-Check: GCP Console → project `techyon-393614` → APIs & Services →
-OAuth consent screen → **User type**. If it says External and "Internal" is
-available, switch it — Google then rejects non-org accounts server-side with
-`org_internal`, which is unbypassable and free.
-
-(I could not check this for you: `gcloud` is installed and authenticated as
-`adrian.jutrowski@techyon.dev`, but its token is expired —
-`invalid_grant: Bad Request`. Run `gcloud auth login` if you would rather I
-verified it.)
-
-Either way the plan is safe: the Envoy Gateway `SecurityPolicy` enforces the
-`hd` claim itself. "Internal" is defence in depth, not the only line.
+This matters for Phase 6: when oauth2-proxy is retired, its `email-domain`
+check goes with it. The Envoy Gateway `SecurityPolicy` will enforce the `hd`
+claim itself, and this setting is now the second, unbypassable layer under it.
 
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
