@@ -84,10 +84,15 @@ delivered the value successfully; it has no way to know ghcr.io rejects it.
 
 **Fix:**
 1. GitHub → Settings → Developer settings → Personal access tokens → generate a
-   new token with **`read:packages`** scope (classic PAT, or fine-grained with
-   package read on `t3chy0n/charts`).
-2. Update the 1Password item **`GHCR`**, field **`password`**, in the vault
-   backing the `one-password` ClusterSecretStore.
+   new **user PAT for the `t3chy0n` account** (the username is hardcoded in the
+   ExternalSecret template, so it must be that account) with **`read:packages`**
+   scope. Classic PAT or fine-grained with *Packages: read* on
+   `t3chy0n/charts`; read-only is sufficient, ArgoCD only pulls.
+2. Update 1Password → vault **`Infrastructure`** → item **`GHCR`** → field
+   **`password`**.
+
+   Classic PATs can be set to never expire, which avoids a repeat of this.
+   Fine-grained tokens cap at one year.
 3. ESO refreshes it into `argocd/ghcr-repo-creds` automatically. Then tell me
    and I will confirm the five apps go Synced and the CSI upgrade rolls.
 
