@@ -113,32 +113,39 @@ policy's `values[]`.
 
 ## 🟡 Do soon
 
-### 4. Decide the fate of the 57 GB Immich library
-Currently protected against *deletion* (Retain + protect label + the coming
-Kyverno rule) but has **no second copy anywhere**. It is on SMB, so it is immune
-to the QNAP CSI `mkfs` bug — but nothing protects it from the NAS failing.
+### 4. Immich library — DEFERRED by decision, risk accepted
+You have chosen to run without a second copy of the 57 GB library for now.
+Recording it so it is a decision rather than an oversight.
 
-It is the single highest-value dataset in the cluster and the only one where
-"off the NAS" is the entire point. Options: an external USB disk, `pc.home`,
-or cloud (R2 / GCS / B2, roughly €1–2/month for 57 GB).
+What still covers it: `reclaimPolicy: Retain`, the `homelab.techyon.dev/protect`
+label, ArgoCD prune/delete guards, and the fact that it lives on SMB and so
+cannot be hit by the QNAP CSI `mkfs` bug.
 
-### 6. Verify the two leaked NAS volumes, then delete them
-The audit finds two `TridentVolume`s with **no PV and no PVC** — almost
-certainly still consuming ~10 GB:
+What does NOT cover it: NAS failure, RAID loss, QTS corruption, ransomware, or
+an accidental deletion made on the NAS itself. This is a 2-bay TS-231K and the
+library exists in exactly one place.
+
+Revisit when convenient — an external USB disk or `pc.home` costs nothing, and
+cloud is roughly €1–2/month for 57 GB.
+
+### ~~6. Verify the two leaked NAS volumes, then delete them~~ ✅ DONE
+Removed 2026-08-01 on your instruction, after verifying each had no PV, no PVC,
+no VolumeAttachment, no publication and no reference in git — and after the
+v1.6.2 reconciliation had itself re-flagged both as `orphaned: true`:
 
 ```
-pvc-2db4ec71-9b16-4ab9-891f-9d4f5e47022e   5Gi  iSCSI  (LUN trident-pvc-2db4ec71-…)
-pvc-a33b3db5-7403-4990-93cf-e017f3b73ab4   5Gi  SMB    (share trident-pvc-a33b3db5-…)
+pvc-2db4ec71-…  5Gi  qnap-iscsi  block/RWO   created 2026-01-09
+pvc-a33b3db5-…  5Gi  qnap-samba  file/RWX    created 2026-01-08
 ```
 
-They trace to the leftover experiment at repo root `mealie-pvc-qnap.yaml`
-(a 5Gi `pvc-qts-david` claim + a `storage-test` busybox pod), dated ~8–9 Jan.
+Deleted with `tridentctl delete volume` so the backend storage went too, not
+just the record. Trident volume count 19 → 17; ~10 GB reclaimed on the NAS.
+The orphaned `TridentVolumePublication` (`pvc-bc4f35d9-….k8s-lab1`) was removed
+in the same pass, 14 → 13.
 
-**Check them in QTS before deleting anything.** Both StorageClasses were
-`reclaimPolicy: Delete` at the time, so a mistake here is irreversible.
-
-Also stale, and safe to remove from the repo once you have looked:
-`mealie-pvc-qnap.yaml` and the empty `test-pvc-qnap.yaml`.
+Verified afterwards: 18/18 PVCs Bound, all 13 VolumeAttachments intact, both
+CNPG clusters healthy. The stale repo-root files `mealie-pvc-qnap.yaml` and
+`test-pvc-qnap.yaml` that created them have also been removed.
 
 ### 8. Rotate the k3s cluster token
 `k3sblog` is committed in plaintext in `gitops/argo-install.md`. Anyone with it
