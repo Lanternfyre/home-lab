@@ -82,17 +82,21 @@ spec:
                   # constantly, and is worthless for recovery. Config, custom
                   # DNS and blocklists are the parts worth keeping.
                   #
-                  # NOTE: tar writes to STDOUT and the shell creates the file.
-                  # Do not "simplify" this to `tar czf "${tmp}"` -- busybox tar
-                  # stats its own output file to avoid archiving itself, and on
-                  # a CIFS mount that stat returns ESTALE:
+                  # NOTE the pipe through gzip. It is load-bearing, not style.
+                  # busybox tar fstat()s its own output descriptor to avoid
+                  # archiving the tarball into itself. When that descriptor is a
+                  # file on the CIFS share -- whether via `-f "${tmp}"` OR via
+                  # `-f -` with a shell redirect -- the fstat returns ESTALE and
+                  # tar dies with the misleading:
                   #   tar: can't stat tar file: Stale file handle
-                  # which leaves a 0-byte file behind and exits 1.
-                  tar czf - -C /etc-pihole \
+                  # Piping makes tar's stdout a PIPE, which cannot go stale, and
+                  # gzip does the CIFS write via a plain shell redirect -- the
+                  # same pattern the pg_dumpall jobs already use successfully.
+                  tar cf - -C /etc-pihole \
                       --exclude='pihole-FTL.db' \
                       --exclude='*.db-wal' \
                       --exclude='*.db-shm' \
-                      . > "${tmp}"
+                      . | gzip -9 > "${tmp}"
                   mv "${tmp}" "${out}"
 
                   size=$(stat -c %s "${out}")
