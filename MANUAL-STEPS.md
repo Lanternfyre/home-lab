@@ -53,6 +53,49 @@ This matters for Phase 6: when oauth2-proxy is retired, its `email-domain`
 check goes with it. The Envoy Gateway `SecurityPolicy` will enforce the `hd`
 claim itself, and this setting is now the second, unbypassable layer under it.
 
+### 2. Regenerate the GHCR token — it is EXPIRED and silently blocking 5 apps
+**Found 2026-08-01 while trying to roll out the QNAP CSI upgrade.**
+
+ArgoCD cannot authenticate to `ghcr.io`:
+
+```
+ComparisonError: Failed to load target state: failed to generate manifest ...
+  error logging into OCI registry: failed to login to registry:
+  `helm registry login ghcr.io --username ****** --password ******` failed
+```
+
+Verified directly: the token is a classic `ghp_` PAT (40 chars) and
+`GET https://api.github.com/user` returns **HTTP 401**. GHCR also refuses to
+issue a pull token for it. It is expired or revoked.
+
+**Five apps are frozen** — they cannot re-render, so any change to their
+`chart-values.yaml` silently does nothing:
+
+| App | Why it matters |
+|---|---|
+| **qnap-trident** | **the storage driver.** The v1.6.2 mkfs-safety bump is committed but cannot deploy. |
+| mealie | |
+| kubedock | |
+| github-mcp-proxy | |
+| speedtest-exporter | |
+
+This was invisible because the ExternalSecret reports `Ready=True` — it
+delivered the value successfully; it has no way to know ghcr.io rejects it.
+
+**Fix:**
+1. GitHub → Settings → Developer settings → Personal access tokens → generate a
+   new token with **`read:packages`** scope (classic PAT, or fine-grained with
+   package read on `t3chy0n/charts`).
+2. Update the 1Password item **`GHCR`**, field **`password`**, in the vault
+   backing the `one-password` ClusterSecretStore.
+3. ESO refreshes it into `argocd/ghcr-repo-creds` automatically. Then tell me
+   and I will confirm the five apps go Synced and the CSI upgrade rolls.
+
+Verify with:
+```bash
+kubectl -n argocd get app qnap-trident -o jsonpath='{.status.sync.status}'
+```
+
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
 which carries the **primary** domain only. If `techyon.dev` has alias or
