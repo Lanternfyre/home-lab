@@ -2,6 +2,21 @@ controller:
   config:
     disable-access-log: "false"
 
+  # maxUnavailable MUST be an absolute 1, not the chart default of 25%.
+  # With 3 replicas, 25% floors to 0, so the old ReplicaSet can never scale
+  # down and the new one can only surge by 1. Combined with the anti-affinity
+  # change below that produced a hard deadlock: the surged pod could not
+  # schedule (every node already hosted an old pod whose REQUIRED anti-affinity
+  # forbade a second controller), and deleting an old pod just got it recreated
+  # because the old RS was pinned at 3.
+  #
+  # maxUnavailable: 1 lets the old RS drop a pod first, freeing a node.
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+
   autoscaling:
     enabled: true
     # minReplicas 2, not 1: the chart only renders its PodDisruptionBudget when
