@@ -2,8 +2,13 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: qnap-samba # Required. Name your storageclass.
+  annotations:
+    # See iscsi.storage-class.yaml for why Replace=true is required here.
+    argocd.argoproj.io/sync-options: Replace=true
 
 provisioner: csi.trident.qnap.io
+# Retain, not Delete. This class backs immich-library (100Gi, irreplaceable).
+reclaimPolicy: Retain
 parameters:
   selector: "performance=performance1" # Required. Corresponds to the labels in the virtual pool.
   trident.qnap.io/fileProtocol: "smb"

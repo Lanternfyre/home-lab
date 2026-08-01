@@ -2,7 +2,18 @@ apiVersion: storage.k8s.io/v1
 kind: StorageClass
 metadata:
   name: qnap-iscsi # Required. Name your storageclass.
+  annotations:
+    # reclaimPolicy is IMMUTABLE on an existing StorageClass, so a plain apply
+    # fails. Replace=true makes Argo delete+recreate the object. That is safe:
+    # deleting a StorageClass does not touch existing PVs or PVCs — they only
+    # reference it by name and bound volumes do not consult it. The only gap is
+    # that new PVC provisioning fails for the few seconds between delete and create.
+    argocd.argoproj.io/sync-options: Replace=true
 provisioner: csi.trident.qnap.io
+# Retain, not Delete: a deleted PVC must never destroy the backing volume on the
+# NAS. Existing PVs were patched to Retain imperatively (they are not chart-managed);
+# this line governs every volume created from here on.
+reclaimPolicy: Retain
 parameters:
   selector: "performance=performance1" # Required. Corresponds to the labels in the virtual pool.
   fsType: "ext4" # Optional. You can choose to enter ext4 (default), xfs, or ext3.
