@@ -173,12 +173,25 @@ def main() -> int:
                    f"{UNPROTECT_ANNOTATION}={annos[UNPROTECT_ANNOTATION]!r}. "
                    f"If this was not deliberate, remove it now.")
 
-        opts = annos.get(SYNC_OPTIONS, "")
-        missing = [o for o in ("Prune=false", "Delete=false") if o not in opts]
-        if missing:
-            r.warn("GUARD", f"{name} is missing Argo sync-options {', '.join(missing)}")
+        # The Argo prune/delete guards only mean anything on claims Argo actually
+        # manages. CNPG- and StatefulSet-generated PVCs are owned by their
+        # controller (Argo tracks the Cluster / StatefulSet, not the claim), so
+        # demanding the annotation there is a false positive.
+        argo_managed = "argocd.argoproj.io/tracking-id" in annos
+        if not argo_managed:
+            r.ok("GUARD",
+                 f"{name} is controller-generated, not Argo-managed -- prune "
+                 f"guards N/A", args.quiet)
         else:
-            r.ok("GUARD", f"{name} has Argo prune/delete guards", args.quiet)
+            opts = annos.get(SYNC_OPTIONS, "")
+            missing = [o for o in ("Prune=false", "Delete=false") if o not in opts]
+            if missing:
+                r.warn("GUARD",
+                       f"{name} is Argo-managed but missing sync-options "
+                       f"{', '.join(missing)} -- a deleted or renamed manifest "
+                       f"could prune it")
+            else:
+                r.ok("GUARD", f"{name} has Argo prune/delete guards", args.quiet)
 
         pv_name = pvc["spec"].get("volumeName")
         if not pv_name:
