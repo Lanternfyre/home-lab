@@ -1,0 +1,34 @@
+---
+# Read-only audit. Changes nothing, safe to run at any time, including against
+# a partly broken cluster. Run this FIRST on any new node and before any
+# maintenance window.
+- name: Preflight audit
+  hosts: k3s_servers
+  gather_facts: true
+  # Read-only: every path inspected is world-readable, so no sudo needed.
+  # That keeps the audit runnable without a password prompt.
+  become: false
+
+  tasks:
+    - name: Collect node facts
+      ansible.builtin.shell: |
+        echo "kernel:        $(uname -r)"
+        echo "os:            $(. /etc/os-release && echo "$PRETTY_NAME")"
+        echo "default nic:   $(ip route show default | awk '{print $5; exit}')"
+        echo "k3s:           $(/usr/local/bin/k3s --version 2>/dev/null | head -1 | awk '{print $3}')"
+        echo "k3s service:   $(systemctl is-active k3s 2>/dev/null)"
+        echo "iscsid:        $(systemctl is-active iscsid 2>/dev/null)"
+        echo "multipathd:    $(systemctl is-active multipathd 2>/dev/null)"
+        echo "find_multipaths: $(grep -oE 'find_multipaths\s+\S+' /etc/multipath.conf 2>/dev/null || echo 'NOT SET  <-- QNAP volumes will NOT stage')"
+        echo "iscsi sessions: $(ls /sys/class/iscsi_session 2>/dev/null | wc -l)"
+        echo "mpath devices:  $(ls /dev/mapper 2>/dev/null | grep -c mpath)"
+        echo "inotify watches: $(sysctl -n fs.inotify.max_user_watches)"
+        echo "global DNS:    $(resolvectl status 2>/dev/null | sed -n '/^Global/,/^$/p' | grep -oP 'DNS Servers: \K.*' || echo 'NONE SET')"
+        echo "resolves:      $(getent hosts registry.k8s.io >/dev/null 2>&1 && echo OK || echo 'FAIL  <-- cannot pull images')"
+        echo "bpffs:         $(mount | grep -q '/sys/fs/bpf' && echo mounted || echo 'NOT mounted')"
+      register: facts
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ facts.stdout_lines }}"

@@ -1,0 +1,54 @@
+---
+ansible_user: tarjei
+
+# ── The one knob ─────────────────────────────────────────────────────────────
+# Change this, run playbooks/30-upgrade.yml, and the rolling upgrade flows.
+#
+# HARD CEILING: v1.35.x. The QNAP CSI driver (csi.trident.qnap.io) declares
+# Kubernetes support only up to 1.35 -- even v1.6.2, released 2026-07-31.
+# k3s "stable" is already v1.36.2, so the pre-flight assertion in the upgrade
+# playbook is doing real work, not being theoretical.
+#
+# Upgrade path is one minor at a time:
+#   v1.32.10+k3s1 -> v1.33.13+k3s1 -> v1.34.9+k3s1 -> v1.35.6+k3s1
+k3s_version: "v1.32.10+k3s1"
+k3s_max_version: "v1.36.0"     # assert k3s_version is strictly below this
+
+# ── Control-plane VIP ────────────────────────────────────────────────────────
+# Served by kube-vip. NOTE: currently a bare Pod on k8s-1 only, with empty
+# ownerReferences -- if that node dies the VIP disappears, and it is also the
+# --server join target baked into lab2-lab5's systemd units AND the tls-san.
+# Converting it to a DaemonSet is tracked separately.
+k3s_api_vip: "192.168.32.2"
+
+# ── Node baseline ────────────────────────────────────────────────────────────
+# Upstream resolvers. The nodes' link DNS is the router (192.168.33.1); pinning
+# global resolvers here is what makes name resolution independent of it.
+node_dns_servers: "1.1.1.1 8.8.8.8"
+node_dns_fallback: "8.8.4.4"
+
+# Required by the QNAP CSI driver. multipath-tools 0.9.4 defaults
+# find_multipaths to "strict", under which a single-path QNAP LUN never gets a
+# device-mapper entry and Trident fails with:
+#   failed to stage volume: multipath device not found when it is expected
+# Proven on k8s-5.home on 2026-08-01.
+node_multipath_find_multipaths: "no"
+
+# k3s and Trident both need generous inotify limits.
+# NOTE: the pre-existing /etc/sysctl.d/99-inotify.conf on ALL five nodes has the
+# value split across two lines, so max_user_watches has never actually applied
+# anywhere. Verification asserts `sysctl -n`, never file presence.
+node_sysctls:
+  fs.inotify.max_user_watches: 1048576
+  fs.inotify.max_user_instances: 8192
+  fs.file-max: 2097152
+
+node_packages:
+  - open-iscsi
+  - multipath-tools
+  - nfs-common
+
+# Opt-in only: `-e configure_nopasswd_sudo=true`. Trades a real security
+# property (a standing credential on every control-plane node) for unattended
+# runs. Off by default.
+configure_nopasswd_sudo: false

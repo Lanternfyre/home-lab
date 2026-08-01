@@ -1,0 +1,41 @@
+# Inventory for the home-lab k3s cluster.
+#
+# Hosts are addressed by their .home domains, served by Pi-hole at
+# 192.168.32.53. Verified resolving from this workstation and from the nodes.
+#
+# ⚠️ BOOTSTRAP CIRCULARITY, accepted knowingly: Pi-hole runs INSIDE this
+# cluster. If the cluster is down, Ansible cannot resolve its own inventory.
+# For disaster recovery, add to the workstation's /etc/hosts:
+#
+#   192.168.33.3   k8s-1.home
+#   192.168.33.2   k8s-2.home
+#   192.168.33.7   k8s-3.home
+#   192.168.33.21  k8s-4.home
+#   192.168.33.22  k8s-5.home
+#
+# There is deliberately NO k3s_agents group. Every node in this cluster joined
+# with `k3s server`, so all five are control-plane + etcd members. Adding an
+# agents group would invite a future join to use INSTALL_K3S_EXEC="agent",
+# which would be a silent topology change.
+
+all:
+  children:
+    k3s_servers:
+      hosts:
+        k8s-1.home:
+          # The --cluster-init node and the historical kube-vip holder.
+          # Upgrade and migration orders put this node LAST for that reason.
+          k3s_cluster_init: true
+          node_nic: eno1
+        k8s-2.home:
+          node_nic: eno1
+        k8s-3.home:
+          node_nic: eno1
+        k8s-4.home:
+          # Joined 2026-07-30. Resolver stub wedged; cannot pull images.
+          # Wrong multipath.conf; iscsid inactive. CORDONED.
+          node_nic: enp0s31f6
+        k8s-5.home:
+          # Joined 2026-07-30. Wrong multipath.conf -- proven unable to stage a
+          # qnap-iscsi volume ("multipath device not found"). CORDONED.
+          node_nic: enp7s0

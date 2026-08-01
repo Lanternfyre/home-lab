@@ -1,0 +1,124 @@
+---
+# Makes a node fit to run k3s + the QNAP CSI driver.
+#
+# Designed to be a near no-op on the three 211-day-old healthy nodes and to
+# repair the two that joined on 2026-07-30 with steps missed. Every task is
+# idempotent; run it against all five.
+
+# ── DNS ──────────────────────────────────────────────────────────────────────
+# A drop-in, not an edit of resolved.conf. Drop-ins are what systemd wants and
+# they do not fight whatever is already in the main file.
+#
+# ⚠️ DELIBERATELY NOT managing the /etc/resolv.conf symlink. All five nodes
+# point at stub-resolv.conf and lab1/2/3 have been healthy that way for 211
+# days. The runbook's symlink step was never applied on ANY node. Changing it
+# is an unverified behaviour change against long-lived nodes for no observed
+# benefit.
+- name: Ensure resolved.conf.d exists
+  ansible.builtin.file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: "0755"
+
+- name: Pin global DNS resolvers
+  ansible.builtin.copy:
+    dest: /etc/systemd/resolved.conf.d/99-homelab.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- ansible/roles/node_baseline
+      [Resolve]
+      DNS={{ node_dns_servers }}
+      FallbackDNS={{ node_dns_fallback }}
+      DNSStubListener=yes
+  notify: restart systemd-resolved
+
+# ── sysctls ──────────────────────────────────────────────────────────────────
+# Replaces the broken pre-existing file. The old one has the value split across
+# two lines, so max_user_watches silently never applied on any node.
+- name: Remove the broken hand-written inotify sysctl file
+  ansible.builtin.file:
+    path: /etc/sysctl.d/99-inotify.conf
+    state: absent
+
+- name: Apply kernel tunables
+  ansible.posix.sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    sysctl_file: /etc/sysctl.d/99-homelab.conf
+    sysctl_set: true
+    reload: true
+    state: present
+  loop: "{{ node_sysctls | dict2items }}"
+
+# ── storage prerequisites ────────────────────────────────────────────────────
+- name: Install storage packages
+  ansible.builtin.apt:
+    name: "{{ node_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Byte-identical to the known-good file on k8s-1/2/3.
+#
+# find_multipaths: no is the load-bearing line. Without it, multipath-tools
+# 0.9.4 defaults to "strict" and a single-path QNAP LUN gets no dm map, so
+# Trident fails to stage the volume. Proven on k8s-5.home 2026-08-01.
+- name: Check for live iSCSI sessions before touching multipath config
+  ansible.builtin.command: ls /sys/class/iscsi_session
+  register: iscsi_sessions
+  changed_when: false
+  failed_when: false
+
+- name: Install multipath.conf
+  ansible.builtin.copy:
+    dest: /etc/multipath.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- ansible/roles/node_baseline
+      #
+      # find_multipaths no is REQUIRED by the QNAP CSI driver. multipath-tools
+      # 0.9.4 defaults it to "strict", under which a single-path LUN never gets
+      # a device-mapper entry and Trident fails with
+      #   "multipath device not found when it is expected"
+      defaults {
+          find_multipaths {{ node_multipath_find_multipaths }}
+          user_friendly_names yes
+      }
+      blacklist {
+          devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)[0-9]*"
+      }
+  register: multipath_conf
+  notify: restart multipathd
+
+# Guard: only bounce multipathd when the file actually changed AND the node has
+# no live iSCSI sessions. Today no node satisfies both, but this stops a future
+# template edit from disrupting a node with attached LUNs.
+- name: Warn if multipath.conf changed on a node with live iSCSI sessions
+  ansible.builtin.fail:
+    msg: >-
+      multipath.conf changed on {{ inventory_hostname }}, which has
+      {{ iscsi_sessions.stdout_lines | length }} live iSCSI session(s).
+      Restarting multipathd here could disrupt attached volumes. Drain the node
+      first, or re-run with -e multipath_force_restart=true.
+  when:
+    - multipath_conf.changed
+    - iscsi_sessions.stdout | default('') | length > 0
+    - not (multipath_force_restart | default(false) | bool)
+
+- name: Ensure storage services are enabled and running
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - iscsid       # inactive on k8s-4.home as of 2026-08-01
+    - multipathd
+
+# ── optional, opt-in ─────────────────────────────────────────────────────────
+- name: Configure passwordless sudo (opt-in only)
+  ansible.builtin.copy:
+    dest: /etc/sudoers.d/50-ansible
+    mode: "0440"
+    content: "{{ ansible_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    validate: /usr/sbin/visudo -csf %s
+  when: configure_nopasswd_sudo | bool

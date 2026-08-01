@@ -1,0 +1,37 @@
+---
+# Bring every node's OS config to the known-good baseline, then prove it.
+#
+#   ansible-playbook playbooks/10-baseline.yml --ask-become-pass --check --diff
+#   ansible-playbook playbooks/10-baseline.yml --ask-become-pass
+#
+# Habitually run --check --diff first. On k8s-1/2/3 the only expected change is
+# the inotify sysctl fix; on k8s-4/5 expect multipath.conf and DNS as well.
+#
+# serial: 1 with a verification gate, so a node that fails cannot be followed by
+# another. These changes do not restart k3s or evict pods, but multipathd and
+# systemd-resolved do bounce, and doing that on all five at once is needless.
+- name: Node baseline
+  hosts: k3s_servers
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: true
+
+  roles:
+    - node_baseline
+
+  post_tasks:
+    - name: Flush handlers before verifying
+      ansible.builtin.meta: flush_handlers
+
+    # systemd-resolved needs a moment after a restart before the stub answers.
+    - name: Settle
+      ansible.builtin.wait_for:
+        timeout: 5
+
+- name: Verify
+  hosts: k3s_servers
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: false
+  roles:
+    - node_verify
