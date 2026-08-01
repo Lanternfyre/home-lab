@@ -53,53 +53,22 @@ This matters for Phase 6: when oauth2-proxy is retired, its `email-domain`
 check goes with it. The Envoy Gateway `SecurityPolicy` will enforce the `hd`
 claim itself, and this setting is now the second, unbypassable layer under it.
 
-### 2. Regenerate the GHCR token — it is EXPIRED and silently blocking 5 apps
-**Found 2026-08-01 while trying to roll out the QNAP CSI upgrade.**
+### ~~2. Regenerate the GHCR token~~ ✅ DONE
+Refreshed by you 2026-08-01 and verified: `api.github.com/user` returns HTTP
+200, and a GHCR pull token now fetches the `qnap-trident` 0.1.1 chart manifest
+(HTTP 200). ESO needed a forced sync (`force-sync` annotation) because its
+refresh interval is 1h.
 
-ArgoCD cannot authenticate to `ghcr.io`:
+Result: **ArgoCD Unknown apps went 15 → 0**, and the QNAP CSI v1.6.2 upgrade
+finally rolled — operator, controller, sidecar and all node pods, with
+`TridentOrchestrator.status.currentInstallationParams` confirming v1.6.2.
+Zero disruption: 18/18 PVCs Bound, 13 VolumeAttachments intact.
 
-```
-ComparisonError: Failed to load target state: failed to generate manifest ...
-  error logging into OCI registry: failed to login to registry:
-  `helm registry login ghcr.io --username ****** --password ******` failed
-```
-
-Verified directly: the token is a classic `ghp_` PAT (40 chars) and
-`GET https://api.github.com/user` returns **HTTP 401**. GHCR also refuses to
-issue a pull token for it. It is expired or revoked.
-
-**Five apps are frozen** — they cannot re-render, so any change to their
-`chart-values.yaml` silently does nothing:
-
-| App | Why it matters |
-|---|---|
-| **qnap-trident** | **the storage driver.** The v1.6.2 mkfs-safety bump is committed but cannot deploy. |
-| mealie | |
-| kubedock | |
-| github-mcp-proxy | |
-| speedtest-exporter | |
-
-This was invisible because the ExternalSecret reports `Ready=True` — it
-delivered the value successfully; it has no way to know ghcr.io rejects it.
-
-**Fix:**
-1. GitHub → Settings → Developer settings → Personal access tokens → generate a
-   new **user PAT for the `t3chy0n` account** (the username is hardcoded in the
-   ExternalSecret template, so it must be that account) with **`read:packages`**
-   scope. Classic PAT or fine-grained with *Packages: read* on
-   `t3chy0n/charts`; read-only is sufficient, ArgoCD only pulls.
-2. Update 1Password → vault **`Infrastructure`** → item **`GHCR`** → field
-   **`password`**.
-
-   Classic PATs can be set to never expire, which avoids a repeat of this.
-   Fine-grained tokens cap at one year.
-3. ESO refreshes it into `argocd/ghcr-repo-creds` automatically. Then tell me
-   and I will confirm the five apps go Synced and the CSI upgrade rolls.
-
-Verify with:
-```bash
-kubectl -n argocd get app qnap-trident -o jsonpath='{.status.sync.status}'
-```
+**Worth remembering:** this had been silently freezing five apps, including the
+storage driver, and nothing alerted. The ExternalSecret reported `Ready=True`
+throughout — it delivered the value correctly; it cannot know the registry
+rejects it. If you set the new PAT to expire, put a calendar reminder on it,
+because the failure mode is invisible.
 
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
