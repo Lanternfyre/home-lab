@@ -93,6 +93,27 @@ protected:
     backup: file-level, off-NAS
     reason: Hand-entered recipes and uploaded images. Not reconstructible.
 
+  - namespace: databases
+    claim: pg-backup
+    size: 10Gi
+    class: qnap-samba
+    source: gitops/clusters/home/apps/postgres/manifests/pg-backup.pvc.yaml
+    backup: n/a - this IS the backup
+    reason: >-
+      Nightly pg_dumpall of the postgres-ha cluster. Deliberately on SMB, not
+      iSCSI: SMB shares are never formatted, so the backup does not share the
+      mkfs failure mode of the volumes it protects.
+
+  - namespace: immich
+    claim: immich-db-backup
+    size: 10Gi
+    class: qnap-samba
+    source: gitops/clusters/home/apps/immich/manifests/immich-db-backup.pvc.yaml
+    backup: n/a - this IS the backup
+    reason: >-
+      Nightly pg_dumpall of immich-db (albums, faces, smart-search embeddings).
+      Same SMB reasoning as pg-backup above.
+
   - namespace: dns
     claim: pihole
     size: 5Gi

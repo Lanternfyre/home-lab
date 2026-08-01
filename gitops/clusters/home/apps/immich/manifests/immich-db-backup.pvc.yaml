@@ -1,0 +1,25 @@
+# Destination for logical backups of the immich-db cluster.
+#
+# On qnap-samba (SMB) rather than qnap-iscsi on purpose: SMB shares are not
+# block devices and are never formatted, so this backup does not share a
+# failure mode with the iSCSI volumes it protects. See the QNAP CSI v1.6.1
+# mkfs-safety fix, which this cluster does not yet have.
+#
+# NOTE: the 100Gi immich-library PVC is NOT backed up here. It is already on
+# SMB (so immune to that same bug) and carries delete-protection, and a second
+# copy on the same NAS would not survive the failure that actually threatens
+# it. It needs a genuine off-site copy -- tracked separately.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: immich-db-backup
+  labels:
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: qnap-samba
+  resources:
+    requests:
+      storage: 10Gi

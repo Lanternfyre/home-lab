@@ -1,0 +1,25 @@
+# Destination for logical backups of the postgres-ha cluster.
+#
+# Deliberately on qnap-samba (SMB) rather than qnap-iscsi. The QNAP CSI driver
+# v1.6.1 release notes fix a bug where the driver could run mkfs on a volume
+# that already had a filesystem -- and this cluster still runs v1.6.0 while
+# facing ~20 node re-attachments during the upgrade and CNI migration. SMB
+# shares are not block devices and are never formatted, so a backup here does
+# not share a failure mode with the iSCSI volumes it is protecting.
+#
+# It is also browsable directly from the QNAP GUI, so a restore does not
+# depend on the cluster being healthy.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pg-backup
+  labels:
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes: [ReadWriteMany]
+  storageClassName: qnap-samba
+  resources:
+    requests:
+      storage: 10Gi
