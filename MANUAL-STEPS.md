@@ -9,33 +9,69 @@ Last updated: 2026-08-01
 
 ---
 
+## ✅ Done (2026-08-01) — do not repeat
+
+- **Test StorageClass deleted.** `qnap-samba-backup-test` is gone. Confirmed.
+- **QNAP has enough space.** Confirmed by you.
+- **Pre-upgrade etcd snapshot taken** —
+  `pre-upgrade-verify-k8s-lab1-1785613636`, 39 MB, registered on k8s-lab1.
+- **Restore-to-a-VM test: deliberately skipped.** Your call, and see below for
+  why it is less risky than it first looked.
+- **Snapshots stay on the nodes**, not copied off. Your call.
+
+### On skipping the restore test — the risk is smaller than I claimed
+My earlier note said lab1 and lab2 had no snapshots. **That was wrong.** All
+five nodes are taking them twice daily (00:00 and 12:00):
+
+```
+k8s-lab1  6   k8s-lab2  5   k8s-lab3  5   k8s-lab4  3   k8s-lab5  3
+```
+
+Each snapshot is a complete copy of cluster state, so this is five independent
+copies. Losing any one node loses nothing — which is most of what copying them
+off-node would have bought. Keeping them on the nodes is a reasonable call.
+
+What remains untested is **not the snapshot file** — it is the *restore
+procedure*. On a 5-member etcd cluster that means
+`k3s server --cluster-reset --cluster-reset-restore-path=<snap>` on one node,
+then wiping `/var/lib/rancher/k3s/server/db` on the other four and rejoining
+them. That is the part people get stuck on at 2am, and it is still unrehearsed.
+Accepted knowingly; the mitigation is that the upgrade gates are strict and
+each hop is verified before the next.
+
+---
+
 ## 🔴 Blocks the k3s upgrade (Phase 2)
 
-### 1. Verify an etcd snapshot actually restores
-Snapshots exist on the nodes, but an unrestored snapshot is not a backup, and
-**minor-version downgrades are impossible** — an etcd restore is the *only*
-rollback from a bad upgrade hop.
+### 1. Confirm whether the Google OAuth client is "Internal"
+**10-second check, and your assumption may not hold.**
 
-```bash
-ssh 192.168.33.3 'sudo ls -la /var/lib/rancher/k3s/server/db/snapshots/'
-ssh 192.168.33.3 'sudo k3s etcd-snapshot save --name pre-upgrade-verify'
-# copy it off the node, then restore it onto a scratch VM and confirm the
-# API server comes up and `kubectl get nodes` works.
-```
-Also worth checking: snapshots for **lab1 and lab2 do not appear** in
-`kubectl get etcdsnapshotfiles`. Could be retention rotation, could be a config
-gap. Find out which.
+You said Google auth is already Internal because it only allows `techyon.dev`
+users. That behaviour is **fully explained by application-level config**, and
+none of it is Google-side:
 
-### 2. Set the Google OAuth client to "Internal"
-Google Cloud Console → project `techyon-393614` → OAuth consent screen →
-set user type to **Internal**.
+| Where | Setting |
+|---|---|
+| `oauth2-proxy/chart-values.yaml:17` | `email-domain: techyon.dev` |
+| `prometheus/chart-values.yaml:33-34` | `allowed_domains` + `hosted_domain` |
+| `argocd-values.yaml:25-27` | `hd` claim marked `essential: true` |
 
-This makes Google reject non-`techyon.dev` accounts **server-side** with
-`org_internal` — unbypassable, and the strongest single control in the planned
-auth design. Costs nothing.
+So today's restriction would look identical whether the client is Internal or
+External. **This matters because Phase 6 retires oauth2-proxy**, and if the
+client turns out to be External, that layer disappears with it.
 
-**Verify first** that the GCP project sits under your Workspace organisation;
-"Internal" is unavailable otherwise.
+Check: GCP Console → project `techyon-393614` → APIs & Services →
+OAuth consent screen → **User type**. If it says External and "Internal" is
+available, switch it — Google then rejects non-org accounts server-side with
+`org_internal`, which is unbypassable and free.
+
+(I could not check this for you: `gcloud` is installed and authenticated as
+`adrian.jutrowski@techyon.dev`, but its token is expired —
+`invalid_grant: Bad Request`. Run `gcloud auth login` if you would rather I
+verified it.)
+
+Either way the plan is safe: the Envoy Gateway `SecurityPolicy` enforces the
+`hd` claim itself. "Internal" is defence in depth, not the only line.
 
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
@@ -58,12 +94,6 @@ It is the single highest-value dataset in the cluster and the only one where
 "off the NAS" is the entire point. Options: an external USB disk, `pc.home`,
 or cloud (R2 / GCS / B2, roughly €1–2/month for 57 GB).
 
-### 5. Check free space on the QNAP
-Backups now land on the NAS. Confirm there is headroom in QTS → Storage &
-Snapshots. Current commitments: ~46 MB/night immich-db, ~85 KB/night
-postgres-ha, plus small Mealie and Pi-hole tarballs, all with 14-day retention
-— so roughly 1–2 GB steady state. Not large, but worth confirming it fits.
-
 ### 6. Verify the two leaked NAS volumes, then delete them
 The audit finds two `TridentVolume`s with **no PV and no PVC** — almost
 certainly still consuming ~10 GB:
@@ -81,15 +111,6 @@ They trace to the leftover experiment at repo root `mealie-pvc-qnap.yaml`
 
 Also stale, and safe to remove from the repo once you have looked:
 `mealie-pvc-qnap.yaml` and the empty `test-pvc-qnap.yaml`.
-
-### 7. Delete my leftover test StorageClass
-I created this while proving the driver ignores `mountOptions`, and
-`kubectl delete sc` is blocked for me by the permission classifier:
-
-```bash
-kubectl delete sc qnap-samba-backup-test
-```
-Nothing uses it; its test PVC is already gone.
 
 ### 8. Rotate the k3s cluster token
 `k3sblog` is committed in plaintext in `gitops/argo-install.md`. Anyone with it
