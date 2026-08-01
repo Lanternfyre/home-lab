@@ -1,0 +1,121 @@
+---
+# Add a node to the cluster safely.
+#
+#   ansible-playbook playbooks/40-add-node.yml --ask-become-pass --limit k8s-6.home
+#
+# This exists because of what happened on 2026-07-30. k8s-4 and k8s-5 were
+# added by hand from the prose runbook and silently missed three steps:
+#
+#   * the inotify sysctl was applied but MANGLED -- the value wrapped onto a
+#     second line, so fs.inotify.max_user_watches stayed at the kernel default
+#     of 122547 instead of 1048576. Nobody noticed for 211 days.
+#   * /etc/multipath.conf was written WITHOUT "find_multipaths no", so neither
+#     node could stage a QNAP volume at all.
+#   * k8s-4's resolver stub wedged, so containerd could not pull ANY image,
+#     which left it with ZERO registered CSI drivers -- while sitting Ready,
+#     untainted and schedulable.
+#
+# None of that is visible in `kubectl get nodes`. A PVC-bearing pod scheduled
+# onto either node would have hung in ContainerCreating forever.
+#
+# The ordering below is the lesson: verify BEFORE installing k3s, and stay
+# CORDONED until storage is proven, not until the node merely reports Ready.
+
+- name: Pre-flight (before k3s is installed)
+  hosts: "{{ target | default('k3s_servers') }}"
+  gather_facts: true
+  become: true
+
+  roles:
+    - node_baseline
+
+  post_tasks:
+    - name: Flush handlers
+      ansible.builtin.meta: flush_handlers
+
+    - name: Settle after resolver restart
+      ansible.builtin.wait_for: { timeout: 5 }
+
+    # The checks that would have caught k8s-4 BEFORE it ever joined.
+    - name: DNS resolves external registries
+      ansible.builtin.command: getent ahostsv4 registry.k8s.io registry-1.docker.io
+      changed_when: false
+
+    - name: Assert inotify sysctls actually took effect
+      ansible.builtin.shell: "sysctl -n {{ item.key }}"
+      register: sysctl_check
+      changed_when: false
+      failed_when: sysctl_check.stdout | int < item.value | int
+      loop: "{{ node_sysctls | dict2items }}"
+      loop_control:
+        label: "{{ item.key }} >= {{ item.value }}"
+
+    - name: Assert multipath.conf sets find_multipaths
+      ansible.builtin.shell: "grep -qE 'find_multipaths\\s+{{ node_multipath_find_multipaths }}' /etc/multipath.conf"
+      changed_when: false
+
+    - name: Assert storage services are running
+      ansible.builtin.command: "systemctl is-active {{ item }}"
+      register: svc
+      changed_when: false
+      failed_when: svc.stdout != 'active'
+      loop: [iscsid, multipathd]
+
+- name: Join the cluster
+  hosts: "{{ target | default('k3s_servers') }}"
+  gather_facts: false
+  become: true
+
+  tasks:
+    # Read the version from a LIVE node rather than a variable. A new node
+    # joining at a different version is how version skew starts.
+    - name: Discover the cluster's current k3s version
+      ansible.builtin.shell: |
+        /usr/local/bin/k3s kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'
+      register: live_version
+      changed_when: false
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    - name: Show what we will install
+      ansible.builtin.debug:
+        msg: "Joining at the cluster's live version: {{ live_version.stdout }}"
+
+    - name: Write config.yaml BEFORE installing
+      ansible.builtin.include_role:
+        name: k3s_config
+      # This is the step whose absence resurrected the k3s traefik addon on
+      # k8s-4/5: lab1/2/3 had `disable: [traefik]` in config.yaml and the new
+      # nodes had no config.yaml at all, so their deploy controllers kept
+      # rewriting traefik.yaml while the others deleted it -- 580+ crashloops.
+
+    - name: Install k3s and join
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION={{ live_version.stdout }} \
+          INSTALL_K3S_EXEC="server" \
+          K3S_TOKEN="{{ k3s_token }}" \
+          sh -s -
+      environment: {}   # keep stray K3S_* out of the regenerated k3s.service.env
+      args:
+        creates: /usr/local/bin/k3s
+
+    # CORDON ON JOIN. This inverts the default that trapped k8s-4: a node is
+    # untrusted until its storage path is PROVEN, not until it reports Ready.
+    - name: Cordon immediately
+      ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name | default(inventory_hostname.split('.')[0]) }}"
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      changed_when: true
+
+- name: Post-join verification
+  hosts: "{{ target | default('k3s_servers') }}"
+  gather_facts: false
+  roles:
+    - node_verify        # includes the csinode.spec.drivers gate
+
+  post_tasks:
+    - name: Reminder
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} is joined and CORDONED. Run the storage
+          proof (a pinned test PVC on this node) before uncordoning. Reporting
+          Ready is NOT sufficient -- k8s-4 was Ready with zero CSI drivers.

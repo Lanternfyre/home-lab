@@ -128,11 +128,50 @@ sudo systemctl restart systemd-resolved
 
 ## Node file watch settings:
 
+> **⚠️ SUPERSEDED — use Ansible. Do not run this by hand.**
+>
+> `cd ansible && ansible-playbook playbooks/10-baseline.yml --ask-become-pass`
+>
+> This command is *correct*, but it is a long one-liner and it got mangled in
+> transit on every node. The file that actually landed reads:
+>
+> ```
+> fs.inotify.max_user_watches =
+>   1048576
+> fs.inotify.max_user_instances = 8192
+> ```
+>
+> The value wrapped onto its own line, so `sysctl` ignored it.
+> `max_user_watches` sat at the kernel default of **122547** instead of
+> 1048576 on **all five nodes for 211 days**. `max_user_instances` applied only
+> because it happened to survive on one line.
+>
+> Nobody noticed because the file existed and looked right. That is why
+> `ansible/roles/node_verify` asserts `sysctl -n` **values** and never file
+> presence — and why this section now points at Ansible instead of a
+> copy-pasteable one-liner.
+
 ```shell
+# Historical reference only — see the warning above.
 sudo mkdir -p /etc/sysctl.d && printf "fs.inotify.max_user_watches = 1048576\nfs.inotify.max_user_instances = 8192\nfs.file-max = 2097152\n" | sudo tee /etc/sysctl.d/99-inotify.conf && sudo /sbin/sysctl --system
+
+# Verify it ACTUALLY applied — this is the step that was missing:
+sysctl -n fs.inotify.max_user_watches   # must print 1048576, not 122547
 ```
 
 ## iSCSI Multipath for QNAP Trident CSI
+
+> **⚠️ SUPERSEDED — use Ansible.** `ansible/roles/node_baseline` installs this.
+>
+> k8s-4 and k8s-5 were set up from this section by hand and ended up with a
+> multipath.conf that had `user_friendly_names` but **not** `find_multipaths no`.
+> Both were consequently unable to stage ANY QNAP volume — proven with a test
+> PVC on 2026-08-01, which failed with exactly the error below. Verify with:
+>
+> ```shell
+> grep -E 'find_multipaths\s+no' /etc/multipath.conf   # must match
+> systemctl is-active iscsid multipathd                 # both must be active
+> ```
 
 Trident v1.6.0+ expects multipath device maps even for single-path iSCSI LUNs.
 Without this config, newly attached volumes fail with "multipath device not found".

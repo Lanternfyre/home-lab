@@ -35,6 +35,12 @@
 # ── sysctls ──────────────────────────────────────────────────────────────────
 # Replaces the broken pre-existing file. The old one has the value split across
 # two lines, so max_user_watches silently never applied on any node.
+# The hand-written file on every node reads:
+#     fs.inotify.max_user_watches =
+#       1048576
+# The value wrapped onto its own line, so sysctl ignored it and
+# max_user_watches sat at the kernel default (122547) for 211 days. Remove it
+# rather than trying to repair it -- ansible.posix.sysctl owns the value now.
 - name: Remove the broken hand-written inotify sysctl file
   ansible.builtin.file:
     path: /etc/sysctl.d/99-inotify.conf
@@ -45,10 +51,33 @@
     name: "{{ item.key }}"
     value: "{{ item.value }}"
     sysctl_file: /etc/sysctl.d/99-homelab.conf
-    sysctl_set: true
-    reload: true
+    sysctl_set: true      # apply to the running kernel now
+    reload: true          # and persist across reboots
     state: present
   loop: "{{ node_sysctls | dict2items }}"
+
+# Self-verify immediately. Writing the file is not the same as the kernel
+# accepting the value -- that distinction is the entire bug this role fixes,
+# so the role proves its own work rather than deferring to node_verify.
+- name: Read back effective sysctl values
+  ansible.builtin.command: "sysctl -n {{ item.key }}"
+  register: sysctl_readback
+  changed_when: false
+  loop: "{{ node_sysctls | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+- name: Assert the kernel actually accepted them
+  ansible.builtin.assert:
+    that: "item.stdout | int >= item.item.value | int"
+    fail_msg: >-
+      {{ item.item.key }} reads {{ item.stdout }} but should be at least
+      {{ item.item.value }}. The file was written and the kernel did not take
+      it -- check /etc/sysctl.d/ for a stale file with a wrapped value.
+    success_msg: "{{ item.item.key }} = {{ item.stdout }}"
+  loop: "{{ sysctl_readback.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
 
 # ── storage prerequisites ────────────────────────────────────────────────────
 - name: Install storage packages
