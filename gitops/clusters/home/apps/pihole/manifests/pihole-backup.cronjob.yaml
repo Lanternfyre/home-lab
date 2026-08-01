@@ -52,6 +52,18 @@ spec:
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
+                  # Pi-hole's files are owned by uid 1000 with mode 0640.
+                  # Running as root normally reads them via CAP_DAC_OVERRIDE,
+                  # but dropping ALL capabilities removes that, and tar fails
+                  # with "Permission denied" on every file:
+                  #   tar: can't open './pihole.toml': Permission denied
+                  # (busybox then reports a misleading "Stale file handle" for
+                  # the broken archive stream, which is NOT the real cause.)
+                  #
+                  # DAC_READ_SEARCH grants read+traverse on any file WITHOUT
+                  # the write bypass that DAC_OVERRIDE would also hand over --
+                  # exactly what a read-only backup needs and nothing more.
+                  add: ["DAC_READ_SEARCH"]
                 seccompProfile:
                   type: RuntimeDefault
               env:
