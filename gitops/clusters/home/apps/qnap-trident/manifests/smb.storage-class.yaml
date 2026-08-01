@@ -3,8 +3,8 @@ kind: StorageClass
 metadata:
   name: qnap-samba # Required. Name your storageclass.
   annotations:
-    # See iscsi.storage-class.yaml for why Replace=true is required here.
-    argocd.argoproj.io/sync-options: Replace=true
+    # See iscsi.storage-class.yaml for why Force=true,Replace=true is required.
+    argocd.argoproj.io/sync-options: Force=true,Replace=true
 
 provisioner: csi.trident.qnap.io
 # Retain, not Delete. This class backs immich-library (100Gi, irreplaceable).
