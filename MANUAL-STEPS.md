@@ -70,6 +70,71 @@ throughout — it delivered the value correctly; it cannot know the registry
 rejects it. If you set the new PAT to expire, put a calendar reminder on it,
 because the failure mode is invisible.
 
+### 2b. Fix multipath + iscsid on k8s-lab4 and k8s-lab5 (needs sudo)
+**PROVEN by test 2026-08-01, not theorised. This blocks uncordoning both nodes,
+and therefore blocks every drain in the k3s upgrade and the CNI migration.**
+
+I created a 1Gi `qnap-iscsi` PVC and a pod pinned to lab5. It failed:
+
+```
+MountVolume.MountDevice failed ... rpc error: code = Internal
+  desc = failed to stage volume: multipath device not found when it is expected
+```
+
+Cause — lab4 and lab5 have the WRONG `/etc/multipath.conf`:
+
+| Node | multipath.conf | iscsid |
+|---|---|---|
+| lab1 / lab2 / lab3 ✅ | `find_multipaths no` + blacklist | active |
+| **lab5** ❌ | `user_friendly_names` only | active |
+| **lab4** ❌ | `user_friendly_names` only | **inactive** |
+
+multipath-tools 0.9.4 defaults `find_multipaths` to `strict`, so a single-path
+QNAP LUN never gets a device-mapper entry and Trident cannot stage it.
+
+*Correction to something I told you earlier:* I previously reported
+"multipath.conf present on all 5 nodes ✓". That checked **presence, not
+content**. It is present on both new nodes and wrong — the same class of
+mistake the audit script explicitly guards against for sysctls.
+
+**Fix — run on BOTH `k8s-4.home` and `k8s-5.home`:**
+
+```bash
+sudo tee /etc/multipath.conf >/dev/null <<'CONF'
+defaults {
+    find_multipaths no
+    user_friendly_names yes
+}
+blacklist {
+    devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)[0-9]*"
+}
+CONF
+sudo systemctl restart multipathd
+sudo systemctl enable --now iscsid     # lab4 needs this; it is inactive there
+systemctl is-active multipathd iscsid  # both should print "active"
+```
+
+**And on `k8s-4.home` only**, its resolver stub is still wedged (`getent hosts
+registry.k8s.io` fails, so containerd cannot pull ANY image):
+
+```bash
+sudo systemctl restart systemd-resolved
+getent hosts registry.k8s.io && echo OK          # if this works, you are done
+
+# if it does NOT work, harden the config and reboot:
+sudo tee /etc/systemd/resolved.conf >/dev/null <<'CONF'
+[Resolve]
+DNS=1.1.1.1 8.8.8.8
+FallbackDNS=8.8.4.4
+DNSStubListener=yes
+CONF
+sudo systemctl restart systemd-resolved
+getent hosts registry.k8s.io || sudo reboot
+```
+
+Tell me when done and I will re-run the storage proof on both nodes and uncordon
+them if it passes. **Do not uncordon them yourself** — the proof is the gate.
+
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
 which carries the **primary** domain only. If `techyon.dev` has alias or
