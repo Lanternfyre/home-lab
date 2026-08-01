@@ -6,6 +6,15 @@ apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: immich-library
+  labels:
+    # Highest-value data in the cluster: irreplaceable photos. Kyverno denies
+    # DELETE on anything carrying this label (see apps/kyverno/manifests/).
+    # Registered in gitops/clusters/home/protected-volumes.yaml.
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    # Belt and braces alongside the label: even if this file is deleted or
+    # renamed, Argo must not prune or cascade-delete the claim.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   accessModes: [ReadWriteMany]
   storageClassName: qnap-samba

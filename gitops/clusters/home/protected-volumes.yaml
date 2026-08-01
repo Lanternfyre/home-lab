@@ -1,0 +1,146 @@
+# Canonical register of persistent data in this cluster.
+#
+# THIS FILE IS NOT APPLIED TO THE CLUSTER. It is a reviewable inventory, and it
+# is the input to scripts/audit-protected-volumes.sh, which fails if:
+#   - a PVC exists in the cluster but appears in neither list below, or
+#   - a `protected` claim is missing its label, or its PV is not Retain, or
+#   - a `protected` claim's owning manifest lacks the Argo prune/delete guards.
+#
+# The point of the second rule is that adding a new volume forces a conscious
+# protect / don't-protect decision instead of defaulting to silence.
+#
+# ── How protection is actually enforced (four independent layers) ────────────
+#   1. PV reclaimPolicy: Retain          — a deleted PVC leaves the data on the NAS
+#   2. label homelab.techyon.dev/protect — Kyverno ValidatingPolicy, compiled to a
+#                                          native ValidatingAdmissionPolicy, denies
+#                                          DELETE on PVC/PV carrying it
+#   3. argocd sync-options Prune=false,Delete=false — a removed or renamed manifest
+#                                          cannot cascade into volume deletion
+#   4. off-NAS backups (see `backup:` per entry) — the only layer that survives
+#                                          disk failure, corruption or a bad mkfs
+#
+# Layers 1-3 stop mistakes. ONLY layer 4 stops hardware and software faults.
+# Do not confuse "protected" with "backed up" — read the `backup:` field.
+#
+# ── Break-glass ──────────────────────────────────────────────────────────────
+# To legitimately delete a protected volume, add an annotation whose value is
+# the object's OWN NAME, via a git commit:
+#     homelab.techyon.dev/unprotect: "<metadata.name>"
+# It cannot be applied by a broadcast command and cannot be copy-pasted between
+# objects. A manual `kubectl label` is reverted by selfHeal within minutes, so
+# git is the only durable route — which is the audit trail.
+
+version: 1
+
+protected:
+  - namespace: immich
+    claim: immich-library
+    size: 100Gi
+    class: qnap-samba
+    source: gitops/clusters/home/apps/immich/manifests/immich-library.pvc.yaml
+    backup: file-level, off-NAS
+    reason: >-
+      Photographs. Irreplaceable; there is no other copy anywhere. This is the
+      single highest-value object in the cluster.
+
+  - namespace: immich
+    claim: immich-db-2
+    size: 20Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: >-
+      Albums, face recognition and smart-search embeddings. The library above is
+      just a pile of files without this database.
+
+  - namespace: immich
+    claim: immich-db-3
+    size: 20Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: Replica of immich-db-2. Protected so a drain cannot destroy the pair.
+
+  - namespace: databases
+    claim: postgres-ha-1
+    size: 8Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: Application databases (necronia, techyon). Not reconstructible.
+
+  - namespace: databases
+    claim: postgres-ha-2
+    size: 8Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: Replica of the postgres-ha cluster.
+
+  - namespace: databases
+    claim: postgres-ha-3
+    size: 8Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: Replica of the postgres-ha cluster.
+
+  - namespace: home-utils
+    claim: qnap-mealie
+    size: 5Gi
+    class: qnap-iscsi
+    source: gitops/clusters/home/apps/mealie/manifests/qnap-mealie.pvc.yaml
+    backup: file-level, off-NAS
+    reason: Hand-entered recipes and uploaded images. Not reconstructible.
+
+  - namespace: dns
+    claim: pihole
+    size: 5Gi
+    class: local-path            # NOTE: node-local, NOT on the NAS
+    source: pihole chart (persistentVolumeClaim.enabled)
+    backup: file-level, off-NAS
+    reason: >-
+      Blocklists, custom DNS entries for every node and LAN host, and query
+      history. Rebuildable but tedious, and losing it takes LAN DNS down.
+    warning: >-
+      This is the only volume on local-path. It is pinned by nodeAffinity to
+      k8s-lab3 and dies with that node's disk — reclaimPolicy Retain does not
+      help here. Phase 0.D migrates it to qnap-iscsi; until then it is the most
+      fragile protected volume in the cluster.
+
+# Deliberately NOT protected. Listed so the audit can distinguish "considered
+# and declined" from "nobody looked at it".
+unprotected:
+  - namespace: immich
+    claim: immich-machine-learning
+    size: 10Gi
+    reason: >-
+      Downloaded ML model cache. Immich re-fetches the models on demand; losing
+      it costs one slow first run, nothing else.
+
+  - namespace: monitoring
+    claim: storage-loki-0
+    size: 20Gi
+    reason: Logs, 336h retention by config. Discardable by design.
+
+  - namespace: monitoring
+    claim: storage-tempo-0
+    size: 20Gi
+    reason: Traces, 168h retention by config. Discardable by design.
+
+  - namespace: monitoring
+    claim: data-pyroscope-0
+    size: 20Gi
+    reason: Profiles, 720h retention by config. Discardable by design.
+
+  - namespace: redis
+    claim: redis-data-redis-master-0
+    size: 8Gi
+    reason: >-
+      Cache and job queues (Immich background jobs). Rebuilt on restart; not
+      authoritative for anything. Re-evaluate if Redis ever becomes a datastore.
+
+  - namespace: redis
+    claim: redis-data-redis-replicas-0
+    size: 8Gi
+    reason: Replica of the above.

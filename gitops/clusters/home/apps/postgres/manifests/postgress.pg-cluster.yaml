@@ -5,6 +5,13 @@ metadata:
 spec:
   instances: 3
 
+  # Propagates the delete-protection label onto the controller-generated
+  # per-instance PVCs, which cannot be labelled in git directly.
+  # See gitops/clusters/home/protected-volumes.yaml.
+  inheritedMetadata:
+    labels:
+      homelab.techyon.dev/protect: "true"
+
   storage:
     size: 8Gi
     storageClass: qnap-iscsi

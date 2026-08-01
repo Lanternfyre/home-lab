@@ -14,6 +14,16 @@ spec:
   instances: 2
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:17-0.4.3
 
+  # CNPG creates the per-instance PVCs itself, so they cannot be labelled in
+  # git directly. inheritedMetadata propagates to "all objects related to the
+  # Cluster", which is how the delete-protection label reaches them without
+  # needing a Kyverno mutate rule (mutation would fight ServerSideApply).
+  # Immich's photo library is worthless without this database: it holds the
+  # albums, faces, and smart-search embeddings.
+  inheritedMetadata:
+    labels:
+      homelab.techyon.dev/protect: "true"
+
   storage:
     size: 20Gi
     storageClass: qnap-iscsi

@@ -70,6 +70,17 @@ env:
 persistentVolumeClaim:
   enabled: true
   size: 5Gi
+  # The chart exposes annotations but not labels, so the
+  # homelab.techyon.dev/protect label is applied to this PVC imperatively and
+  # to its PV (see gitops/clusters/home/protected-volumes.yaml). It becomes
+  # declarative when Phase 0.D moves pihole off local-path onto qnap-iscsi with
+  # an explicit PVC manifest.
+  #
+  # NOTE: this claim is on local-path — node-local storage pinned by
+  # nodeAffinity to k8s-lab3. reclaimPolicy: Retain does NOT protect it from
+  # that node's disk failing. It is the most fragile protected volume here.
+  annotations:
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 
 resources:
   requests:

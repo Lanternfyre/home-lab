@@ -2,9 +2,14 @@ kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
   name: qnap-mealie
+  labels:
+    # Hand-entered recipes; not reconstructible from anything else.
+    # Registered in gitops/clusters/home/protected-volumes.yaml.
+    homelab.techyon.dev/protect: "true"
   annotations:
     trident.qnap.io/threshold: "90"
     trident.qnap.io/ThinAllocate: "true"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   accessModes:
     - ReadWriteOnce
