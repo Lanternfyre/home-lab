@@ -118,7 +118,12 @@ spec:
             - name: config
               persistentVolumeClaim:
                 claimName: pihole
-                readOnly: true
+                # NOT readOnly here -- same as the Mealie job. The pihole PVC is
+                # RWO and already mounted read-write by the Pi-hole pod on this
+                # node; publishing it read-only as well makes the mount unstable
+                # and tar fails with "Stale file handle". Verified: an otherwise
+                # identical pod without this flag archives all 32 files fine.
+                # Read-only protection is enforced on the volumeMount instead.
             - name: backup
               persistentVolumeClaim:
                 claimName: pihole-backup
