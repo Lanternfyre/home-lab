@@ -28,12 +28,20 @@ spec:
             app.kubernetes.io/name: immich-db-backup
         spec:
           restartPolicy: OnFailure
+          # uid 0 is required: the QNAP CSI driver mounts SMB with hardcoded
+          # uid=0,gid=0,file_mode=0755 and ignores StorageClass mountOptions.
+          # See pg-backup.cronjob.yaml for the full reasoning and the evidence.
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 26
-            fsGroup: 26
+            runAsUser: 0
+            runAsGroup: 0
           containers:
             - name: dump
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
               # MUST match the cluster image: immich-db runs PostgreSQL 17 with
               # the VectorChord extension, and pg_dump cannot be older than the
               # server. Do not "helpfully" bump this to the 18 image used by

@@ -30,14 +30,26 @@ spec:
             app.kubernetes.io/name: pg-backup
         spec:
           restartPolicy: OnFailure
-          # Must not land on a node that cannot mount the SMB volume.
-          # k8s-lab4 currently has zero registered CSI drivers.
+          # MUST run as uid 0. The QNAP CSI driver mounts SMB shares with
+          # hardcoded uid=0,gid=0,file_mode=0755 and IGNORES StorageClass
+          # mountOptions -- verified empirically: a StorageClass carrying
+          # mountOptions [uid=26,gid=26,...] produced a byte-identical mount.
+          # fsGroup does not apply to CIFS either. So a non-root container
+          # simply cannot write here, and uid 0 is the only option.
+          #
+          # Confined instead by: no privilege escalation, all capabilities
+          # dropped, and a job that only runs pg_dumpall and writes one file.
           securityContext:
-            runAsNonRoot: true
-            runAsUser: 26          # postgres uid in the CNPG image
-            fsGroup: 26
+            runAsUser: 0
+            runAsGroup: 0
           containers:
             - name: dump
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                seccompProfile:
+                  type: RuntimeDefault
               # Same image as the cluster: pg_dump must be >= the server
               # version, and postgres-ha runs PostgreSQL 18.
               image: ghcr.io/cloudnative-pg/postgresql:18.1-system-trixie
