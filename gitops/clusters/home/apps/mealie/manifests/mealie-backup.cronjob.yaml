@@ -71,7 +71,14 @@ spec:
                   echo "[$(date -u +%FT%TZ)] archiving /data"
                   # Write to .partial first so an interrupted run can never be
                   # mistaken for a complete backup.
-                  tar czf "${tmp}" -C /data .
+                  #
+                  # NOTE: tar writes to STDOUT and the shell creates the file.
+                  # Do not "simplify" this to `tar czf "${tmp}"` -- busybox tar
+                  # stats its own output file to avoid archiving itself, and on
+                  # a CIFS mount that stat returns ESTALE:
+                  #   tar: can't stat tar file: Stale file handle
+                  # which leaves a 0-byte file behind and exits 1.
+                  tar czf - -C /data . > "${tmp}"
                   mv "${tmp}" "${out}"
 
                   size=$(stat -c %s "${out}")
@@ -102,7 +109,12 @@ spec:
             - name: data
               persistentVolumeClaim:
                 claimName: qnap-mealie
-                readOnly: true
+                # NOT readOnly here. qnap-mealie is an RWO iSCSI volume already
+                # mounted read-write by the Mealie pod on this same node; asking
+                # Trident to publish it read-only as well fails with
+                #   MountVolume.SetUp failed ... unable to mount device; exit status 32
+                # Read-only protection is enforced on the volumeMount instead,
+                # which is what actually matters for the container.
             - name: backup
               persistentVolumeClaim:
                 claimName: mealie-backup

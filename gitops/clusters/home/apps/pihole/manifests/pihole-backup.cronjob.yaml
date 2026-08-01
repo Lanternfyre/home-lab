@@ -69,11 +69,18 @@ spec:
                   # Exclude the query-log database: it is large, churns
                   # constantly, and is worthless for recovery. Config, custom
                   # DNS and blocklists are the parts worth keeping.
-                  tar czf "${tmp}" -C /etc-pihole \
+                  #
+                  # NOTE: tar writes to STDOUT and the shell creates the file.
+                  # Do not "simplify" this to `tar czf "${tmp}"` -- busybox tar
+                  # stats its own output file to avoid archiving itself, and on
+                  # a CIFS mount that stat returns ESTALE:
+                  #   tar: can't stat tar file: Stale file handle
+                  # which leaves a 0-byte file behind and exits 1.
+                  tar czf - -C /etc-pihole \
                       --exclude='pihole-FTL.db' \
                       --exclude='*.db-wal' \
                       --exclude='*.db-shm' \
-                      .
+                      . > "${tmp}"
                   mv "${tmp}" "${out}"
 
                   size=$(stat -c %s "${out}")
