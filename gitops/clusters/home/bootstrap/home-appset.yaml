@@ -49,10 +49,17 @@ spec:
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true
-
-      retry:
-        limit: 10
-        backoff:
-          duration: 15s
-          factor: 2
-          maxDuration: 10m
+        # NOTE the indentation: retry MUST be nested inside syncPolicy.
+        # It previously sat here at 6 spaces, as a sibling of syncPolicy, i.e.
+        # spec.template.spec.retry. The Application CRD has no spec.retry, so
+        # the field was silently pruned and ALL 27 Helm Applications ran with
+        # no retry policy whatsoever -- verified live: every one returned
+        # <EMPTY> for .spec.syncPolicy.retry while the -manifests apps, whose
+        # ApplicationSet nests it correctly, returned limit 10.
+        # Nothing errors when you get this wrong; the field just vanishes.
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 10m
