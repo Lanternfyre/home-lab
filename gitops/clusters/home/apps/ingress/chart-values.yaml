@@ -29,24 +29,31 @@ controller:
     targetCPUUtilizationPercentage: 70
     targetMemoryUtilizationPercentage: 80
 
-  affinity:
-    podAntiAffinity:
-      # PREFERRED, not required. With `required` and topologyKey hostname, three
-      # replicas mean exactly one pod per node -- and with k8s-lab4/lab5
-      # cordoned there are only three usable nodes, so draining ANY of them
-      # leaves a pod permanently Pending and the drain hangs.
-      #
-      # `preferred` keeps the pods spread in normal operation but lets them
-      # co-locate during a drain, which is precisely the behaviour the upgrade
-      # and the CNI migration need.
-      preferredDuringSchedulingIgnoredDuringExecution:
-        - weight: 100
-          podAffinityTerm:
-            labelSelector:
-              matchLabels:
-                app.kubernetes.io/name: ingress-nginx
-                app.kubernetes.io/component: controller
-            topologyKey: kubernetes.io/hostname
+  # topologySpreadConstraints, NOT podAntiAffinity.
+  #
+  # The original `requiredDuringScheduling` anti-affinity meant exactly one pod
+  # per node, so with k8s-lab4/lab5 cordoned every drain left a replica
+  # permanently Pending. Relaxing it to `preferred` fixed the drain but proved
+  # too weak in practice: when all three replacement pods were scheduled in the
+  # same instant, none of them saw the others placed yet, and ALL THREE landed
+  # on k8s-lab2 -- strictly worse for availability than what we started with.
+  #
+  # maxSkew 1 + whenUnsatisfiable: ScheduleAnyway is the combination that
+  # actually wants: the scheduler spreads across nodes, but never refuses to
+  # place a pod, so a drain still succeeds.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+          app.kubernetes.io/component: controller
+          # instance is "ingress-nginx" (the Helm releaseName), NOT "ingress"
+          # (the app directory name). Verified against the live pod labels --
+          # guessing "ingress" here matched zero pods, which would have made
+          # this whole constraint a silent no-op.
+          app.kubernetes.io/instance: ingress-nginx
 
 
   resources:
