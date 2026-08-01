@@ -4,20 +4,36 @@ controller:
 
   autoscaling:
     enabled: true
-    minReplicas: 1
+    # minReplicas 2, not 1: the chart only renders its PodDisruptionBudget when
+    # replicas > 1 (a `gt $replicas 1` gate in the template). At minReplicas: 1
+    # there is no PDB at all, so a drain can evict the last controller and take
+    # all 13 Ingresses down. The HPA currently sits pinned at 3 anyway
+    # (memory 97%/80%), so this changes no pod count today.
+    minReplicas: 2
     maxReplicas: 3
     targetCPUUtilizationPercentage: 70
     targetMemoryUtilizationPercentage: 80
 
   affinity:
     podAntiAffinity:
-      requiredDuringSchedulingIgnoredDuringExecution:
-        - labelSelector:
-            matchLabels:
-              app.kubernetes.io/name: ingress-nginx
-              app.kubernetes.io/component: controller
-          topologyKey: kubernetes.io/hostname
-          
+      # PREFERRED, not required. With `required` and topologyKey hostname, three
+      # replicas mean exactly one pod per node -- and with k8s-lab4/lab5
+      # cordoned there are only three usable nodes, so draining ANY of them
+      # leaves a pod permanently Pending and the drain hangs.
+      #
+      # `preferred` keeps the pods spread in normal operation but lets them
+      # co-locate during a drain, which is precisely the behaviour the upgrade
+      # and the CNI migration need.
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/name: ingress-nginx
+                app.kubernetes.io/component: controller
+            topologyKey: kubernetes.io/hostname
+
+
   resources:
     requests:
       cpu: 100m
