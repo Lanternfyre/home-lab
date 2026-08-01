@@ -1,13 +1,29 @@
 replicaCount: 1
 
+# v1.6.2 (2026-07-31), up from v1.6.0. Two fixes matter here:
+#
+#   v1.6.1 - filesystem-detection hardening before formatting an iSCSI volume:
+#            a device-readiness gate plus a second blkid confirmation before
+#            mkfs. Without it the driver can format a volume that ALREADY has a
+#            filesystem. This is the single documented data-destruction path in
+#            our storage layer, and the modernization plan performs ~20 node
+#            re-attachments across the k3s upgrade and the CNI migration.
+#
+#   v1.6.2 - volume attach no longer fails with "no interface is available"
+#            when the NAS has multiple IP-bearing interfaces. (Release notes
+#            scope this to QuTS hero h6.0.0; our TS-231K runs QTS, so it may
+#            not apply -- taken as a bonus, not the reason for the bump.)
+#
+# v1.6.2 still declares support only up to Kubernetes 1.35, which is why the
+# k3s upgrade stops at v1.35.6 rather than going to 1.36.
 tridentOperator:
-  image: qnapsystem/qnap-csi-operator:v1.6.0
-  cgiServerImage : qnapsystem/qnap-csi-backend-qts-sidecar:v1.6.0
+  image: qnapsystem/qnap-csi-operator:v1.6.2
+  cgiServerImage : qnapsystem/qnap-csi-backend-qts-sidecar:v1.6.2
   imagePullPolicy: IfNotPresent
   logLevel: debug
 
 tridentOrchestrator:
-  image: qnapsystem/qnap-csi:v1.6.0
+  image: qnapsystem/qnap-csi:v1.6.2
   debug: true
 
 forceInstallRancherClusterRoles: false

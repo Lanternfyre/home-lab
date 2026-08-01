@@ -43,12 +43,22 @@ each hop is verified before the next.
 
 ## 🔴 Blocks the k3s upgrade (Phase 2)
 
-### 1. Confirm whether the Google OAuth client is "Internal"
-**10-second check, and your assumption may not hold.**
+### 1. Switch the Google OAuth consent screen to "Internal"
+**CHECKED 2026-08-01 — it is currently External. The assumption did not hold.**
 
-You said Google auth is already Internal because it only allows `techyon.dev`
-users. That behaviour is **fully explained by application-level config**, and
-none of it is Google-side:
+Evidence:
+- The project **is** under the `techyon.dev` organization (org `185150869552`),
+  so "Internal" is available.
+- `orgInternalOnly` is **absent** from both `gcloud iap oauth-brands list` and
+  the raw `iap.googleapis.com/v1/.../brands` response. Google's APIs omit
+  `false` booleans (proto3 default-value omission), so the brand is External.
+  Brand: `projects/138732748534/brands/138732748534` ("Techyon").
+
+Action: GCP Console → project `techyon-393614` → APIs & Services →
+OAuth consent screen → **User type → Internal**.
+
+The `techyon.dev`-only behaviour you observe today comes entirely from
+application-level config, not from Google:
 
 | Where | Setting |
 |---|---|
