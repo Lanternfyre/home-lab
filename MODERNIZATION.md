@@ -168,7 +168,14 @@ Remaining:
       refuses that case. And the **PDB lives in its own manifest file**
       (`coredns-pdb.yaml`), which k3s never writes — so unlike the Deployment,
       the PDB survives all three upgrade hops.
-- [~] CNPG `immich-db` 2 → 3 instances — **pushed 2026-08-02**, provisioning.
+- [x] CNPG `immich-db` 2 → 3 instances ✅ **2026-08-02.** 3/3 Ready, "Cluster
+      in healthy state", and — the part that matters — on **three distinct
+      nodes**: primary on lab1, replicas on lab3 and lab5. Two switchover
+      targets instead of one. The new `immich-db-4` PVC inherited both
+      invariants automatically (`homelab.techyon.dev/protect: "true"` via
+      `inheritedMetadata`, and `reclaimPolicy: Retain`). CNPG also created a
+      second PDB, `immich-db`, allowing 1 disruption alongside the existing
+      `immich-db-primary` which allows 0.
       At 2 instances there is exactly one switchover target, so every drain has
       a single candidate; if that node is the one draining, the drain stalls
       against the CNPG PDB and the only ways out are waiting or
