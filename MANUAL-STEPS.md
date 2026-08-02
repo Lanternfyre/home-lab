@@ -70,7 +70,48 @@ throughout — it delivered the value correctly; it cannot know the registry
 rejects it. If you set the new PAT to expire, put a calendar reminder on it,
 because the failure mode is invisible.
 
-### 2b. Fix lab4/lab5 — RUN ANSIBLE, do not hand-edit
+### 2b. Fix lab4/lab5 — ✅ lab4 DONE · 🔴 lab5 STILL BLOCKED
+
+**Status as of 2026-08-02, measured not assumed:**
+
+| node | multipath.conf written | multipathd (re)started | verdict |
+|---|---|---|---|
+| lab4 | 2026-08-02 08:38:51 | 2026-08-02 08:38:51 | ✅ reloaded → **done, uncordoned** |
+| lab5 | 2026-08-02 08:39:24 | 2026-07-31 06:53:50 | ❌ **never reloaded** |
+
+lab5's `multipath.conf` is correct *on disk* and has never been loaded by the
+running multipathd — the role deferred the restart because lab5 carries stale
+iSCSI sessions. Proven behaviourally the same day with a live storage proof
+(1Gi `qnap-iscsi` PVC + pod pinned to lab5 via `nodeName`), which failed with
+the identical 2026-08-01 error:
+
+```
+MountVolume.MountDevice failed ... rpc error: code = Internal
+  desc = failed to stage volume: multipath device not found when it is expected
+```
+
+The test PV was set to `reclaimPolicy: Delete` before deletion, so the backend
+volume was reclaimed — verified, nothing leaked.
+
+**⚠️ Do not judge this from a `--check` run.** `ansible-playbook ... --check`
+reported `sysctls=BROKEN, services=BROKEN` on all five nodes and `liveLUNs=0`
+on lab1/2/3 (which carry 4 each) — every one of those an artefact of Ansible
+skipping `command:` tasks under check mode. Fixed 2026-08-02; see the
+"hard-won findings" entry in `MODERNIZATION.md`.
+
+**The one command that unblocks lab5** (needs your sudo password):
+
+```bash
+cd ~/Private/home-lab/ansible
+ansible-playbook playbooks/10-baseline.yml --ask-become-pass \
+  --limit k8s-5.home -e multipath_force_restart=true
+```
+
+Then tell me, and I re-run the storage proof and uncordon if it passes.
+
+<details>
+<summary>Original instructions (still accurate for a fresh node)</summary>
+
 
 **This is now a playbook, not a copy-paste session.** The only reason it was
 ever manual is that sudo needs a password, which I cannot type.
@@ -96,7 +137,8 @@ ansible-playbook playbooks/10-baseline.yml --ask-become-pass \
   --limit k8s-5.home -e multipath_force_restart=true
 ```
 
-What it will do, measured live:
+What it did, measured live on 2026-08-01 (**historical — steps 1–3 have since
+been applied; only step 4 remains**):
 
 | node | DNS | multipath | inotify | iscsid | action |
 |---|---|---|---|---|---|
@@ -176,6 +218,8 @@ getent hosts registry.k8s.io || sudo reboot
 
 Tell me when done and I will re-run the storage proof on both nodes and uncordon
 them if it passes. **Do not uncordon them yourself** — the proof is the gate.
+
+</details>
 
 </details>
 

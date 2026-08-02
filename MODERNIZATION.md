@@ -31,14 +31,25 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-1. **lab5** — `cd ansible && ansible-playbook site.yml --ask-become-pass --limit k8s-5.home -e multipath_force_restart=true`
-   Its `multipath.conf` is correct on disk but multipathd never reloaded it: the
-   role defers that restart when it sees live LUNs, and lab5 has one stale
-   session pointing at a deleted test volume. Then re-run the storage proof and
-   uncordon.
-2. **Push** — commits are stacked locally from a WAN outage. Includes
-   cert-manager v1.20.3.
-3. Then Phase 2 below.
+1. **lab5** — needs your sudo password, one command:
+   `cd ansible && ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-5.home -e multipath_force_restart=true`
+   Its `multipath.conf` is correct on disk but multipathd never reloaded it —
+   **re-proven behaviourally on 2026-08-02**, not inferred: a 1Gi `qnap-iscsi`
+   PVC with a pod pinned to lab5 via `nodeName` still fails with
+   `failed to stage volume: multipath device not found when it is expected`.
+   Timestamps agree (conf written 08:39:24 today, multipathd last started
+   2026-07-31 06:53). The role defers that restart when it sees live LUNs, and
+   lab5 carries stale sessions. Then re-run the storage proof and uncordon.
+   *(lab4 is done — its multipathd restarted in the same second the conf was
+   written, and it is already uncordoned.)*
+2. **Push** — 10 commits stacked locally from a WAN outage. ⚠️ Pushing is a
+   **cluster change**: ArgoCD `selfHeal` will immediately roll cert-manager
+   v1.14.5 → v1.20.3. Nothing else in the stack touches cluster state.
+   The 2 currently-OutOfSync apps are `prometheus` and `pyroscope` — unrelated
+   to this stack, and worth a separate look.
+3. **kube-vip Pod → DaemonSet** — design is now settled (see Phase 0), needs a
+   deliberate window because the API VIP blips.
+4. Then Phase 2 below.
 
 ---
 
@@ -50,14 +61,47 @@ removal, ArgoCD baseline green, ingress made drain-safe, Ansible baseline.
 
 Remaining:
 - [ ] lab5 multipath restart → storage proof → uncordon
-- [ ] **kube-vip bare Pod → DaemonSet.** Today it is a single unmanaged Pod on
-      lab1 with empty `ownerReferences`. If lab1 dies the API VIP
-      `192.168.32.2` disappears — and that VIP is the `--server` join target in
-      lab2–5's systemd units, the `tls-san`, and every kubeconfig.
-      ⚠️ **Blocker to resolve first:** NIC names differ (lab1/2/3 `eno1`, lab4
-      `enp0s31f6`, lab5 `enp7s0`), so a DaemonSet with hardcoded
-      `vip_interface: eno1` CrashLoops on two nodes. Establish whether v1.0.3
-      auto-detects the default-route interface before designing the manifest.
+- [ ] **kube-vip bare Pod → DaemonSet.** Today a single Pod on lab1. If lab1
+      dies the API VIP `192.168.32.2` disappears — and that VIP is the
+      `--server` join target in lab2–5's systemd units, the `tls-san`, and
+      every kubeconfig.
+
+      ✅ **Blocker resolved 2026-08-02 — the NIC-name problem does not exist.**
+      kube-vip v1.0.3 auto-detects the default-route interface when
+      `vip_interface` is unset. Verified three ways: the string
+      `"No interface is specified for VIP in config, auto-detecting default
+      Interface"` in the shipped binary; the call site at
+      `cmd/kube-vip.go:377` guarded by `if initConfig.Interface == ""`, calling
+      `vip.GetDefaultGatewayInterface()` (netlink lookup of the `0.0.0.0/0`
+      route) and then `vip.MonitorDefaultInterface()` to follow changes; and
+      `kube-vip manifest daemonset` emitting **no** `vip_interface` env when
+      `--interface` is omitted. So one uniform DaemonSet covers all five nodes.
+      **Delete the `vip_interface: eno1` env — do not templatise it per node.**
+
+      ⚠️ **The real blocker was leader election, and it is missing today.** The
+      live Pod has *no* `vip_leaderelection`, no `vip_leasename`, and no
+      `vip_nodename` — harmless at one replica, but five instances with that
+      same env would all ARP for `192.168.32.2` simultaneously and flap the
+      API VIP. The canonical generated manifest sets `vip_leaderelection: true`,
+      `vip_leasename: plndr-cp-lock`, `vip_leaseduration: 5`,
+      `vip_renewdeadline: 3`, `vip_retryperiod: 1`, and `vip_nodename` from
+      `fieldRef: spec.nodeName` (unique lease-holder identity — required).
+      RBAC is already sufficient: the existing `kube-vip` ClusterRole grants
+      `coordination.k8s.io/leases` get/list/watch/create/update/patch.
+
+      ⚠️ **It is a k3s Addon, not a hand-made Pod.** It carries
+      `objectset.rio.cattle.io/owner-gvk: k3s.cattle.io/v1, Kind=Addon` and is
+      reconciled from `/var/lib/rancher/k3s/server/manifests/kube-vip.yaml` on
+      lab1 — the same mechanism as the CoreDNS-replicas item below. Editing the
+      live Pod is pointless; *deleting* the manifest prunes the objectset and
+      takes the VIP with it. Replace the **contents of that same file** so the
+      objectset transitions Pod → DaemonSet. The objectset also owns the
+      `kube-vip` ServiceAccount, ClusterRole and ClusterRoleBinding, so the new
+      file must keep all four or they get pruned.
+
+      Expect a **brief VIP outage** during the cutover while the old Pod is
+      removed and the first DaemonSet pod claims the lease. Deliberate op, done
+      with a human watching — not a drive-by.
 - [ ] **Repoint `--server` off the VIP** — each node at a different peer's node
       IP, removing the shared dependency. Must be a **systemd drop-in**: k3s CLI
       args take precedence over config.yaml, so "Ansible owns config.yaml" does
@@ -202,6 +246,18 @@ ingress replicas landed on one node. `topologySpreadConstraints` with
 
 **Ansible auto-loads `group_vars/` only from the inventory's or the playbook's
 directory.** It lives at `inventory/group_vars/` for that reason.
+
+**`--check` silently skips `command:`/`shell:` tasks and returns an EMPTY
+stdout, rc=0.** So the "review what would change" step in `MANUAL-STEPS.md`
+reported `sysctls=BROKEN, services=BROKEN` on **all five** nodes and
+`liveLUNs=0` on lab1/2/3 (which carry 4 LUNs each) — then `node_verify`
+hard-failed asserting `"" >= 1048576` against sysctls that were correct. A
+detect-then-remediate design is *especially* exposed to this: its whole input
+is command output. Every read-only probe now carries `check_mode: false`, and
+the two post-fix re-tests carry `when: not ansible_check_mode` (they would
+otherwise re-observe the un-remediated state and report a failure that has not
+happened). Fixed 2026-08-02. Same shape as the other bugs here: the dry run
+existed, was documented, and had never told the truth.
 
 **QNAP SMB mounts are `uid=0` and the driver ignores StorageClass
 `mountOptions`** (tested). Backup jobs therefore run as uid 0. Also: busybox

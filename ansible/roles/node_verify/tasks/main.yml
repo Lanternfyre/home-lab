@@ -9,12 +9,21 @@
 #   - /etc/multipath.conf existed on k8s-4 and k8s-5 and was WRONG (missing
 #     find_multipaths no), so neither could stage a QNAP volume.
 # Both would have passed a "does the file exist" check. Neither passes these.
+#
+# SECOND DESIGN RULE, learned on 2026-08-02: every probe here carries
+# `check_mode: false`. Ansible skips `command:`/`shell:` under --check and
+# returns an EMPTY stdout, so `--check --diff` made this role assert
+# `"" >= 1048576` and fail on all five nodes -- against sysctls that were
+# correct. A verification role that cannot verify under --check is not a
+# verification role. Nothing below writes anything, so running for real is
+# always right.
 
 - name: DNS resolves external registries
   ansible.builtin.command: getent ahostsv4 registry.k8s.io registry-1.docker.io
   register: dns_check
   changed_when: false
   failed_when: dns_check.rc != 0
+  check_mode: false
 
 # The check that actually matters: it exercises CONTAINERD's resolver path,
 # which is what broke on k8s-4.home, not the host's.
@@ -23,11 +32,13 @@
   register: pull_check
   changed_when: false
   failed_when: pull_check.rc != 0
+  check_mode: false
 
 - name: Read effective sysctl values
   ansible.builtin.command: "sysctl -n {{ item.key }}"
   register: sysctl_values
   changed_when: false
+  check_mode: false
   loop: "{{ node_sysctls | dict2items }}"
 
 - name: Assert sysctls are actually in effect
@@ -45,6 +56,7 @@
   ansible.builtin.slurp:
     src: /etc/multipath.conf
   register: multipath_content
+  check_mode: false
 
 # This exact assertion would have caught k8s-4 and k8s-5 before they were ever
 # allowed to schedule a PVC-bearing pod.
@@ -66,6 +78,7 @@
   register: svc_check
   changed_when: false
   failed_when: svc_check.stdout != 'active'
+  check_mode: false
   loop:
     - iscsid
     - multipathd
@@ -85,6 +98,7 @@
   register: csinode_check
   changed_when: false
   failed_when: csinode_check.stdout | trim | length == 0
+  check_mode: false
   delegate_to: "{{ groups['k3s_servers'] | first }}"
 
 - name: Summary

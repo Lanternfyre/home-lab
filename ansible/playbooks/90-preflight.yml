@@ -28,6 +28,9 @@
         echo "bpffs:         $(mount | grep -q '/sys/fs/bpf' && echo mounted || echo 'NOT mounted')"
       register: facts
       changed_when: false
+      # Without this, --check skips the shell and the audit reports NOTHING
+      # while still exiting 0 -- an empty report that reads like a clean one.
+      check_mode: false
 
     - name: Report
       ansible.builtin.debug:

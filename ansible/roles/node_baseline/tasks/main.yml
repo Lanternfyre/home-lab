@@ -13,6 +13,18 @@
 #
 # So: assert behaviour, remediate the failures, leave the rest alone.
 # Safe to run against all five nodes at any time.
+#
+# ⚠️ EVERY detect task below carries `check_mode: false`, and that is load-
+# bearing. Ansible SKIPS `command:`/`shell:` tasks under --check, returning
+# rc=0 with an EMPTY stdout. The detect logic then reads "" and concludes the
+# node is broken -- so `--check --diff` reported sysctls=BROKEN and
+# services=BROKEN on all five nodes, and liveLUNs=0 on lab1/2/3 which actually
+# carry 4 LUNs each. Every one of those readings was an artefact, and the
+# verify play then hard-failed asserting `"" >= 1048576`.
+#
+# Detection is read-only, so it must run in check mode. Only the `fix |` tasks
+# below should be simulated. This is the same bug class as the rest of this
+# repo: something that looked correct and had never worked.
 
 # ─────────────────────────── DETECT ───────────────────────────
 
@@ -21,24 +33,28 @@
   register: t_dns
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: "detect | current multipath.conf"
   ansible.builtin.slurp:
     src: /etc/multipath.conf
   register: t_multipath
   failed_when: false
+  check_mode: false
 
 - name: "detect | live iSCSI sessions"
   ansible.builtin.command: ls /sys/class/iscsi_session
   register: t_iscsi
   changed_when: false
   failed_when: false
+  check_mode: false
 
 - name: "detect | effective sysctl values"
   ansible.builtin.command: "sysctl -n {{ item.key }}"
   register: t_sysctl
   changed_when: false
   failed_when: false
+  check_mode: false
   loop: "{{ node_sysctls | dict2items }}"
   loop_control:
     label: "{{ item.key }}"
@@ -48,6 +64,7 @@
   register: t_svc
   changed_when: false
   failed_when: false
+  check_mode: false
   loop: [iscsid, multipathd]
 
 - name: "detect | summarise"
@@ -109,11 +126,15 @@
     - name: "fix | settle"
       ansible.builtin.wait_for: { timeout: 5 }
 
+    # Under --check nothing was actually restarted, so re-testing would just
+    # re-observe the broken state and report a failure that has not happened.
     - name: "fix | re-test resolution"
+      when: not ansible_check_mode
       ansible.builtin.command: getent ahostsv4 registry.k8s.io
       register: dns_retry
       changed_when: false
       failed_when: false
+      check_mode: false
 
     # k8s-lab4's stub returns REFUSED to glibc while resolvectl works, and a
     # config rewrite alone has not cleared it. Say so rather than reporting
@@ -126,7 +147,9 @@
           at a level config does not reach. REBOOT THIS NODE, then re-run.
           Until it resolves, containerd cannot pull any image and the node
           will have zero registered CSI drivers.
-      when: dns_retry.rc != 0
+      when:
+        - not ansible_check_mode
+        - dns_retry.rc | default(0) != 0
 
 # --- sysctls: broken on all five (value wrapped onto a second line). ---
 - name: "fix | remove the broken hand-written inotify file"
@@ -146,9 +169,14 @@
     state: present
   loop: "{{ node_sysctls | dict2items }}"
 
+# Skipped under --check: the tunables were not actually applied, so reading
+# them back would report the pre-fix value as a failure.
 - name: "fix | verify the kernel accepted them"
-  when: needs_sysctl
+  when:
+    - needs_sysctl
+    - not ansible_check_mode
   ansible.builtin.command: "sysctl -n {{ item.key }}"
+  check_mode: false
   register: sysctl_after
   changed_when: false
   failed_when: sysctl_after.stdout | int < item.value | int
