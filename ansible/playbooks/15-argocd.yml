@@ -1,0 +1,59 @@
+---
+# ArgoCD: install, upgrade, and bootstrap a new cluster.
+#
+#   # routine upgrade -- bump argocd_chart_version in roles/argocd/defaults
+#   ansible-playbook playbooks/15-argocd.yml
+#
+#   # dry run
+#   ansible-playbook playbooks/15-argocd.yml --check
+#
+#   # BRAND NEW CLUSTER -- also applies GHCR creds + the root Application
+#   ansible-playbook playbooks/15-argocd.yml -e argocd_bootstrap=true
+#
+# ── No sudo, and it does not run against the nodes ───────────────────────────
+# This is the only playbook here that runs on the WORKSTATION. helm and the
+# kubeconfig live here; nothing touches a node's filesystem. So no
+# --ask-become-pass, and it works even when the nodes are unreachable by SSH.
+#
+# ── Why this exists ──────────────────────────────────────────────────────────
+# ArgoCD manages every app in this cluster and was itself managed by nothing:
+# installed with a `helm install` typed by hand, with the version recorded only
+# in the in-cluster Helm release secret. Upgrading meant remembering the
+# command; rebuilding meant following a runbook whose steps had gone stale
+# (it still referenced gitops/argo-cd-helm.secret.yaml, a file that no longer
+# exists -- the GHCR creds moved to bootstrap/ghcr-repo-creds.secret.yaml).
+#
+# ── Deliberately NOT self-managed ────────────────────────────────────────────
+# ArgoCD could manage itself via an apps/argocd/ entry, and the ApplicationSet
+# would even generate it correctly. It does not, because ArgoCD's CRDs hold
+# every Application object in the cluster and this repo's ApplicationSets apply
+# prune: true + selfHeal: true to everything they generate. A self-managing
+# ArgoCD can prune its own CRDs, and nothing is left to repair it.
+#
+# The cost is that upgrades need this playbook instead of a git push. The
+# benefit is that bootstrap and upgrade are the same code path, so the
+# disaster-recovery procedure gets exercised on every routine update.
+#
+# ── Bootstrap order, and why it is this order ────────────────────────────────
+#   1. This playbook with -e argocd_bootstrap=true
+#      helm install -> GHCR creds -> root Application
+#      The creds must land BEFORE the ApplicationSets start pulling OCI charts,
+#      or qnap-trident cannot be fetched and the cluster comes up without a
+#      storage driver.
+#   2. `cd ansible && ansible-playbook site.yml --ask-become-pass`
+#      Node baseline: DNS, sysctls, multipath, CoreDNS HA.
+#   3. The GCP service-account key for External Secrets, which can only be
+#      created AFTER ArgoCD has deployed external-secrets -- a genuine
+#      chicken-and-egg, documented in MANUAL-STEPS.md:
+#        kubectl create secret generic gsm-sa-key -n secrets \
+#          --from-file=key.json=eso-gsm-key.json
+
+- name: Install or upgrade ArgoCD
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+
+  roles:
+    - role: argocd

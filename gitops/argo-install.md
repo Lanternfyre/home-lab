@@ -85,6 +85,38 @@ curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.32.10+k3s1 sh -s - server 
 
 ## Install ArgoCD
 
+> **⚠️ SUPERSEDED — use Ansible. Do not run this by hand.**
+>
+> ```shell
+> cd ansible
+> ansible-playbook playbooks/15-argocd.yml -e argocd_bootstrap=true   # new cluster
+> ansible-playbook playbooks/15-argocd.yml                            # routine upgrade
+> ```
+>
+> No sudo needed — it runs on the workstation, not the nodes.
+>
+> Two things were wrong with the manual steps below, which is why they are
+> now historical:
+>
+> 1. **`gitops/argo-cd-helm.secret.yaml` does not exist.** The GHCR pull
+>    credentials moved to
+>    `gitops/clusters/home/bootstrap/ghcr-repo-creds.secret.yaml`. Anyone
+>    rebuilding from this runbook would have hit a missing file at exactly the
+>    step that lets `qnap-trident` be pulled — i.e. would have brought up a
+>    cluster with no storage driver.
+> 2. **`-f argo-values.yaml` names a file that is not there either.** The
+>    values live at `gitops/argocd-values.yaml`. Installing without them means
+>    chart defaults: no Google OIDC, no ingress, no LoadBalancer — an ArgoCD
+>    you cannot log into. The role refuses to run if that file is missing
+>    rather than falling back to defaults.
+>
+> **The version is now pinned** in `ansible/roles/argocd/defaults/main.yml`
+> (`argocd_chart_version`). Before, it was whatever `helm install` happened to
+> resolve on the day, recorded only in the in-cluster Helm release secret.
+
+<details>
+<summary>Historical: the manual commands</summary>
+
 ```shell
 helm repo add argo https://argoproj.github.io/argo-helm
 ```
@@ -106,6 +138,8 @@ cd gitops/clusters/home/bootstrap/
 
 kubectl apply -f home-root.yaml
 ```
+
+</details>
 
 ## Nodes DNS
 

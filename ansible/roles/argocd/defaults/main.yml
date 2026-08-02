@@ -1,0 +1,55 @@
+---
+# ── The one knob, same idea as k3s_version ───────────────────────────────────
+# Change this, run playbooks/15-argocd.yml, and ArgoCD upgrades. Before this
+# role existed the version lived nowhere: it was whatever `helm install` picked
+# up on the day, and the only record was the Helm release secret in-cluster.
+#
+# Chart 10.2.2 -> ArgoCD v3.4.6.
+argocd_chart_version: "10.2.2"
+
+# Asserted after the upgrade. If the chart ever ships a different app version
+# than expected, the run fails loudly rather than silently installing something
+# other than what this file claims.
+argocd_app_version: "v3.4.6"
+
+argocd_repo_name: argo
+argocd_repo_url: https://argoproj.github.io/argo-helm
+argocd_chart: argo/argo-cd
+argocd_release_name: argocd
+argocd_namespace: argocd
+
+# Single source of truth for values. Deliberately NOT copied into the role:
+# gitops/argocd-values.yaml is referenced by the install runbook and is real
+# GitOps config, so duplicating it would create two files that drift.
+argocd_values_file: "{{ playbook_dir }}/../../gitops/argocd-values.yaml"
+
+# Bootstrap-only. The root Application that pulls in the two ApplicationSets;
+# applying it is what turns a bare ArgoCD into this cluster.
+argocd_root_app: "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/home-root.yaml"
+
+# Bootstrap-only. Chart pulls from GHCR (qnap-trident) fail without this, and
+# the failure mode is ugly: the ExternalSecret reports Ready=True while
+# delivering a token the registry rejects, freezing five apps including the
+# storage driver. See MODERNIZATION.md "hard-won findings".
+argocd_ghcr_creds: "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/ghcr-repo-creds.secret.yaml"
+
+# Deployments that must be Available before the run is considered successful.
+argocd_deployments:
+  - argocd-server
+  - argocd-repo-server
+  - argocd-redis
+  - argocd-dex-server
+  - argocd-applicationset-controller
+  - argocd-notifications-controller
+
+# The CRDs that hold every Application in the cluster. Asserted present after
+# every upgrade: losing them would orphan or destroy the entire GitOps layer.
+argocd_crds:
+  - applications.argoproj.io
+  - applicationsets.argoproj.io
+  - appprojects.argoproj.io
+
+# Set true ONLY on a brand-new cluster. Applies the GHCR creds and the root
+# Application after the install. Off by default so a routine upgrade cannot
+# accidentally re-bootstrap.
+argocd_bootstrap: false

@@ -1,0 +1,206 @@
+---
+# Install or upgrade ArgoCD, and (with argocd_bootstrap=true) turn a bare
+# cluster into this one.
+#
+# Runs from the WORKSTATION, not a node: helm and the kubeconfig live here, and
+# nothing in this role touches a node's filesystem. That also means it needs no
+# sudo -- unlike every other playbook in this repo.
+#
+# ── Why Ansible owns ArgoCD instead of ArgoCD owning itself ──────────────────
+# Self-management is a common pattern and was considered. It is not used here
+# because ArgoCD's own CRDs hold every Application object in the cluster, and
+# this repo's ApplicationSets apply prune: true + selfHeal: true to everything
+# they generate. An ArgoCD that manages itself under those settings can prune
+# its own CRDs, and the blast radius of that is the entire GitOps layer -- on
+# the one component that cannot then repair itself.
+#
+# The trade is that updating ArgoCD needs a playbook run rather than a git
+# push. In exchange the bootstrap path and the upgrade path are the SAME code,
+# so the disaster-recovery procedure is exercised every time you update
+# instead of being a runbook nobody has run since the cluster was built.
+
+- name: "preflight | helm is available"
+  ansible.builtin.command: helm version --short
+  register: argocd_helm
+  changed_when: false
+  check_mode: false
+
+- name: "preflight | the cluster is reachable"
+  ansible.builtin.command: kubectl version -o json
+  register: argocd_kube
+  changed_when: false
+  check_mode: false
+
+- name: "preflight | the values file exists"
+  ansible.builtin.stat:
+    path: "{{ argocd_values_file }}"
+  register: argocd_values_stat
+  check_mode: false
+
+# Installing ArgoCD with default values would drop OIDC, the ingress and the
+# LoadBalancer service -- i.e. lock you out of the UI -- so a missing values
+# file must stop the run, not fall back to chart defaults.
+- name: "preflight | refuse to install with chart defaults"
+  ansible.builtin.fail:
+    msg: >-
+      {{ argocd_values_file }} not found. Installing without it would use chart
+      defaults, which means no Google OIDC, no ingress and no LoadBalancer
+      service -- an ArgoCD you cannot log into. Fix the path rather than
+      proceeding.
+  when: not argocd_values_stat.stat.exists
+
+- name: "preflight | record the version already deployed"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    helm -n {{ argocd_namespace }} list -o json
+    | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x['name']=='{{ argocd_release_name }}']; print(r[0]['chart'].rsplit('-',1)[1] if r else 'ABSENT')"
+  args:
+    executable: /bin/bash
+  register: argocd_before
+  changed_when: false
+  check_mode: false
+
+- name: "report | what this run will do"
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD: installed={{ argocd_before.stdout | trim }},
+      target={{ argocd_chart_version }} (app {{ argocd_app_version }}).
+      {{ 'BOOTSTRAP MODE -- will also apply GHCR creds and the root Application.'
+         if argocd_bootstrap | bool else 'Upgrade/converge only.' }}
+
+- name: "install | add the argo helm repo"
+  ansible.builtin.command: >-
+    helm repo add {{ argocd_repo_name }} {{ argocd_repo_url }} --force-update
+  changed_when: false
+
+- name: "install | refresh the repo index"
+  ansible.builtin.command: "helm repo update {{ argocd_repo_name }}"
+  changed_when: false
+
+- name: "install | namespace exists"
+  ansible.builtin.command: >-
+    kubectl create namespace {{ argocd_namespace }}
+    --dry-run=client -o yaml
+  register: argocd_ns_manifest
+  changed_when: false
+  check_mode: false
+
+- name: "install | apply the namespace"
+  ansible.builtin.shell: "kubectl apply -f -"
+  args:
+    stdin: "{{ argocd_ns_manifest.stdout }}"
+  register: argocd_ns_applied
+  changed_when: "'created' in argocd_ns_applied.stdout"
+  when: not ansible_check_mode
+
+# --atomic so a failed upgrade rolls back rather than leaving ArgoCD in pieces.
+# --wait so the task does not report success while pods are still starting --
+# "helm said ok" is not the same as "ArgoCD works", which is the distinction
+# this repo keeps having to relearn.
+- name: "install | helm upgrade --install"
+  ansible.builtin.command: >-
+    helm upgrade --install {{ argocd_release_name }} {{ argocd_chart }}
+    --namespace {{ argocd_namespace }}
+    --version {{ argocd_chart_version }}
+    --values {{ argocd_values_file }}
+    --atomic
+    --wait
+    --timeout 15m
+  register: argocd_helm_run
+  when: not ansible_check_mode
+  changed_when: "'has been upgraded' in argocd_helm_run.stdout or 'has been installed' in argocd_helm_run.stdout"
+
+# ── Bootstrap-only steps ─────────────────────────────────────────────────────
+
+- name: "bootstrap | GHCR repo credentials"
+  # Must exist BEFORE the ApplicationSets try to pull OCI charts. Without it
+  # qnap-trident cannot be fetched, and the storage driver is not a thing you
+  # want missing on a cluster you are still building.
+  ansible.builtin.command: "kubectl apply -f {{ argocd_ghcr_creds }}"
+  when:
+    - argocd_bootstrap | bool
+    - not ansible_check_mode
+
+- name: "bootstrap | apply the root Application"
+  # This is the moment a bare ArgoCD becomes THIS cluster: home-root pulls in
+  # both ApplicationSets, which generate every app from gitops/.../apps/*.
+  ansible.builtin.command: "kubectl apply -f {{ argocd_root_app }}"
+  when:
+    - argocd_bootstrap | bool
+    - not ansible_check_mode
+
+# ── Verify: behaviour and versions, never "helm exited 0" ────────────────────
+
+- name: "verify | the CRDs that hold every Application still exist"
+  ansible.builtin.command: "kubectl get crd {{ item }}"
+  loop: "{{ argocd_crds }}"
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | every ArgoCD Deployment is Available"
+  ansible.builtin.command: >-
+    kubectl -n {{ argocd_namespace }} get deploy {{ item }}
+    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+  register: argocd_avail
+  loop: "{{ argocd_deployments }}"
+  changed_when: false
+  check_mode: false
+  failed_when: argocd_avail.stdout | trim != 'True'
+  when: not ansible_check_mode
+
+- name: "verify | the application controller StatefulSet is ready"
+  ansible.builtin.command: >-
+    kubectl -n {{ argocd_namespace }} get sts argocd-application-controller
+    -o jsonpath={.status.readyReplicas}
+  register: argocd_sts
+  changed_when: false
+  check_mode: false
+  failed_when: (argocd_sts.stdout | trim | default('0') | int) < 1
+  when: not ansible_check_mode
+
+- name: "verify | the deployed image really is the version this file claims"
+  ansible.builtin.command: >-
+    kubectl -n {{ argocd_namespace }} get deploy argocd-server
+    -o jsonpath={.spec.template.spec.containers[0].image}
+  register: argocd_image
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | assert the app version"
+  ansible.builtin.assert:
+    that: "argocd_app_version in argocd_image.stdout"
+    fail_msg: >-
+      argocd-server is running {{ argocd_image.stdout }}, but chart
+      {{ argocd_chart_version }} was expected to deliver
+      {{ argocd_app_version }}. Either argocd_app_version is stale in
+      defaults/main.yml or the chart shipped something else -- do not assume
+      the version you asked for is the version you got.
+    success_msg: "argocd-server is running {{ argocd_image.stdout }}"
+  when: not ansible_check_mode
+
+# The real test: can ArgoCD still see the Applications it manages? A green
+# upgrade that lost the Application objects would otherwise look like success.
+- name: "verify | Applications are still present and reconciling"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl -n {{ argocd_namespace }} get applications -o json
+    | python3 -c "import json,sys; a=json.load(sys.stdin)['items']; print(len(a), sum(1 for x in a if x.get('status',{}).get('health',{}).get('status')=='Healthy'))"
+  args:
+    executable: /bin/bash
+  register: argocd_apps
+  changed_when: false
+  check_mode: false
+  failed_when: (argocd_apps.stdout.split()[0] | int) < 1
+  when: not ansible_check_mode
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD {{ argocd_before.stdout | trim }} -> {{ argocd_chart_version }}
+      ({{ argocd_image.stdout | default('n/a') }}). All Deployments Available,
+      controller ready, CRDs intact,
+      {{ argocd_apps.stdout.split()[0] | default('?') }} Applications present
+      ({{ argocd_apps.stdout.split()[1] | default('?') }} Healthy).
+  when: not ansible_check_mode
