@@ -13,7 +13,8 @@ Last updated: 2026-08-02
 
 ## Where we are
 
-k3s **v1.32.10+k3s1**, 5 nodes, all `control-plane,etcd,master`, no workers.
+k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 5 nodes, all
+`control-plane,etcd,master`, no workers.
 Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
 ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
@@ -288,6 +289,27 @@ gates as a running sequence. The first hop is the test.
 
 ### Phase 2 — k3s 1.32.10 → **1.35.6** (hard stop)
 
+### ✅ PHASE 2 COMPLETE — all five nodes on v1.35.6+k3s1 (2026-08-02)
+
+Three hops in one day: 1.32.10 → 1.33.13 → 1.34.9 → 1.35.6. Final validation:
+all five Ready and schedulable, etcd leader on 5/5, `csi.trident.qnap.io`
+registered on every node, zero broken pods, kube-vip DaemonSet 5/5 with the
+bare Pod gone, CoreDNS 3/3, both CNPG clusters 3/3, VIP answering, DNS
+resolving, 53 Synced / 2 OutOfSync (both benign and diagnosed).
+
+**This is the ceiling.** Do not raise `k3s_max_version` without first
+re-checking QNAP's declared support matrix — the driver claims Kubernetes
+support only to 1.35, and there is no downgrade path.
+
+**What actually cost time:** four runs were lost to gates in this playbook, not
+to the cluster. Every cluster-facing gate (etcd, CSI, DaemonSets, drain safety,
+storage proof) behaved correctly and nothing was ever damaged. The failures
+were preconditions I wrote describing the happy starting state. `30-upgrade.yml`
+was patched five times while live — **read it deliberately before Phase 3 leans
+on it**, rather than trusting it because tonight eventually worked.
+
+<details><summary>historical: hop 1 detail</summary>
+
 **Hop 1 (1.33.13) ✅ COMPLETE 2026-08-02.** All five nodes on
 `v1.33.13+k3s1`, all schedulable, readyz passed, `csi.trident.qnap.io`
 registered on every node, both CNPG clusters 3/3 healthy after two live
@@ -295,8 +317,7 @@ primary failovers (lab2 and lab1 each hosted one), ArgoCD 54 Synced / 1
 OutOfSync (the known-benign pyroscope). Zero failed tasks on the completing
 run. **The playbook is now a proven procedure rather than just code.**
 
-⏳ **LIVE ON 1.33 FOR 24–48h** before setting `k3s_version` to `v1.34.9+k3s1`.
-The gates passed, but a cluster only proves an upgrade by running on it.
+</details>
 
 ✅ **Phase 0.D DONE 2026-08-02 — Pi-hole is off local-path.** It now uses an
 explicitly declared `pihole-data` claim on `qnap-iscsi`, and the migration
