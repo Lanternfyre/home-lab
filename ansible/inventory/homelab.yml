@@ -23,9 +23,23 @@ all:
     k3s_servers:
       hosts:
         k8s-1.home:
-          # The --cluster-init node and the historical kube-vip holder.
-          # Upgrade and migration orders put this node LAST for that reason.
-          k3s_cluster_init: true
+          # The node that ORIGINALLY ran --cluster-init, and the historical
+          # kube-vip holder. Upgrade and migration orders still put it last.
+          #
+          # ⚠️ `k3s_cluster_init: true` deliberately does NOT live here any
+          # more. It was a rebuild landmine: k3s_config renders
+          # `cluster-init: true` from it, and 40-add-node.yml writes config.yaml
+          # BEFORE installing. So rebuilding k8s-1 after a disk failure would
+          # have brought up a BRAND NEW EMPTY CLUSTER of one, while the four
+          # survivors carried on — and it would have looked like "k8s-1 came
+          # back but the cluster is wrong".
+          #
+          # It is correct exactly once, on a greenfield cluster, and wrong
+          # forever after. So it is now an explicit bootstrap-time flag:
+          #   ansible-playbook playbooks/40-add-node.yml -e target=k8s-1.home \
+          #     -e k3s_cluster_init=true
+          # Rebuilding k8s-1 into the EXISTING cluster needs no flag at all —
+          # it joins via the VIP like every other node.
           node_nic: eno1
         k8s-2.home:
           node_nic: eno1

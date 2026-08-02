@@ -1,5 +1,32 @@
 
 # Kubernetes Home Lab
+
+> ### ⚠️ REBUILDING A NODE? Do NOT use `--cluster-init` below.
+>
+> `--cluster-init` is correct exactly **once**, on a genuinely new cluster, and
+> catastrophic every time after. k3s only honours the datastore arguments when
+> there is no etcd datastore on disk — which is exactly the state a rebuilt
+> node is in. So rebuilding k8s-1 with the command below would start a **brand
+> new empty cluster of one** while the four survivors kept serving. It would
+> not look like an error: the node comes up `Ready`, with nothing on it.
+>
+> To rebuild any node, including k8s-1, into the **existing** cluster:
+>
+> ```shell
+> cd ansible
+> ansible-playbook playbooks/40-add-node.yml -e target=k8s-N.home --ask-become-pass
+> ```
+>
+> It joins via the VIP like every other node, and comes up **cordoned** until a
+> storage proof passes. Ansible refuses to render `cluster-init` on a node with
+> no datastore while other servers exist, so the split cannot happen by
+> accident.
+>
+> From k3s's own docs: *"If an etcd datastore is found on disk either because
+> that node has either initialized or joined a cluster already, the datastore
+> arguments (`--cluster-init`, `--server`, `--datastore-endpoint`, etc) are
+> ignored."*
+
 ## Install first node:
 
 ```shell

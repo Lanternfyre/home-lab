@@ -8,6 +8,43 @@
 # ownership belongs exclusively to the serial:1 plays that call this role and
 # gate on etcd health between nodes.
 
+# ── The cluster-split guard ──────────────────────────────────────────────────
+# k3s docs, verbatim: "If an etcd datastore is found on disk either because
+# that node has either initialized or joined a cluster already, the datastore
+# arguments (--cluster-init, --server, --datastore-endpoint, etc) are ignored."
+#
+# So on an established node these settings are inert and this guard never
+# fires. The dangerous combination is precisely the opposite one:
+#
+#     cluster-init requested  +  NO etcd datastore on this node
+#                             +  other servers already forming a cluster
+#
+# That is a rebuilt node, and it would start a SECOND, EMPTY cluster of one
+# while the survivors carried on serving. The failure does not look like an
+# error -- the node comes up Ready, with nothing on it.
+- name: "guard | does this node already have an etcd datastore?"
+  ansible.builtin.stat:
+    path: /var/lib/rancher/k3s/server/db/etcd
+  register: k3s_etcd_dir
+  check_mode: false
+
+- name: "guard | refuse to initialise a second cluster"
+  ansible.builtin.fail:
+    msg: >-
+      k3s_cluster_init is true for {{ inventory_hostname }}, but this node has
+      NO etcd datastore on disk and the inventory lists
+      {{ groups['k3s_servers'] | length }} servers. Those flags are only
+      honoured when there is no datastore -- which means this run would
+      initialise a BRAND NEW EMPTY CLUSTER here rather than join the existing
+      one, and the node would come up Ready with nothing on it while the other
+      nodes kept serving. To rebuild a node INTO the existing cluster, drop the
+      flag entirely: it joins via {{ k3s_api_vip }} like every other node. Pass
+      k3s_cluster_init=true only to bootstrap a genuinely new cluster.
+  when:
+    - k3s_cluster_init | default(false) | bool
+    - not k3s_etcd_dir.stat.exists
+    - (groups['k3s_servers'] | length) > 1
+
 - name: Ensure /etc/rancher/k3s exists
   ansible.builtin.file:
     path: /etc/rancher/k3s

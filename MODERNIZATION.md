@@ -441,6 +441,28 @@ Deployment's checksum annotation follows it. Not yet confirmed, and unlike
 because a genuinely flapping app is indistinguishable at a glance from one that
 is quietly failing to converge.
 
+**k3s IGNORES `--cluster-init` / `--server` once an etcd datastore exists on
+disk.** From the k3s docs, verbatim: *"If an etcd datastore is found on disk
+either because that node has either initialized or joined a cluster already,
+the datastore arguments (`--cluster-init`, `--server`, `--datastore-endpoint`,
+etc) are ignored."* Three consequences, all of which changed decisions here:
+
+1. **Normalising lab1's systemd unit is pointless.** The flags it differs by
+   are inert on every restart. A plan to rewrite `ExecStart` via a drop-in was
+   abandoned on this evidence — it carried real risk (a bad unit stops k3s) for
+   zero runtime benefit.
+2. **A VIP outage does not affect already-joined nodes.** `--server` is
+   consulted at join, not continuously, which further weakens the case for
+   pointing nodes at peer IPs.
+3. **The real exposure is the REBUILD path**, where there *is* no datastore, so
+   the flags are honoured. `k3s_cluster_init: true` was a static host var on
+   k8s-1 and `40-add-node.yml` writes config.yaml *before* installing — so
+   rebuilding k8s-1 would have started a **brand new empty cluster of one**
+   while the four survivors kept serving. It would not have looked like an
+   error: the node comes up `Ready`, with nothing on it. The flag is now an
+   explicit bootstrap-time argument, and `k3s_config` refuses to render
+   `cluster-init` on a node with no datastore while other servers exist.
+
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that
 cannot become healthy never re-reads git. Clear it with
