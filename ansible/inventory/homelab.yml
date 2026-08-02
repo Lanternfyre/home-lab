@@ -3,15 +3,19 @@
 # Hosts are addressed by their .home domains, served by Pi-hole at
 # 192.168.32.53. Verified resolving from this workstation and from the nodes.
 #
-# ⚠️ BOOTSTRAP CIRCULARITY, accepted knowingly: Pi-hole runs INSIDE this
-# cluster. If the cluster is down, Ansible cannot resolve its own inventory.
-# For disaster recovery, add to the workstation's /etc/hosts:
+# ⚠️ BOOTSTRAP CIRCULARITY -- now BROKEN ON PURPOSE, 2026-08-02.
+# Pi-hole runs INSIDE this cluster and serves these .home names, so Ansible
+# used to be unable to resolve its own inventory whenever Pi-hole was down.
+# That is not theoretical: during the first 1.33 upgrade hop the drain of
+# k8s-lab3 left Pi-hole Pending (its PVC is node-local `local-path`, pinned to
+# that node), .home resolution died mid-run, and the playbook reported the node
+# it was upgrading as UNREACHABLE.
 #
-#   192.168.33.3   k8s-1.home
-#   192.168.33.2   k8s-2.home
-#   192.168.33.7   k8s-3.home
-#   192.168.33.21  k8s-4.home
-#   192.168.33.22  k8s-5.home
+# Every host therefore carries an explicit `ansible_host` IP. Ansible now
+# resolves NOTHING, so a DNS outage -- including one this playbook causes --
+# cannot stop it from finishing or from repairing the cluster.
+# The names are kept as inventory_hostname because the rest of the repo,
+# _captured/ paths included, refers to them.
 #
 # There is deliberately NO k3s_agents group. Every node in this cluster joined
 # with `k3s server`, so all five are control-plane + etcd members. Adding an
@@ -23,6 +27,7 @@ all:
     k3s_servers:
       hosts:
         k8s-1.home:
+          ansible_host: 192.168.33.3
           # The node that ORIGINALLY ran --cluster-init, and the historical
           # kube-vip holder. Upgrade and migration orders still put it last.
           #
@@ -42,14 +47,18 @@ all:
           # it joins via the VIP like every other node.
           node_nic: eno1
         k8s-2.home:
+          ansible_host: 192.168.33.2
           node_nic: eno1
         k8s-3.home:
+          ansible_host: 192.168.33.7
           node_nic: eno1
         k8s-4.home:
+          ansible_host: 192.168.33.21
           # Joined 2026-07-30. Resolver stub wedged; cannot pull images.
           # Wrong multipath.conf; iscsid inactive. CORDONED.
           node_nic: enp0s31f6
         k8s-5.home:
+          ansible_host: 192.168.33.22
           # Joined 2026-07-30. Wrong multipath.conf -- proven unable to stage a
           # qnap-iscsi volume ("multipath device not found"). CORDONED.
           node_nic: enp7s0

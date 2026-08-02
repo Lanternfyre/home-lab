@@ -130,6 +130,47 @@
       delegate_to: "{{ groups['k3s_servers'] | first }}"
       failed_when: (pre_ipbo.stdout | trim | int) > 0
 
+    # ── The local-path trap ──────────────────────────────────────────────────
+    # Learned the hard way on the first 1.33 hop. A `local-path` PV is NODE
+    # LOCAL: its PV carries nodeAffinity pinning it to one machine. Cordon that
+    # node and the pod cannot schedule ANYWHERE -- "0/5 nodes are available:
+    # 1 node(s) were unschedulable, 4 node(s) had volume node affinity
+    # conflict". It stays Pending until the node comes back.
+    #
+    # Pi-hole was exactly that, on k8s-lab3. Draining lab3 took DNS down for
+    # the whole LAN, and because Pi-hole serves the .home names this inventory
+    # used to resolve, it also made Ansible unable to reach the node it was
+    # mid-upgrade on. (That second failure is now fixed permanently by
+    # ansible_host IPs in the inventory.)
+    #
+    # So: list them up front. This does not block -- a local-path volume on a
+    # workload you do not care about is fine -- but nobody should discover
+    # this at node three of five.
+    - name: "preflight | which workloads are pinned to a single node by local-path?"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pvc -A
+        -o jsonpath='{range .items[?(@.spec.storageClassName=="local-path")]}{.metadata.namespace}/{.metadata.name}{"\n"}{end}'
+      args:
+        executable: /bin/bash
+      register: pre_localpath
+      changed_when: false
+      check_mode: false
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    - name: "preflight | WARN about node-pinned workloads"
+      ansible.builtin.debug:
+        msg: >-
+          ⚠️ These PVCs use local-path and are PINNED to whichever node holds
+          them: {{ pre_localpath.stdout_lines | join(', ') }}.
+          Draining that node leaves their pods Pending until it returns --
+          they cannot reschedule. If anything here is infrastructure the
+          cluster or this playbook depends on (DNS above all), move it to
+          qnap-iscsi BEFORE upgrading, not during.
+      run_once: true
+      when: pre_localpath.stdout | trim | length > 0
+
     # Cheap insurance, and the one thing that makes the unrehearsed restore
     # path even theoretically available.
     - name: "preflight | take an on-demand etcd snapshot"

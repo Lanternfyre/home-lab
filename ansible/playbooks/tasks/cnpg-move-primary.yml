@@ -22,13 +22,28 @@
     cnpg_ns: "{{ primary_ref.split('/')[0] }}"
     cnpg_pod: "{{ primary_ref.split('/')[1] }}"
 
+# ⚠️ ansible.builtin.shell, NOT command, and the jsonpath is QUOTED.
+# `command` runs no shell and splits its arguments with shlex, which EATS the
+# backslash -- kubectl then receives {.metadata.labels.cnpg.io/cluster}, reads
+# it as a nested key lookup, and returns empty. Proven 2026-08-02: escaped ->
+# "postgres-ha", shlex-mangled -> "". The empty name flowed into the guard
+# below as `databases/ has  ready instance(s)`, which failed closed (correct)
+# but for entirely the wrong reason.
 - name: "cnpg | which Cluster owns {{ cnpg_pod }}?"
-  ansible.builtin.command: >-
+  ansible.builtin.shell: >-
     /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} get pod {{ cnpg_pod }}
-    -o jsonpath={.metadata.labels.cnpg\.io/cluster}
+    -o 'jsonpath={.metadata.labels.cnpg\.io/cluster}'
   register: cnpg_cluster
   changed_when: false
   delegate_to: "{{ peer }}"
+
+- name: "cnpg | refuse to continue on an empty cluster name"
+  ansible.builtin.fail:
+    msg: >-
+      Could not determine the CNPG Cluster owning {{ cnpg_ns }}/{{ cnpg_pod }}.
+      Refusing to act on a pod whose owner is unknown -- the next step deletes
+      a database primary.
+  when: (cnpg_cluster.stdout | trim | length) == 0
 
 - name: "cnpg | how many instances are ready?"
   ansible.builtin.command: >-
