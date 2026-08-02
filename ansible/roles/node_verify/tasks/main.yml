@@ -73,6 +73,37 @@
       expected". THE FILE EXISTING IS NOT ENOUGH.
     success_msg: "multipath.conf sets find_multipaths {{ node_multipath_find_multipaths }}"
 
+# The assertion above reads the FILE. That is not the same as multipathd having
+# LOADED it, and the difference is not academic: on 2026-08-02 lab5 passed the
+# content check with a correct multipath.conf written at 08:39 that multipathd
+# -- last started 2026-07-31 -- had never read. The node still failed to stage a
+# qnap-iscsi volume ("multipath device not found when it is expected"). A
+# green verify run on a node that cannot mount a PVC is the exact failure this
+# role exists to prevent, so assert the DAEMON, not just the file.
+- name: Read multipath.conf mtime and multipathd start time
+  ansible.builtin.shell: |
+    set -e
+    conf=$(stat -c %Y /etc/multipath.conf)
+    started=$(date -d "$(systemctl show multipathd -p ActiveEnterTimestamp --value)" +%s)
+    echo "$conf $started"
+  register: mpath_freshness
+  changed_when: false
+  check_mode: false
+
+- name: Assert multipathd has actually loaded the current multipath.conf
+  ansible.builtin.assert:
+    that: "(mpath_freshness.stdout.split()[1] | int) >= (mpath_freshness.stdout.split()[0] | int)"
+    fail_msg: >-
+      multipathd on {{ inventory_hostname }} started
+      {{ (mpath_freshness.stdout.split()[0] | int) - (mpath_freshness.stdout.split()[1] | int) }}s
+      BEFORE /etc/multipath.conf was last written, so the running daemon is
+      using the OLD config. The file being correct is not enough -- this node
+      will still fail to stage a QNAP volume with "multipath device not found
+      when it is expected". Fix:
+      ansible-playbook playbooks/10-baseline.yml --ask-become-pass
+      --limit {{ inventory_hostname }} -e multipath_force_restart=true
+    success_msg: "multipathd started after the current multipath.conf was written"
+
 - name: Assert storage services are running
   ansible.builtin.command: "systemctl is-active {{ item }}"
   register: svc_check

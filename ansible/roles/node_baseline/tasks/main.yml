@@ -220,11 +220,21 @@
 # with attached LUNs -- so that, and only that, is gated. It is SKIPPED, never
 # fatal: an earlier `fail` here would have aborted the whole play on lab1/2/3
 # and refused to fix lab5, which carries a leftover test session.
-- name: "fix | restart multipathd (no LUNs attached)"
+#
+# ⚠️ multipath_force_restart MUST short-circuit `multipath_written.changed`,
+# and getting that wrong made the escape hatch unreachable by the only node it
+# was built for. lab5's multipath.conf was already correct ON DISK -- written
+# 2026-08-02 08:39, never loaded, because multipathd last started 2026-07-31.
+# So `needs_multipath` was false, the copy task skipped, `multipath_written`
+# stayed undefined, and the restart was skipped EVEN WITH the force flag set.
+# The documented lab5 recovery command was a no-op that reported success.
+#
+# Restart when: forced, OR (we just rewrote the file AND no LUNs are at risk).
+- name: "fix | restart multipathd"
   tags: [storage]
-  when:
-    - multipath_written.changed | default(false)
-    - (not has_luns) or (multipath_force_restart | default(false) | bool)
+  when: >-
+    (multipath_force_restart | default(false) | bool)
+    or ((multipath_written.changed | default(false)) and not has_luns)
   ansible.builtin.systemd:
     name: multipathd
     state: restarted

@@ -247,6 +247,24 @@ ingress replicas landed on one node. `topologySpreadConstraints` with
 **Ansible auto-loads `group_vars/` only from the inventory's or the playbook's
 directory.** It lives at `inventory/group_vars/` for that reason.
 
+**A correct config file is not a loaded config file, and `node_verify` could
+not tell the difference.** lab5 passed every assertion — `multipath.conf`
+contains `find_multipaths no` — while provably unable to stage a `qnap-iscsi`
+volume, because multipathd last started 2026-07-31 and the file was written
+2026-08-02. Two hours of "verified healthy" on a node that could not mount a
+PVC. `node_verify` now compares multipathd's `ActiveEnterTimestamp` against the
+file's mtime and fails if the daemon predates its own config. This is the
+third variant of the same lesson: the file existing was not enough, the file's
+*contents* being right was not enough either.
+
+**The `multipath_force_restart` escape hatch could not reach the only node it
+was built for.** The restart was gated on `multipath_written.changed` *and*
+then the force flag, so forcing only worked when the file also needed
+rewriting. lab5's file was already correct, so the copy task skipped,
+`multipath_written` stayed undefined, and the documented recovery command
+was a silent no-op that reported success. The force flag now short-circuits
+the changed-check entirely.
+
 **`--check` silently skips `command:`/`shell:` tasks and returns an EMPTY
 stdout, rc=0.** So the "review what would change" step in `MANUAL-STEPS.md`
 reported `sysctls=BROKEN, services=BROKEN` on **all five** nodes and
