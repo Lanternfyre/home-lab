@@ -1,0 +1,29 @@
+---
+# kube-vip serves the control-plane VIP (k3s_api_vip, in group_vars/all.yml).
+#
+# Kept at the version already running so the Pod -> DaemonSet cutover changes
+# ONE thing. Bumping the image and restructuring the workload in the same
+# window would make a failure ambiguous.
+kube_vip_image: ghcr.io/kube-vip/kube-vip
+kube_vip_version: v1.0.3
+
+kube_vip_port: 6443
+
+# Leader election. Defaults match `kube-vip manifest daemonset` output.
+# leaseduration 5 / renewdeadline 3 / retryperiod 1 means a dead VIP holder is
+# replaced within ~5s. Do not raise leaseduration without understanding that it
+# is the upper bound on API VIP downtime when a node dies.
+kube_vip_lease_name: plndr-cp-lock
+kube_vip_lease_duration: "5"
+kube_vip_renew_deadline: "3"
+kube_vip_retry_period: "1"
+
+# Which node's manifest directory owns the addon. k3s's deploy controller reads
+# /var/lib/rancher/k3s/server/manifests on each server independently, and the
+# existing kube-vip.yaml lives only on the --cluster-init node. Keeping it on
+# one node keeps the cutover to a single writer; the RUNTIME single point of
+# failure is what the DaemonSet removes, and that is the one that matters --
+# if this node dies the DaemonSet object survives in etcd and the VIP simply
+# moves to another node's pod.
+kube_vip_manifest_host: "{{ groups['k3s_servers'] | first }}"
+kube_vip_manifest_path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml

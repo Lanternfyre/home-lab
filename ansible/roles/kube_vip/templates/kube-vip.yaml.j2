@@ -1,0 +1,157 @@
+# Managed by Ansible -- ansible/roles/kube_vip
+#
+# This file IS the kube-vip deployment. k3s's deploy controller reconciles it
+# into the `kube-vip` Addon objectset on every checksum change. Consequences
+# worth knowing before editing:
+#
+#   * DELETING this file prunes the objectset -- which takes the API VIP
+#     {{ k3s_api_vip }} with it. That VIP is the --server join target baked
+#     into the other nodes' systemd units, the tls-san, and every kubeconfig.
+#   * Any object removed from this file is likewise pruned. All four below
+#     (ServiceAccount, ClusterRole, ClusterRoleBinding, DaemonSet) belong to
+#     the objectset and must stay.
+#   * kubectl-editing the live objects is pointless; the controller reverts
+#     them on the next reconcile. Change this file.
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kube-vip
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kube-vip
+rules:
+  # Control-plane VIP mode needs exactly this and nothing more: the leader
+  # election lease. Services mode (which would also need services/endpoints/
+  # nodes) is deliberately NOT enabled -- MetalLB is the LoadBalancer provider
+  # here, and giving kube-vip services would put two controllers on the same
+  # objects.
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kube-vip
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kube-vip
+subjects:
+  - kind: ServiceAccount
+    name: kube-vip
+    namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-vip-ds
+  namespace: kube-system
+  labels:
+    app.kubernetes.io/name: kube-vip-ds
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kube-vip-ds
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # One at a time. A rollout that took down several VIP candidates at once
+      # could leave the VIP unheld for the length of a pod start.
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kube-vip-ds
+    spec:
+      hostNetwork: true
+      serviceAccountName: kube-vip
+      # Without this the VIP holder is BestEffort and is among the first things
+      # killed under node memory pressure. The previous bare Pod was BestEffort.
+      priorityClassName: system-node-critical
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              # `kube-vip manifest daemonset` also emits a
+              # node-role.kubernetes.io/master term. Dropped: the API server
+              # warns that it is deprecated, and every node in this cluster
+              # carries control-plane as well (all five are
+              # control-plane,etcd,master), so it selects nothing extra.
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: Exists
+      tolerations:
+        # Run everywhere, including cordoned and tainted nodes. A cordon means
+        # "schedule no workloads here"; it does not mean "this node may not
+        # answer for the control plane".
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      containers:
+        - name: kube-vip
+          image: {{ kube_vip_image }}:{{ kube_vip_version }}
+          imagePullPolicy: IfNotPresent
+          args: [manager]
+          env:
+            # ── Interface: DELIBERATELY UNSET ──────────────────────────────
+            # Do NOT add vip_interface. The NICs differ across this cluster
+            # (lab1/2/3 eno1, lab4 enp0s31f6, lab5 enp7s0), so any hardcoded
+            # value CrashLoops somewhere. With it unset, kube-vip
+            # {{ kube_vip_version }} resolves the interface holding the
+            # 0.0.0.0/0 route via netlink (cmd/kube-vip.go, guarded by
+            # `if initConfig.Interface == ""`) and then watches it for changes
+            # with MonitorDefaultInterface. Verified against the shipped
+            # binary, not assumed.
+            - name: address
+              value: "{{ k3s_api_vip }}"
+            - name: port
+              value: "{{ kube_vip_port }}"
+            - name: vip_arp
+              value: "true"
+            - name: vip_subnet
+              value: "32"
+            - name: cp_enable
+              value: "true"
+            - name: cp_namespace
+              value: kube-system
+
+            # ── Leader election: the whole reason this is safe as a DaemonSet ─
+            # The bare Pod this replaces had NONE of these. Five replicas with
+            # that env would every one of them ARP for {{ k3s_api_vip }}
+            # simultaneously and flap the API VIP. vip_nodename is what gives
+            # each instance a distinct lease-holder identity -- without it they
+            # cannot tell each other apart.
+            - name: vip_leaderelection
+              value: "true"
+            - name: vip_leasename
+              value: "{{ kube_vip_lease_name }}"
+            - name: vip_leaseduration
+              value: "{{ kube_vip_lease_duration }}"
+            - name: vip_renewdeadline
+              value: "{{ kube_vip_renew_deadline }}"
+            - name: vip_retryperiod
+              value: "{{ kube_vip_retry_period }}"
+            - name: vip_nodename
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+
+            - name: prometheus_server
+              value: ":2112"
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN, NET_RAW]
+              drop: [ALL]
+          resources:
+            # Requests only, no limits: a CPU limit on the component that
+            # answers for the API VIP buys throttling at exactly the wrong
+            # moment. Requests are enough to lift it out of BestEffort.
+            requests:
+              cpu: 25m
+              memory: 64Mi

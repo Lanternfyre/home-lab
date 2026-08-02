@@ -1,0 +1,59 @@
+---
+# Replace the kube-vip control-plane VIP workload with a DaemonSet.
+#
+# NOT part of site.yml. This is a deliberate operation: the API VIP
+# {{ k3s_api_vip }} briefly drops while the old Pod is pruned and the first
+# DaemonSet pod claims the lease, and that VIP is the --server join target in
+# the other nodes' systemd units. Run it with a human watching.
+#
+# Idempotent: re-running against an already-converted cluster rewrites the same
+# bytes, the checksum does not change, and k3s reconciles nothing.
+
+- name: "detect | current addon manifest"
+  ansible.builtin.slurp:
+    src: "{{ kube_vip_manifest_path }}"
+  register: kv_current
+  failed_when: false
+  check_mode: false
+
+- name: "detect | is this already a DaemonSet?"
+  ansible.builtin.set_fact:
+    kv_present: "{{ kv_current.content is defined }}"
+    kv_already_ds: >-
+      {{ (kv_current.content | default('') | b64decode) is search('kind:\s*DaemonSet') }}
+
+# The manifest is the deployment. If it is missing, writing ours would still
+# work -- but its absence means the addon lives somewhere this play does not
+# know about, and guessing would be how you end up with two things fighting
+# over one VIP.
+- name: "detect | refuse to guess if the manifest is not where we expect"
+  ansible.builtin.fail:
+    msg: >-
+      {{ kube_vip_manifest_path }} does not exist on {{ inventory_hostname }}.
+      The kube-vip Addon is reconciled from a manifest file on a k3s server;
+      confirm which node holds it with
+      `kubectl get addon -n kube-system kube-vip -o jsonpath='{.spec.source}'`
+      and set kube_vip_manifest_host accordingly. Writing a second copy on a
+      different node would put two deploy controllers on one objectset.
+  when: not kv_present
+
+- name: "backup | keep the previous manifest"
+  ansible.builtin.copy:
+    src: "{{ kube_vip_manifest_path }}"
+    dest: "{{ kube_vip_manifest_path }}.pre-daemonset"
+    remote_src: true
+    mode: "0600"
+    force: false          # never clobber an existing rollback point
+  when:
+    - kv_present
+    - not kv_already_ds
+
+- name: "apply | write the DaemonSet manifest"
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: "{{ kube_vip_manifest_path }}"
+    mode: "0600"
+    # A manifest that does not parse is applied by nothing and prunes nothing,
+    # so a syntax error here fails silently as "the VIP just stopped moving".
+    validate: "/usr/local/bin/k3s kubectl apply --dry-run=client -f %s"
+  register: kv_written

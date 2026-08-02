@@ -1,0 +1,162 @@
+---
+# Convert the control-plane VIP from a single Pod on one node to a DaemonSet
+# with leader election across all five.
+#
+#   ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass --check --diff
+#   ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass
+#
+# ── What this fixes ──────────────────────────────────────────────────────────
+# Today kube-vip is one Pod on the --cluster-init node. If that node dies the
+# API VIP disappears -- and it is the --server join target in the other nodes'
+# systemd units, the tls-san, and every kubeconfig. Losing one node currently
+# means losing the address the rest of the cluster uses to find the API.
+#
+# ── The two things that make this safe ───────────────────────────────────────
+# 1. NO vip_interface. kube-vip auto-detects the default-route interface, so
+#    one manifest covers NICs named eno1, enp0s31f6 and enp7s0. Hardcoding it
+#    is what would CrashLoop two of the five nodes.
+# 2. Leader election. The Pod being replaced has none, which is fine at one
+#    replica and would be five nodes ARPing for one address at five.
+#
+# ── Expect a brief VIP outage ────────────────────────────────────────────────
+# The old Pod is pruned before the DaemonSet pod claims the lease. kubectl
+# against the VIP fails for a few seconds and the agents on the other nodes
+# retry their --server connection. That is why this is not in site.yml.
+#
+# ── Rollback ─────────────────────────────────────────────────────────────────
+# The previous manifest is kept alongside as kube-vip.yaml.pre-daemonset. To
+# revert, on {{ kube_vip_manifest_host | default('the manifest host') }}:
+#   sudo cp /var/lib/rancher/k3s/server/manifests/kube-vip.yaml.pre-daemonset \
+#           /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
+# k3s reconciles on checksum change; the DaemonSet is pruned and the Pod
+# returns. Same VIP blip in reverse.
+
+- name: Pre-flight -- the VIP must be healthy BEFORE we touch it
+  hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - ../roles/kube_vip/defaults/main.yml
+
+  tasks:
+    - name: The API VIP answers right now
+      ansible.builtin.uri:
+        url: "https://{{ k3s_api_vip }}:{{ kube_vip_port }}/readyz"
+        validate_certs: false
+        status_code: [200, 401, 403]
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      register: vip_before
+
+    # Converting to a DaemonSet while a node is unreachable means that node
+    # gets a VIP candidate whenever it returns, with no one watching.
+    - name: Every node is reachable
+      ansible.builtin.ping:
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] }}"
+      check_mode: false
+
+    - name: Report the starting point
+      ansible.builtin.debug:
+        msg: >-
+          API VIP {{ k3s_api_vip }} healthy (HTTP {{ vip_before.status }}).
+          Converting the kube-vip addon on {{ inventory_hostname }} from Pod to
+          DaemonSet across {{ groups['k3s_servers'] | length }} nodes. Expect a
+          few seconds of VIP downtime.
+
+- name: Convert the kube-vip addon to a DaemonSet
+  hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - role: kube_vip
+
+- name: Verify -- assert behaviour, not that a manifest was written
+  hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  gather_facts: false
+  any_errors_fatal: true
+  vars_files:
+    - ../roles/kube_vip/defaults/main.yml
+
+  tasks:
+    - name: Wait for the DaemonSet to exist and become fully ready
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system get daemonset kube-vip-ds
+        -o jsonpath='{.status.desiredNumberScheduled} {.status.numberReady}'
+      register: kv_ds
+      changed_when: false
+      check_mode: false
+      # desired == ready AND desired == every server. A DaemonSet that landed
+      # on four of five nodes is a DaemonSet with a node that cannot hold the
+      # VIP, which is the failure we came here to remove.
+      until: >-
+        kv_ds.stdout.split() | length == 2
+        and kv_ds.stdout.split()[0] == kv_ds.stdout.split()[1]
+        and (kv_ds.stdout.split()[0] | int) == (groups['k3s_servers'] | length)
+      retries: 30
+      delay: 5
+      when: not ansible_check_mode
+
+    - name: The old single Pod is gone
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system get pod kube-vip
+        --ignore-not-found -o name
+      register: kv_oldpod
+      changed_when: false
+      check_mode: false
+      failed_when: kv_oldpod.stdout | trim | length > 0
+      when: not ansible_check_mode
+
+    # THE assertion. A DaemonSet whose pods are all Running but where nobody
+    # holds the lease means nobody is answering for the VIP -- and every pod
+    # would look healthy.
+    - name: Exactly one node holds the VIP lease
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system get lease {{ kube_vip_lease_name }}
+        -o jsonpath='{.spec.holderIdentity}'
+      register: kv_lease
+      changed_when: false
+      check_mode: false
+      until: kv_lease.stdout | trim | length > 0
+      retries: 20
+      delay: 3
+      when: not ansible_check_mode
+
+    - name: No kube-vip pod is crashlooping
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system get pods
+        -l app.kubernetes.io/name=kube-vip-ds
+        -o jsonpath='{range .items[*]}{.metadata.name}={.status.containerStatuses[0].restartCount} {end}'
+      register: kv_restarts
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    # The point of the whole exercise: the address still answers.
+    - name: The API VIP still answers after the cutover
+      ansible.builtin.uri:
+        url: "https://{{ k3s_api_vip }}:{{ kube_vip_port }}/readyz"
+        validate_certs: false
+        status_code: [200, 401, 403]
+      delegate_to: localhost
+      become: false
+      check_mode: false
+      register: vip_after
+      until: vip_after.status is defined
+      retries: 30
+      delay: 5
+      when: not ansible_check_mode
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg: >-
+          kube-vip is now a DaemonSet: {{ kv_ds.stdout | default('n/a') }}
+          (desired/ready) across {{ groups['k3s_servers'] | length }} nodes.
+          VIP lease {{ kube_vip_lease_name }} held by
+          {{ kv_lease.stdout | default('n/a') }}.
+          Restart counts: {{ kv_restarts.stdout | default('n/a') }}.
+          API VIP {{ k3s_api_vip }} answering (HTTP
+          {{ vip_after.status | default('n/a') }}).
+          Losing {{ inventory_hostname }} no longer takes the API VIP with it.
+      when: not ansible_check_mode
