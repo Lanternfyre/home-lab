@@ -529,6 +529,26 @@ etc) are ignored."* Three consequences, all of which changed decisions here:
    explicit bootstrap-time argument, and `k3s_config` refuses to render
    `cluster-init` on a node with no datastore while other servers exist.
 
+**A k3s VERSION change reverts CUSTOM addon manifests, not just bundled ones.**
+Proven the hard way on the 1.34 hop: the kube-vip addon reverted to its
+pre-DaemonSet bare-Pod manifest (the Addon checksum returned to its exact
+pre-cutover value). That old manifest hardcodes `vip_interface: eno1`; the
+recreated Pod landed on lab5, whose NIC is `enp7s0`, CrashLooped with
+`eno1 is not valid interface`, and the API VIP vanished. The DaemonSet was
+pruned as part of the same objectset reconcile.
+
+Two lessons. First, **anything living in
+`/var/lib/rancher/k3s/server/manifests/` must be re-asserted after every hop** —
+CoreDNS was, kube-vip was not, and that asymmetry was the bug.
+`30-upgrade.yml` now re-asserts both. Second, this failure **passes every other
+gate**: nodes stay Ready, etcd keeps its leader, DaemonSets are even — and the
+address every kubeconfig uses is simply gone. There is now an explicit
+per-node gate asserting the VIP answers.
+
+The cluster itself was never at risk, because joined nodes talk to peer node
+IPs and never the VIP — which is the measurement that made this survivable
+rather than an outage.
+
 **`local-path` volumes pin a pod to ONE node, and draining it strands them.**
 *(Resolved for Pi-hole on 2026-08-02 — see Phase 0.D. The lesson stands for
 anything else that might land on local-path, which is now the k3s default

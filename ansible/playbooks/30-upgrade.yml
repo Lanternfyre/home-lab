@@ -418,6 +418,22 @@
           delay: 10
           when: not ansible_check_mode
 
+        # The VIP disappearing is exactly the kind of failure that passes every
+        # other gate: nodes stay Ready, etcd keeps its leader, DaemonSets are
+        # even -- and the address every kubeconfig uses is simply gone.
+        - name: "{{ node_name }} | the API VIP still answers"
+          ansible.builtin.uri:
+            url: "https://{{ k3s_api_vip }}:6443/readyz"
+            validate_certs: false
+            status_code: [200, 401, 403]
+          delegate_to: localhost
+          become: false
+          register: g_vip
+          until: g_vip.status is defined
+          retries: 20
+          delay: 10
+          when: not ansible_check_mode
+
         - name: "{{ node_name }} | nothing fell into ImagePullBackOff"
           ansible.builtin.shell: >-
             set -o pipefail;
@@ -457,6 +473,23 @@
             name: coredns_ha
           vars:
             coredns_manifest_host: "{{ peer }}"
+          when: not ansible_check_mode
+
+        # kube-vip is an addon from the SAME manifest mechanism, and it was
+        # missed the first time round -- with consequences. During the 1.34 hop
+        # the addon reverted to its pre-DaemonSet bare-Pod manifest (the Addon
+        # checksum went back to its pre-cutover value). That old manifest
+        # hardcodes vip_interface: eno1; the Pod landed on lab5, whose NIC is
+        # enp7s0, and CrashLooped -- so the API VIP simply vanished.
+        #
+        # The cluster survived it, because joined nodes talk to peer IPs and
+        # never the VIP (measured 2026-08-02), but every kubeconfig pointing at
+        # the VIP broke. Re-assert it per hop, exactly like CoreDNS.
+        - name: "{{ node_name }} | re-assert the kube-vip DaemonSet"
+          ansible.builtin.include_role:
+            name: kube_vip
+          vars:
+            kube_vip_manifest_host: "{{ groups['k3s_servers'] | first }}"
           when: not ansible_check_mode
 
         - name: "{{ node_name }} | done"
