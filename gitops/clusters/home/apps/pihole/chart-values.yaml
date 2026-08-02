@@ -67,20 +67,34 @@ env:
   DNSMASQ_LISTENING: "all"
   PIHOLE_DNS_: "1.1.1.1;8.8.8.8"
 
+# ── Phase 0.D: off local-path, onto QNAP iSCSI (2026-08-02) ──────────────────
+# The old chart-generated claim was `local-path`, whose PV carries nodeAffinity
+# pinning it to ONE machine (k8s-lab3). Cordoning that node left Pi-hole
+# Pending with "4 node(s) had volume node affinity conflict" — unable to
+# reschedule anywhere until that exact machine returned. It took LAN DNS down
+# during the first k3s upgrade hop, and because Pi-hole serves the .home names
+# the Ansible inventory resolved, it also broke Ansible's reach to the node it
+# was mid-upgrade on.
+#
+# The claim is now declared explicitly at manifests/pihole-data.pvc.yaml, which
+# also makes the protect LABEL declarative — the chart supports annotations but
+# not labels on its own PVC, so that label used to be applied imperatively.
+#
+# The old `pihole` PVC is deliberately left in place as a rollback point: it
+# carries Prune=false,Delete=false and its PV is reclaimPolicy: Retain.
 persistentVolumeClaim:
   enabled: true
-  size: 5Gi
-  # The chart exposes annotations but not labels, so the
-  # homelab.techyon.dev/protect label is applied to this PVC imperatively and
-  # to its PV (see gitops/clusters/home/protected-volumes.yaml). It becomes
-  # declarative when Phase 0.D moves pihole off local-path onto qnap-iscsi with
-  # an explicit PVC manifest.
-  #
-  # NOTE: this claim is on local-path — node-local storage pinned by
-  # nodeAffinity to k8s-lab3. reclaimPolicy: Retain does NOT protect it from
-  # that node's disk failing. It is the most fragile protected volume here.
+  existingClaim: pihole-data
   annotations:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
+
+# ⚠️ Recreate, NOT RollingUpdate, and this is load-bearing with an RWO volume.
+# The chart defaults to RollingUpdate with maxSurge: 1, which starts a second
+# pod BEFORE terminating the first. Two pods cannot mount one ReadWriteOnce
+# iSCSI volume from different nodes, so the new pod would sit in
+# ContainerCreating while the old one refused to die — a self-inflicted DNS
+# outage on every future config change. Recreate stops the old pod first.
+strategyType: Recreate
 
 resources:
   requests:
