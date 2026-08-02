@@ -1,0 +1,200 @@
+---
+# Copy Pi-hole's data from its node-pinned local-path volume onto the new
+# qnap-iscsi claim. Step 2 of 3.
+#
+#   ansible-playbook playbooks/16-pihole-storage.yml --check   # plan
+#   ansible-playbook playbooks/16-pihole-storage.yml           # copy
+#
+# No sudo: runs on the workstation against the cluster API.
+#
+# ── The three steps, and why they are separate ───────────────────────────────
+#   1. git: declare pihole-data on qnap-iscsi          (done, inert)
+#   2. THIS: copy the data across                      (Pi-hole keeps running)
+#   3. git: point the chart at existingClaim           (Pi-hole restarts onto it)
+#
+# ── Why the copy happens while Pi-hole is RUNNING ────────────────────────────
+# The obvious approach -- scale the Deployment to 0, copy, scale back up --
+# fights ArgoCD. The pihole Deployment is chart-managed with selfHeal: true, so
+# `kubectl scale` is reverted, and this repo's first invariant is that you never
+# kubectl-patch a chart-managed resource because you will believe a change
+# landed when it did not.
+#
+# So the copy runs against the live volume instead. That is acceptable HERE
+# specifically because of what is in it:
+#   * gravity.db      blocklists -- rebuilt from source lists by `pihole -g`
+#   * pihole-FTL.db   query history -- disposable
+#   * setupVars.conf  admin password hash + settings -- small, rarely written
+#   * custom.list     manual local DNS records
+# The .home records this LAN depends on do NOT live here at all: they are
+# dnsmasq config from the chart values, delivered as a ConfigMap. So a slightly
+# inconsistent SQLite snapshot costs at most some query history, and step 3
+# restarts Pi-hole anyway.
+#
+# ── Why the Job is pinned to the old volume's node ───────────────────────────
+# ReadWriteOnce means "one NODE", not "one pod". The old local-path volume can
+# only be mounted on k8s-lab3, and Pi-hole is already mounting it there -- so
+# the copy Job must land on that same node to mount it at all.
+
+- name: Migrate Pi-hole data onto qnap-iscsi
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+
+  vars:
+    ns: dns
+    old_claim: pihole
+    new_claim: pihole-data
+    copy_job: pihole-data-copy
+
+  tasks:
+    - name: "preflight | the destination claim exists and is Bound"
+      ansible.builtin.command: >-
+        kubectl -n {{ ns }} get pvc {{ new_claim }} -o jsonpath={.status.phase}
+      register: pv_new
+      changed_when: false
+      check_mode: false
+      failed_when: pv_new.stdout | trim != 'Bound'
+
+    - name: "preflight | the source claim exists"
+      ansible.builtin.command: >-
+        kubectl -n {{ ns }} get pvc {{ old_claim }} -o jsonpath={.spec.volumeName}
+      register: pv_old
+      changed_when: false
+      check_mode: false
+      failed_when: (pv_old.stdout | trim | length) == 0
+
+    # The copy Job has to run where the local-path volume physically is.
+    - name: "preflight | which node is the OLD volume pinned to?"
+      ansible.builtin.shell: >-
+        kubectl get pv {{ pv_old.stdout | trim }}
+        -o 'jsonpath={.spec.nodeAffinity.required.nodeSelectorTerms[*].matchExpressions[*].values[*]}'
+      register: pv_node
+      changed_when: false
+      check_mode: false
+
+    # The Job cannot mount a node-pinned volume unless it lands on that node,
+    # so an unpinned source means this play's core assumption is wrong.
+    - name: "preflight | the source volume really is node-pinned"
+      ansible.builtin.fail:
+        msg: >-
+          PV {{ pv_old.stdout | trim }} reports no nodeAffinity, so it is not
+          node-pinned and this play's premise does not hold. Check the
+          storageClass before proceeding.
+      when: (pv_node.stdout | trim | length) == 0
+
+    - name: "preflight | report"
+      ansible.builtin.debug:
+        msg: >-
+          Copying {{ ns }}/{{ old_claim }} (pinned to
+          {{ pv_node.stdout | trim | default('<unpinned>', true) }}) ->
+          {{ ns }}/{{ new_claim }} on qnap-iscsi. Pi-hole stays up throughout;
+          DNS is not interrupted by this play.
+
+    - name: "copy | remove any previous attempt"
+      ansible.builtin.command: >-
+        kubectl -n {{ ns }} delete job {{ copy_job }} --ignore-not-found
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: "copy | render the Job"
+      ansible.builtin.set_fact:
+        copy_manifest: |
+          apiVersion: batch/v1
+          kind: Job
+          metadata:
+            name: {{ copy_job }}
+            namespace: {{ ns }}
+          spec:
+            backoffLimit: 2
+            ttlSecondsAfterFinished: 3600
+            template:
+              spec:
+                restartPolicy: Never
+                # RWO means one NODE, not one pod. The source volume can
+                # only be mounted on the node it is pinned to -- where Pi-hole
+                # already has it mounted -- so the Job must land there too.
+                # Unconditional: a local-path PV is ALWAYS node-pinned, and the
+                # preflight asserts it rather than rendering this conditionally.
+                # (A Jinja {%- raw -%}{% if %}{%- endraw -%} here left its own indentation on the
+                # following lines and produced invalid YAML.)
+                nodeName: {{ pv_node.stdout | trim }}
+                tolerations:
+                  - operator: Exists
+                containers:
+                  - name: copy
+                    image: busybox:1.37
+                    command: [/bin/sh, -c]
+                    args:
+                      - |
+                        set -e
+                        echo "=== source ==="
+                        ls -la /src
+                        du -sh /src 2>/dev/null || true
+                        echo "=== copying ==="
+                        # -a preserves ownership and timestamps; Pi-hole cares
+                        # about file ownership under /etc/pihole.
+                        cp -a /src/. /dst/
+                        sync
+                        echo "=== destination ==="
+                        ls -la /dst
+                        echo "=== compare file counts ==="
+                        s=$(find /src -type f | wc -l)
+                        d=$(find /dst -type f | wc -l)
+                        echo "src=$s dst=$d"
+                        [ "$s" -eq "$d" ] || { echo "FILE COUNT MISMATCH"; exit 1; }
+                        echo "PIHOLE DATA COPY OK"
+                    volumeMounts:
+                      - { name: src, mountPath: /src, readOnly: true }
+                      - { name: dst, mountPath: /dst }
+                volumes:
+                  - name: src
+                    persistentVolumeClaim: { claimName: {{ old_claim }} }
+                  - name: dst
+                    persistentVolumeClaim: { claimName: {{ new_claim }} }
+
+    - name: "copy | show the Job that will run"
+      ansible.builtin.debug:
+        var: copy_manifest
+      when: ansible_check_mode
+
+    - name: "copy | create it"
+      ansible.builtin.shell: "kubectl apply -f -"
+      args:
+        stdin: "{{ copy_manifest }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "copy | wait for completion"
+      ansible.builtin.command: >-
+        kubectl -n {{ ns }} wait --for=condition=complete job/{{ copy_job }}
+        --timeout=600s
+      changed_when: false
+      when: not ansible_check_mode
+
+    # Assert the Job's own verdict, not merely that it exited 0.
+    - name: "verify | read the copy log"
+      ansible.builtin.command: "kubectl -n {{ ns }} logs job/{{ copy_job }}"
+      register: copy_log
+      changed_when: false
+      check_mode: false
+      failed_when: "'PIHOLE DATA COPY OK' not in copy_log.stdout"
+      when: not ansible_check_mode
+
+    - name: "verify | the copy said"
+      ansible.builtin.debug:
+        msg: "{{ copy_log.stdout_lines | default([]) }}"
+      when: not ansible_check_mode
+
+    - name: "next"
+      ansible.builtin.debug:
+        msg: >-
+          Data is on {{ new_claim }}. STEP 3: set
+          persistentVolumeClaim.existingClaim to "{{ new_claim }}" in
+          gitops/clusters/home/apps/pihole/chart-values.yaml and push. ArgoCD
+          restarts Pi-hole onto the iSCSI volume -- expect a few seconds of DNS
+          downtime at that point, not during this play. Verify afterwards with
+          `dig @192.168.32.53 k8s-1.home` and keep the old PVC until you are
+          satisfied.
+      when: not ansible_check_mode

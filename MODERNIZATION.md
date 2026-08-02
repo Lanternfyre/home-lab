@@ -298,9 +298,18 @@ run. **The playbook is now a proven procedure rather than just code.**
 ⏳ **LIVE ON 1.33 FOR 24–48h** before setting `k3s_version` to `v1.34.9+k3s1`.
 The gates passed, but a cluster only proves an upgrade by running on it.
 
-⚠️ **Before hop 2 (1.34.9): move Pi-hole off local-path** (Phase 0.D). lab3
-holds it, and hop 2 drains lab3 again, which reproduces the DNS outage
-exactly. This is the one blocking prerequisite for the next hop.
+✅ **Phase 0.D DONE 2026-08-02 — Pi-hole is off local-path.** It now uses an
+explicitly declared `pihole-data` claim on `qnap-iscsi`, and the migration
+proved itself immediately: the pod moved from k8s-lab3 to **k8s-lab1** and the
+volume followed. History came with it (5340 blocked queries, 801 domains, 19
+clients in the FTL DB), all `.home` names resolve, zero restarts. The blocking
+prerequisite for hop 2 is cleared.
+
+The old `pihole` PVC is deliberately kept as a rollback point
+(`Prune=false,Delete=false`, PV `Retain`, protect label). Delete it once you
+are satisfied — and remember `Retain` means the backend volume leaks, so it
+needs `tridentctl delete volume` too... except this one is local-path, so it
+is a directory on lab3's disk.
 
 **Remaining hops: exactly two.** `1.33.13 → 1.34.9 → 1.35.6`, then STOP.
 1.35 is the end of the road for this cluster until QNAP ships a CSI driver
@@ -521,6 +530,9 @@ etc) are ignored."* Three consequences, all of which changed decisions here:
    `cluster-init` on a node with no datastore while other servers exist.
 
 **`local-path` volumes pin a pod to ONE node, and draining it strands them.**
+*(Resolved for Pi-hole on 2026-08-02 — see Phase 0.D. The lesson stands for
+anything else that might land on local-path, which is now the k3s default
+StorageClass and therefore the silent default for any PVC that omits one.)*
 A local-path PV carries `nodeAffinity` to the machine that holds it, so
 cordoning that node yields `0/5 nodes are available: 1 node(s) were
 unschedulable, 4 node(s) had volume node affinity conflict` — Pending until
