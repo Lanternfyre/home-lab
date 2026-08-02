@@ -131,3 +131,79 @@
     - name: Report
       ansible.builtin.debug:
         msg: "{{ cleanup_check.stdout_lines }}"
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+# ── Confirm the stale hostPort DNAT is gone, and finish the job if not ───────
+#
+# WHY THIS EXISTS. The k3s ServiceLB (klipper) pods claim hostPort 53, and the
+# CNI portmap plugin writes an UNCONDITIONAL DNAT for it:
+#
+#   -A CNI-DN-xxxx -p udp --dport 53 -j DNAT --to-destination <podIP>:53
+#
+# No destination match -- so it captures EVERY packet to :53 on the node,
+# including 127.0.0.53. On a healthy node that lands on a live klipper pod
+# which proxies to Pi-hole, so DNS appears to work. On k8s-lab4 the pod was
+# stuck in ImagePullBackOff, so the DNAT pointed at an IP with nothing behind
+# it and every lookup was refused -- including the node's own resolver stub.
+# Verified by controlled comparison: lab5 had byte-identical rules and worked,
+# because its klipper pod was Running.
+#
+# That is a loop a node cannot escape on its own: DNS is broken, so the klipper
+# image cannot be pulled, so klipper never runs, so the DNAT stays dead.
+#
+# Deleting the DaemonSet should trigger CNI DEL and remove these chains. If the
+# pod never fully started, teardown can leave them behind -- so verify, and
+# reboot only the nodes that are still broken. iptables rules are not
+# persistent, so a reboot clears them for good now that the addon is disabled.
+- name: Verify DNS recovered on every node
+  hosts: k3s_servers
+  gather_facts: false
+  become: true
+  tasks:
+    - name: Give CNI teardown a moment
+      ansible.builtin.wait_for:
+        timeout: 15
+      run_once: true
+
+    - name: Check for leftover hostPort DNAT on port 53
+      ansible.builtin.shell: >-
+        iptables-save -t nat | grep -E 'CNI-DN-.*dport 53.*DNAT' || true
+      register: leftover_dnat
+      changed_when: false
+
+    - name: Test resolution
+      ansible.builtin.command: getent ahostsv4 registry.k8s.io
+      register: dns_now
+      changed_when: false
+      failed_when: false
+
+    - name: Report per node
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}:
+          DNS={{ 'ok' if dns_now.rc == 0 else 'STILL BROKEN' }},
+          leftover :53 DNAT rules={{ leftover_dnat.stdout_lines | length }}
+
+    # Only the nodes that are genuinely still broken, and only if the operator
+    # opted in. Rebooting a node is never something a converge play should do
+    # on its own.
+    - name: Reboot nodes still failing DNS (opt-in)
+      when:
+        - dns_now.rc != 0
+        - allow_reboot | default(false) | bool
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+        test_command: getent ahostsv4 registry.k8s.io
+
+    - name: Manual step required
+      when:
+        - dns_now.rc != 0
+        - not (allow_reboot | default(false) | bool)
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} still cannot resolve and
+          {{ leftover_dnat.stdout_lines | length }} stale :53 DNAT rule(s)
+          remain. The addon is now disabled, so they will NOT come back after a
+          reboot. Re-run this playbook with -e allow_reboot=true, or reboot
+          that node by hand.
