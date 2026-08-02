@@ -4,7 +4,6 @@
     name: systemd-resolved
     state: restarted
 
-- name: restart multipathd
-  ansible.builtin.systemd:
-    name: multipathd
-    state: restarted
+# NOTE: there is deliberately no `restart multipathd` handler. That restart is
+# gated inline in tasks/main.yml on there being no live iSCSI sessions, and a
+# handler cannot express that per-host condition safely.
