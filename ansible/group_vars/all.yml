@@ -14,6 +14,42 @@ ansible_user: tarjei
 k3s_version: "v1.32.10+k3s1"
 k3s_max_version: "v1.36.0"     # assert k3s_version is strictly below this
 
+# ── k3s bundled addons to disable ────────────────────────────────────────────
+# Applied via /etc/rancher/k3s/config.yaml by the k3s_config role, and
+# inherited automatically by playbooks/40-add-node.yml -- which is the point:
+# k8s-lab4 and k8s-lab5 joined WITHOUT a config.yaml at all, so their deploy
+# controllers kept reinstalling addons that lab1/2/3 were deleting.
+#
+#   traefik    -- not used; ingress-nginx serves all 13 Ingresses. The addon
+#                 never installed successfully anyway: its helm-install job has
+#                 crashlooped 640+ times because the Gateway API CRDs (owned by
+#                 Envoy Gateway) lack Helm ownership labels. Left enabled, it
+#                 re-runs on EVERY server restart -- so a rolling 5-node
+#                 upgrade means five more attempts.
+#
+#   servicelb  -- k3s's bundled klipper-lb. MetalLB is the real LoadBalancer
+#                 provider here (verified: every LoadBalancer Service carries
+#                 metallb.io/ip-allocated-from-pool). klipper adds nothing and
+#                 actively harms:
+#                   * it binds hostPorts 80/443/53 on every node, and only one
+#                     service can own each -- svclb-argocd-server has been
+#                     Pending for 207 days losing that race.
+#                   * it is implicated in k8s-lab4's DNS failure: its
+#                     svclb-pihole-dns pods claim hostPort 53 but are stuck in
+#                     ImagePullBackOff there, so port 53 is intercepted with no
+#                     live backend and even 127.0.0.53 is refused -- which is
+#                     why that node cannot resolve, cannot pull images, and
+#                     therefore has zero registered CSI drivers. A loop that
+#                     cannot break itself.
+#
+# ⚠️ servicelb is driven by a LEADER-ELECTED controller, so it must be set on
+# ALL nodes and then k3s restarted (serial:1). Setting it on one node no-ops or
+# flaps depending on who holds the lease. The existing svclb-* DaemonSets also
+# need an explicit one-time delete -- disabling the addon does not remove them.
+k3s_disable:
+  - traefik
+  - servicelb
+
 # ── Control-plane VIP ────────────────────────────────────────────────────────
 # Served by kube-vip. NOTE: currently a bare Pod on k8s-1 only, with empty
 # ownerReferences -- if that node dies the VIP disappears, and it is also the

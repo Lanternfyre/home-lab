@@ -1,0 +1,133 @@
+---
+# Apply /etc/rancher/k3s/config.yaml and roll k3s to pick it up, one node at a
+# time with health gates between.
+#
+#   ansible-playbook playbooks/20-config-converge.yml --ask-become-pass --check --diff
+#   ansible-playbook playbooks/20-config-converge.yml --ask-become-pass
+#
+# NOT part of site.yml: this RESTARTS k3s. site.yml converges config.yaml but
+# deliberately never restarts, so "just converge" can never bounce the control
+# plane. This playbook is the conscious follow-up.
+#
+# What it lands (from group_vars/all.yml k3s_disable):
+#   * disable traefik   -- stops the addon's 640+ crashloop, which otherwise
+#                          re-runs on every server restart
+#   * disable servicelb -- removes klipper-lb, which squats hostPorts 80/443/53
+#                          on every node. MetalLB is the real provider.
+#
+# ⚠️ USER-VISIBLE CHANGE: after this, node IPs stop answering on :80/:443.
+# Everything reaches services through the MetalLB VIPs (ingress on
+# 192.168.32.13, pihole on 192.168.32.53, etc). Before running, confirm nothing
+# on the LAN is pointed at a NODE IP for HTTP or DNS -- :53 is the realistic
+# one. Check your router's DHCP DNS setting.
+
+- name: Pre-flight
+  hosts: k3s_servers
+  gather_facts: false
+  become: false
+  run_once: true
+  tasks:
+    - name: Record which svclb DaemonSets exist before the change
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system get ds -o name | grep svclb || true
+      register: svclb_before
+      changed_when: false
+      become: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: >-
+          {{ svclb_before.stdout_lines | length }} svclb DaemonSet(s) present.
+          These will be removed after the rollout; disabling the addon does NOT
+          delete them on its own.
+
+- name: Converge config and restart k3s, one node at a time
+  hosts: k3s_servers
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: false
+
+  roles:
+    - role: k3s_config      # writes config.yaml; never restarts
+
+  post_tasks:
+    - name: Restart k3s
+      ansible.builtin.systemd:
+        name: k3s
+        state: restarted
+      become: true
+
+    - name: Wait for this node to report Ready again
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get node {{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-','k8s-lab')) }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 30
+      delay: 10
+      changed_when: false
+      become: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    # etcd quorum gate. ALL nodes must answer -- a node that dropped out of the
+    # cluster simply will not respond, so "all five answered" IS the
+    # member-count check.
+    - name: Verify etcd quorum across every node
+      ansible.builtin.shell: |
+        curl -s --max-time 5 http://127.0.0.1:2381/metrics \
+          | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
+      register: etcd_health
+      changed_when: false
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] }}"
+      failed_when: >-
+        ('etcd_server_has_leader 1' not in etcd_health.stdout)
+        or ('etcd_server_health_failures 0' not in etcd_health.stdout)
+
+    - name: Settle before the next node
+      ansible.builtin.wait_for: { timeout: 20 }
+
+- name: Clean up the disabled addons
+  # These are cluster-wide API operations, so they run ONCE from the first
+  # node rather than per host. delegate_to is a task keyword, not a play
+  # keyword, so it is set on each task individually.
+  hosts: k3s_servers
+  gather_facts: false
+  become: true
+  tasks:
+    # Disabling the addon stops k3s reinstalling it; it does not remove what is
+    # already deployed.
+    - name: Remove svclb DaemonSets
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl -n kube-system delete ds -l svccontroller.k3s.cattle.io/svcname --ignore-not-found
+      register: svclb_del
+      changed_when: "'deleted' in svclb_del.stdout"
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    - name: Remove the traefik HelmChart CRs and their jobs
+      ansible.builtin.shell: |
+        /usr/local/bin/k3s kubectl -n kube-system delete helmchart traefik traefik-crd --ignore-not-found
+        /usr/local/bin/k3s kubectl -n kube-system delete job -l helmcharts.helm.cattle.io/chart=traefik --ignore-not-found
+      register: traefik_del
+      changed_when: "'deleted' in traefik_del.stdout"
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    - name: Confirm the cleanup
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      ansible.builtin.shell: |
+        echo "svclb DaemonSets remaining: $(/usr/local/bin/k3s kubectl -n kube-system get ds -o name | grep -c svclb || true)"
+        echo "traefik HelmCharts remaining: $(/usr/local/bin/k3s kubectl -n kube-system get helmchart -o name 2>/dev/null | grep -c traefik || true)"
+        echo "LoadBalancer services still holding their MetalLB IPs:"
+        /usr/local/bin/k3s kubectl get svc -A --field-selector spec.type=LoadBalancer \
+          -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name,IP:.status.loadBalancer.ingress[0].ip --no-headers
+      register: cleanup_check
+      changed_when: false
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "{{ cleanup_check.stdout_lines }}"
