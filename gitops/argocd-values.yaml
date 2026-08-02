@@ -35,7 +35,45 @@ configs:
     server.insecure: "true"
     server.disable.auth: "false"
 
+# ── Drain safety ─────────────────────────────────────────────────────────────
+# Every ArgoCD component ships at ONE replica, and at one replica a PDB is
+# either useless or actively harmful:
+#   * minAvailable: 1  -> disruptionsAllowed 0 -> blocks EVERY drain, forever.
+#     During a serial:1 rolling upgrade that presents as the run hanging on the
+#     first node rather than as a misconfigured budget. The existing
+#     immich-db-primary PDB sits at allowed=0 for exactly this reason.
+#   * maxUnavailable: 1 -> the single pod may still be evicted, so it protects
+#     nothing. A PDB that permits the only outcome it was meant to prevent.
+#
+# So a budget is only worth having where there is a second pod to fall back on.
+# server and repoServer are stateless and scale cleanly, so they get 2 replicas
+# and a real budget. The others deliberately get NO PDB:
+#   controller / redis / dex / notifications / applicationset are effectively
+#   singletons here (the controller needs sharding config to scale, redis needs
+#   redis-ha), and adding a budget to a singleton only buys one of the two bad
+#   outcomes above. ArgoCD being briefly unavailable during a drain costs a UI
+#   outage and a pause in reconciliation -- it does not affect running
+#   workloads -- so that is an acceptable trade, and a deadlocked drain is not.
 server:
+  replicas: 2
+  # Two replicas on the same node is not redundancy; it is one drain away from
+  # a full outage while the PDB reports everything as fine. This repo has
+  # already been bitten by that exact shape -- all three ingress replicas
+  # landed on one node under `preferred` anti-affinity, and maxSkew: 1 with
+  # ScheduleAnyway was the fix. Placement is verified after applying, not
+  # assumed.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-server
+  pdb:
+    enabled: true
+    # Absolute, never a percentage: at low replica counts a percentage floors
+    # to 0 and the budget then forbids every eviction.
+    maxUnavailable: 1
   service:
     type: LoadBalancer
     # Optional: pin an IP from your MetalLB pool (recommended)
@@ -63,3 +101,19 @@ server:
   # Optional quality-of-life if you later expose via ingress:
   # extraArgs:
   #   - --insecure
+# repoServer does the git clones and `helm template` renders for all 55
+# Applications. Losing it stalls every sync, so it is the component most worth
+# having a spare of during a rolling upgrade -- and it is stateless, so a
+# second replica costs nothing but memory.
+repoServer:
+  replicas: 2
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          app.kubernetes.io/name: argocd-repo-server
+  pdb:
+    enabled: true
+    maxUnavailable: 1
