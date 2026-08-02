@@ -1,0 +1,225 @@
+# Cluster modernization — status and plan
+
+**Living document. Update it as things land.** This is the reference to re-read
+when picking the work back up, or after a context reset.
+
+Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
+[`ansible/README.md`](ansible/README.md), and
+[`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
+
+Last updated: 2026-08-02
+
+---
+
+## Where we are
+
+k3s **v1.32.10+k3s1**, 5 nodes, all `control-plane,etcd,master`, no workers.
+Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
+ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
+
+| | at session start | now |
+|---|---|---|
+| Backups | **none at all** | 4 nightly jobs, restore-verified |
+| PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 2 OutOfSync / 53 Synced / **0 Unknown** |
+| QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
+| k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
+| k8s-lab5 | storage unproven | **still cordoned** — one command left |
+| ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
+| inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
+| Node config | prose runbook only | Ansible, detect-then-remediate |
+
+### Immediately next
+
+1. **lab5** — `cd ansible && ansible-playbook site.yml --ask-become-pass --limit k8s-5.home -e multipath_force_restart=true`
+   Its `multipath.conf` is correct on disk but multipathd never reloaded it: the
+   role defers that restart when it sees live LUNs, and lab5 has one stale
+   session pointing at a deleted test volume. Then re-run the storage proof and
+   uncordon.
+2. **Push** — commits are stacked locally from a WAN outage. Includes
+   cert-manager v1.20.3.
+3. Then Phase 2 below.
+
+---
+
+## Phases
+
+### Phase 0 — stabilize ✅ mostly done
+Done: backups, PV protection, CSI v1.6.2, lab4 repair, ServiceLB + traefik
+removal, ArgoCD baseline green, ingress made drain-safe, Ansible baseline.
+
+Remaining:
+- [ ] lab5 multipath restart → storage proof → uncordon
+- [ ] **kube-vip bare Pod → DaemonSet.** Today it is a single unmanaged Pod on
+      lab1 with empty `ownerReferences`. If lab1 dies the API VIP
+      `192.168.32.2` disappears — and that VIP is the `--server` join target in
+      lab2–5's systemd units, the `tls-san`, and every kubeconfig.
+      ⚠️ **Blocker to resolve first:** NIC names differ (lab1/2/3 `eno1`, lab4
+      `enp0s31f6`, lab5 `enp7s0`), so a DaemonSet with hardcoded
+      `vip_interface: eno1` CrashLoops on two nodes. Establish whether v1.0.3
+      auto-detects the default-route interface before designing the manifest.
+- [ ] **Repoint `--server` off the VIP** — each node at a different peer's node
+      IP, removing the shared dependency. Must be a **systemd drop-in**: k3s CLI
+      args take precedence over config.yaml, so "Ansible owns config.yaml" does
+      not reach it. `k3s_config` role has this behind `k3s_repoint_server`.
+- [ ] CoreDNS 1 → 3 replicas. It is a k3s **addon** reconciled from a node
+      manifest on checksum change, so `kubectl scale` is reverted by upgrades —
+      needs a durable mechanism.
+- [ ] CNPG `immich-db` 2 → 3 instances (lab3 is currently the sole switchover
+      target, a pinch point for all three upgrade hops).
+- [ ] PDBs for CoreDNS and ArgoCD (ingress-nginx now has one).
+
+### Phase 1 — Ansible ✅ largely built
+`site.yml` converges; `20-config-converge.yml` applies k3s config + restarts;
+`40-add-node.yml` joins a node safely; `90-preflight.yml` audits read-only.
+
+Still to write: `30-upgrade.yml` (the rolling upgrade — see Phase 2 for the
+gates it must implement).
+
+### Phase 2 — k3s 1.32.10 → **1.35.6** (hard stop)
+Three sequential hops: `1.33.13 → 1.34.9 → 1.35.6`, **one variable**
+(`k3s_version` in `inventory/group_vars/all.yml`), three deliberate runs, live
+on each 24–48h.
+
+**Do not go to 1.36.** The QNAP CSI driver declares Kubernetes support only to
+1.35 — even v1.6.2. k3s `stable` is already 1.36.2, so the pre-flight assertion
+is doing real work.
+
+**Prerequisites, both hard:**
+- cert-manager → **v1.20.3** (committed, unpushed). NOT v1.21: it supports
+  k8s 1.33–1.36 and would be unsupported *today* on 1.32.
+- Envoy Gateway → **v1.8.3**. v1.6.1 supports k8s **1.30–1.33 only** and is
+  EOL, so upgrading k3s first would break the gateway.
+
+**Per node, `serial: 1`, `any_errors_fatal`:** CNPG switchover → cordon → drain
+(from a *different* node) → upgrade → gates → uncordon → settle → re-assert.
+**Never `--force` or `--disable-eviction`** — that kills a CNPG primary
+bypassing its PDB.
+
+Gates: node Ready at new version · `etcd_server_has_leader 1` and
+`etcd_server_health_failures 0` from `:2381` on **all five** (all five
+answering *is* the member-count check) · `/readyz?verbose` contains
+`[+]etcd ok` · every DaemonSet `desired == ready` · `csinode` non-empty · no
+ImagePullBackOff.
+
+⚠️ **Minor downgrades are impossible.** The only rollback is an etcd restore:
+`--cluster-reset --cluster-reset-restore-path` on one node, then wiping
+`/var/lib/rancher/k3s/server/db` on the other four and rejoining. Hours,
+destructive, unrehearsed. That is why the gates are strict.
+
+### Phase 3 — Flannel → Cilium 1.20.0
+**The central correction: keep `flannel-backend: vxlan` for the entire
+migration.** In k3s flannel runs *inside the server process*, not as a
+DaemonSet, so flipping it per node destroys the bridge the dual-overlay
+migration depends on and partitions the pod network. `flannel-backend: none` is
+a cleanup-phase, all-nodes-at-once change.
+
+- Pod CIDR **10.245.0.0/16**, tunnel port **8473** (flannel keeps 8472)
+- `cni.binPath: /var/lib/rancher/k3s/data/cni` — `/opt/cni/bin` does not exist
+- **`enableLBIPAM: false` and `defaultLBServiceIPAM: none`** — chart defaults
+  are `true`/`lbipam` and would fight MetalLB
+- **Leave `MTU: 0`.** Both overlays compute 1450; pinning 1500 is the classic
+  silent breakage (handshakes fine, large transfers hang)
+- Keep kube-proxy. Order: lab5 → lab4 → lab3 → lab2 → **lab1 last**
+- Install out-of-band via `helm`; adopt into ArgoCD only after cleanup
+  (`selfHeal` + `prune` would fight a half-migrated state and delete the
+  `CiliumNodeConfig`)
+- **Still needs a written rollback procedure before starting.**
+
+### Phase 4 — Headlamp + Alertmanager
+API-server OIDC via `kube-apiserver-arg` (Ansible owns config.yaml by then).
+⚠️ k3s refuses to start on an invalid apiserver flag — a typo bricks a server.
+Roll `serial: 1`. Alertmanager currently has **no receivers at all**.
+
+### Phase 5 — Kyverno
+Use `ValidatingPolicy` (`policies.kyverno.io/v1`), **not** the deprecated
+`ClusterPolicy` (removal planned v1.20, Oct 2026). Set
+`autogen.validatingAdmissionPolicy.enabled: true` so enforcing policies compile
+to **native VAPs** evaluated in-process — Kyverno being down then cannot block
+pod creation. Zero mutation (avoids the ServerSideApply drift-fight).
+Acceptance test: Kyverno at 0 replicas → pods still schedule, protected PVCs
+still undeletable.
+
+### Phase 6 — ingress-nginx → Envoy Gateway
+`ingress-nginx` was **archived 2026-03-24**; no further CVE fixes. Exposure is
+LAN-only (RFC1918, no tunnel), so this is unhurried but not optional.
+
+Cilium Gateway API is ruled out: it requires `kubeProxyReplacement=true`, which
+we deliberately defer. NGINX Gateway Fabric is ruled out: OIDC and ext-auth are
+NGINX Plus only. **Envoy Gateway** is already installed and wired into
+external-dns.
+
+⚠️ **Spike before committing:** no upstream e2e test composes
+`oidc` + `jwt` + `authorization`. Test on a throwaway host — the decisive check
+is logging in with a `@gmail.com` account and getting **403, not 200**.
+
+Notes: `spec.oidc` does **not** validate the ID token signature (EG #5414 open)
+— the `jwt` block is the only real validation. Pin `oidc.cookieNames.idToken`
+or the JWT filter cannot address the cookie. Google consent screen is already
+`orgInternalOnly: true`, which is layer one under the `hd` claim rule.
+
+### Phase 7 — automation
+SMART exporter → unattended-upgrades (security only, never auto-reboot) →
+Descheduler → Goldilocks/VPA (recommend only) → NFD → **kured last**, gated:
+all five nodes are etcd members, concurrency 1, blocking-pod-selector for CNPG
+primaries. Reloader is already installed.
+
+---
+
+## Hard-won findings — do not re-derive these
+
+**ServiceLB's klipper claimed hostPort 53 with an *unconditional* DNAT**
+(`--dport 53 -j DNAT --to <podIP>:53`, no destination match). It captured
+`127.0.0.53` on every node, so node DNS has always gone through Pi-hole, not
+systemd-resolved — `DNS=1.1.1.1 8.8.8.8` in `resolved.conf` was shadowed. On
+lab4 the target pod was ImagePullBackOff, so the DNAT pointed at nothing and
+even the node's own resolver stub was refused: a loop it could not escape, since
+fixing DNS required pulling an image. Proven by controlled comparison with lab5
+(identical rules, live pod, worked). Removing ServiceLB fixed it.
+
+**ArgoCD `retry` was nested wrong** — at `spec.template.spec.retry` instead of
+inside `syncPolicy`, so the CRD silently pruned it and **no Helm app had any
+retry policy**. Nothing errors when you get this wrong; the field just vanishes.
+
+**Assert values and behaviour, never file presence.** Three separate bugs of
+this exact shape: the inotify sysctl file existed on all 5 nodes and had never
+worked (value wrapped onto a second line); `multipath.conf` existed on lab4/5
+and was wrong (missing `find_multipaths no`); the GHCR ExternalSecret reported
+`Ready=True` while delivering an expired token that froze five apps including
+the storage driver.
+
+**A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
+ingress twice): a sync stuck "waiting for healthy state" on something that
+cannot become healthy never re-reads git. Clear it with
+`kubectl -n argocd patch app <name> --type json -p '[{"op":"remove","path":"/operation"}]'`.
+
+**Percentage `maxUnavailable` floors to 0 at 3 replicas**, so a Deployment
+cannot self-heal a scheduling-constrained rollout. Use an absolute `1`.
+
+**`preferred` anti-affinity does not spread simultaneous pods** — all three
+ingress replicas landed on one node. `topologySpreadConstraints` with
+`maxSkew: 1, ScheduleAnyway` is the correct expression.
+
+**Ansible auto-loads `group_vars/` only from the inventory's or the playbook's
+directory.** It lives at `inventory/group_vars/` for that reason.
+
+**QNAP SMB mounts are `uid=0` and the driver ignores StorageClass
+`mountOptions`** (tested). Backup jobs therefore run as uid 0. Also: busybox
+`tar` fstat()s its own output and gets ESTALE on CIFS — pipe through `gzip`.
+
+**`Retain` means test PVCs leak.** Deleting a test PVC leaves the PV *and* the
+backend volume. Clean up with `tridentctl delete volume` after any storage test.
+
+---
+
+## Standing warnings
+
+- **Do not uncordon k8s-lab5** until a storage proof passes on it.
+- **Backups are on the same NAS as the data.** They cover driver bugs,
+  accidental deletion and bad restores. They do **not** cover the NAS failing.
+  The 57 GB Immich library has no second copy anywhere — accepted risk,
+  recorded in `MANUAL-STEPS.md`.
+- **Never `kubectl patch` the QNAP StorageClasses** — chart-managed, `selfHeal`
+  reverts it. Change them in git.
+- **`flannel-backend: none` is not a config-convergence item.** It removes the
+  CNI cluster-wide.
