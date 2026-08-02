@@ -1,5 +1,5 @@
 repoURL: "https://charts.jetstack.io"
 chart: "cert-manager"
-targetRevision: "v1.14.5"
+targetRevision: "v1.20.3"
 releaseName: "cert-manager"
 namespace: "cert-manager"

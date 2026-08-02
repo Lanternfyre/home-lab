@@ -1,1 +1,38 @@
-installCRDs: true
+# cert-manager v1.20.3 (was v1.14.5, roughly 2 years past EOL).
+#
+# WHY v1.20 AND NOT v1.21: v1.21 supports Kubernetes 1.33-1.36. This cluster is
+# on 1.32 today, so v1.21 would be out of support IMMEDIATELY. v1.20 supports
+# 1.32-1.35 -- exactly the k3s upgrade path (1.32 -> 1.33 -> 1.34 -> 1.35.6).
+# Moving to v1.21 is a follow-up AFTER k3s reaches 1.35, not part of this work.
+#
+# This upgrade is a hard prerequisite for the k3s upgrade: v1.14 sits outside
+# the tested matrix for 1.32, let alone 1.35, and if it breaks, all 13 HTTPS
+# endpoints silently stop renewing and it surfaces ~90 days later.
+
+crds:
+  # Replaces `installCRDs: true`, which was renamed in v1.15.
+  enabled: true
+  # keep: true means the CRDs survive an uninstall of the Helm release. Without
+  # it, removing or renaming this app would cascade-delete every Certificate,
+  # CertificateRequest and Issuer object in the cluster.
+  keep: true
+
+# Deliberately NOT set:
+#
+#   config.gatewayAPI.enabled -- the gateway-shim, which would let cert-manager
+#   issue certs directly from Gateway listeners. It needs the Gateway API CRDs
+#   present before the cert-manager pod starts, which entangles this upgrade
+#   with the Envoy Gateway CRD ownership transfer. The Gateway plan uses a
+#   hand-declared wildcard Certificate instead, which works on any version.
+#   Revisit once both are settled.
+#
+#   Replace=true as a sync option -- it takes precedence over
+#   ServerSideApply=true and reintroduces the last-applied-configuration
+#   annotation size limit that large CRDs blow through.
+#
+# Expected during the upgrade, and not a fault:
+#   * ~23 stale CertificateRequests garbage-collected (36 -> ~13), from the
+#     v1.18 revisionHistoryLimit nil -> 1 default change.
+#   * a seconds-long webhook rejection window (failurePolicy=Fail, 1 replica).
+#   * cert-manager-manifests stays OutOfSync -- it already was, for an
+#     unrelated ExternalSecret reason.
