@@ -11,7 +11,7 @@ ansible_user: tarjei
 #
 # Upgrade path is one minor at a time:
 #   v1.32.10+k3s1 -> v1.33.13+k3s1 -> v1.34.9+k3s1 -> v1.35.6+k3s1
-k3s_version: "v1.34.9+k3s1"
+k3s_version: "v1.35.6+k3s1"
 k3s_max_version: "v1.36.0"     # assert k3s_version is strictly below this
 
 # ── k3s bundled addons to disable ────────────────────────────────────────────

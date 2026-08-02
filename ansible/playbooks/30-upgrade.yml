@@ -468,11 +468,20 @@
         # 2026-08-02 that ordinary restarts do NOT do this -- only version
         # changes -- which is exactly why re-assertion belongs HERE and not in
         # site.yml.
+        # ⚠️ `apply: delegate_to:` is load-bearing. include_role runs the role's
+        # tasks on the CURRENT host; passing a *_manifest_host var only sets a
+        # value, it delegates nothing. Without this the role wrote its addon
+        # manifest onto EVERY node in turn -- five copies of one objectset --
+        # and the kube-vip role below refused outright, because that file only
+        # exists on the manifest host and writing a second copy would put two
+        # deploy controllers on one objectset.
         - name: "{{ node_name }} | re-assert CoreDNS HA"
           ansible.builtin.include_role:
             name: coredns_ha
+            apply:
+              delegate_to: "{{ groups['k3s_servers'] | first }}"
           vars:
-            coredns_manifest_host: "{{ peer }}"
+            coredns_manifest_host: "{{ groups['k3s_servers'] | first }}"
           when: not ansible_check_mode
 
         # kube-vip is an addon from the SAME manifest mechanism, and it was
@@ -488,6 +497,8 @@
         - name: "{{ node_name }} | re-assert the kube-vip DaemonSet"
           ansible.builtin.include_role:
             name: kube_vip
+            apply:
+              delegate_to: "{{ groups['k3s_servers'] | first }}"
           vars:
             kube_vip_manifest_host: "{{ groups['k3s_servers'] | first }}"
           when: not ansible_check_mode
