@@ -24,14 +24,21 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 2 OutOfSync / 53 Synced / **0 Unknown** |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
-| k8s-lab5 | storage unproven | **still cordoned** — one command left |
+| k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
 | ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
 | inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
 | Node config | prose runbook only | Ansible, detect-then-remediate |
 
 ### Immediately next
 
-1. **lab5** — needs your sudo password, one command:
+1. ~~**lab5**~~ ✅ **DONE 2026-08-02.** The forced multipathd restart landed
+   (daemon now newer than its config), and the storage proof **passed**: the
+   pod mounted `/dev/mapper/mpathb`, wrote and read back 16 MB. The multipath
+   device it could never create before now exists. Test PV reclaimed, no leak.
+   **lab5 uncordoned.** All five nodes are now Ready, schedulable, and
+   registering `csi.trident.qnap.io` — the drain targets Phase 2 needs.
+
+   <details><summary>historical: the command that fixed it</summary>
    `cd ansible && ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-5.home -e multipath_force_restart=true`
    Its `multipath.conf` is correct on disk but multipathd never reloaded it —
    **re-proven behaviourally on 2026-08-02**, not inferred: a 1Gi `qnap-iscsi`
@@ -42,6 +49,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
    lab5 carries stale sessions. Then re-run the storage proof and uncordon.
    *(lab4 is done — its multipathd restarted in the same second the conf was
    written, and it is already uncordoned.)*
+   </details>
 2. ~~**Push**~~ ✅ done 2026-08-02. cert-manager rolled v1.14.5 → **v1.20.3**,
    Healthy — the first hard Phase 2 prerequisite is met. `prometheus` came back
    into sync on its own; `pyroscope` is diagnosed benign (see findings).
@@ -69,7 +77,7 @@ Done: backups, PV protection, CSI v1.6.2, lab4 repair, ServiceLB + traefik
 removal, ArgoCD baseline green, ingress made drain-safe, Ansible baseline.
 
 Remaining:
-- [ ] lab5 multipath restart → storage proof → uncordon
+- [x] lab5 multipath restart → storage proof → uncordon ✅ 2026-08-02
 - [ ] **kube-vip bare Pod → DaemonSet.** Today a single Pod on lab1. If lab1
       dies the API VIP `192.168.32.2` disappears — and that VIP is the
       `--server` join target in lab2–5's systemd units, the `tls-san`, and
@@ -357,7 +365,9 @@ backend volume. Clean up with `tridentctl delete volume` after any storage test.
 
 ## Standing warnings
 
-- **Do not uncordon k8s-lab5** until a storage proof passes on it.
+- ~~Do not uncordon k8s-lab5 until a storage proof passes on it.~~ ✅ The
+  proof passed 2026-08-02 and it is uncordoned. The rule stands for any
+  *future* node: `Ready` is not the gate, a mounted volume is.
 - **Backups are on the same NAS as the data.** They cover driver bugs,
   accidental deletion and bad restores. They do **not** cover the NAS failing.
   The 57 GB Immich library has no second copy anywhere — accepted risk,
