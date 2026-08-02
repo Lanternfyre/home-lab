@@ -9,7 +9,7 @@
 # deliberately never restarts, so "just converge" can never bounce the control
 # plane. This playbook is the conscious follow-up.
 #
-# What it lands (from group_vars/all.yml k3s_disable):
+# What it lands (from inventory/group_vars/all.yml k3s_disable):
 #   * disable traefik   -- stops the addon's 640+ crashloop, which otherwise
 #                          re-runs on every server restart
 #   * disable servicelb -- removes klipper-lb, which squats hostPorts 80/443/53

@@ -103,7 +103,7 @@ on every control-plane node.
 ```
 ansible.cfg                     roles_path, no host-key checking (lab2/lab3 fail it)
 inventory/homelab.yml           .home domains, per-node NIC names
-group_vars/all.yml              k3s_version — the one knob — plus baseline values
+inventory/group_vars/all.yml    k3s_version — the one knob — plus baseline values
 roles/node_baseline/            DNS drop-in, sysctls, multipath.conf, packages
 roles/node_verify/              the assertions that would have caught lab4 and lab5
 playbooks/10-baseline.yml       apply + verify, serial: 1, any_errors_fatal
