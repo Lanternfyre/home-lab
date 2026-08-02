@@ -70,7 +70,49 @@ throughout — it delivered the value correctly; it cannot know the registry
 rejects it. If you set the new PAT to expire, put a calendar reminder on it,
 because the failure mode is invisible.
 
-### 2b. Fix multipath + iscsid on k8s-lab4 and k8s-lab5 (needs sudo)
+### 2b. Fix lab4/lab5 — RUN ANSIBLE, do not hand-edit
+
+**This is now a playbook, not a copy-paste session.** The only reason it was
+ever manual is that sudo needs a password, which I cannot type.
+
+```bash
+cd ~/Private/home-lab/ansible
+
+# 1. see what is broken -- read-only, no sudo, safe any time
+ansible-playbook playbooks/90-preflight.yml
+
+# 2. review what would change
+ansible-playbook playbooks/10-baseline.yml --ask-become-pass --check --diff
+
+# 3. apply -- detects per node and fixes ONLY what that node fails
+ansible-playbook playbooks/10-baseline.yml --ask-become-pass
+
+# 4. lab5 only: its single iSCSI session is a STALE leftover pointing at
+#    pvc-4de1d672-..., a test volume already deleted (0 mpath devices, no
+#    PVC-bearing pods on the node). The normal run defers its multipathd
+#    restart because it sees a session; forcing it here is safe and is what
+#    makes find_multipaths take effect.
+ansible-playbook playbooks/10-baseline.yml --ask-become-pass \
+  --limit k8s-5.home -e multipath_force_restart=true
+```
+
+What it will do, measured live:
+
+| node | DNS | multipath | inotify | iscsid | action |
+|---|---|---|---|---|---|
+| lab1/2/3 | ok | ok | BROKEN | ok | sysctl only — multipathd NOT restarted (4 LUNs each) |
+| lab4 | BROKEN | BROKEN | BROKEN | BROKEN | all four |
+| lab5 | ok | BROKEN | BROKEN | ok | multipath + sysctl |
+
+**If lab4 still fails DNS after step 3**, the play says so explicitly and stops.
+Its resolver stub returns REFUSED to glibc while `resolvectl` works, and a
+config rewrite has not cleared it — that node needs a **reboot**, then re-run.
+
+Then tell me and I will re-run the storage proof on both nodes and uncordon
+them if it passes. **Do not uncordon manually** — the proof is the gate.
+
+<details>
+<summary>Historical: the equivalent manual commands</summary>
 **PROVEN by test 2026-08-01, not theorised. This blocks uncordoning both nodes,
 and therefore blocks every drain in the k3s upgrade and the CNI migration.**
 
@@ -134,6 +176,8 @@ getent hosts registry.k8s.io || sudo reboot
 
 Tell me when done and I will re-run the storage proof on both nodes and uncordon
 them if it passes. **Do not uncordon them yourself** — the proof is the gate.
+
+</details>
 
 ### 3. Confirm Workspace alias domains
 The planned Envoy Gateway `SecurityPolicy` authorises on the Google `hd` claim,
