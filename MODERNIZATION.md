@@ -134,6 +134,39 @@ is doing real work.
   k8s 1.33–1.36 and would be unsupported *today* on 1.32.
 - Envoy Gateway → **v1.8.3**. v1.6.1 supports k8s **1.30–1.33 only** and is
   EOL, so upgrading k3s first would break the gateway.
+  **Committed 2026-08-02, NOT yet pushed** — pushing applies it immediately.
+  What the bump actually carries, measured by rendering both charts:
+
+  - **Gateway API CRDs v1.4.1 → v1.5.1.** The chart's `crds` subchart is
+    enabled by default and ArgoCD includes CRDs, so this lands whether or not
+    you think of it as a CRD change.
+  - Exposure is genuinely low: Envoy Gateway carries **no traffic at all** —
+    0 Gateways, 0 HTTPRoutes, 0 GRPCRoutes, 1 GatewayClass. ingress-nginx
+    still serves all 13 Ingresses.
+  - New `MutatingWebhookConfiguration` `topology.webhook.gateway.envoyproxy.io`
+    — `failurePolicy: Ignore`, matching only `pods/binding`, so an Envoy
+    Gateway outage cannot block scheduling. Benign.
+  - New `Job gateway-envoy-gateway-helm-certgen`, a `pre-install,pre-upgrade`
+    Helm hook (ArgoCD runs it as a PreSync hook).
+
+  ⚠️ **This bump is a one-way door, and the trap is in the rollback.** v1.8.3
+  installs a `ValidatingAdmissionPolicy`
+  `safe-upgrades.gateway.networking.k8s.io` with `failurePolicy: Fail` and
+  `validationActions: [Deny]` over all CRD CREATE/UPDATE. Its CEL
+  short-circuits on `object.spec.group != 'gateway.networking.k8s.io'`, so
+  Trident, cert-manager and ArgoCD CRDs are unaffected — but it **denies any
+  Gateway API CRD whose `bundle-version` matches `v1.[0-4].\d+`**. Reverting
+  `targetRevision` to v1.6.1 therefore gets Denied, because v1.6.1 ships
+  pre-v1.5.0 CRDs.
+
+  **Rollback order, and it is not optional:** delete the VAP *and* its binding
+  first, then revert the app.
+  ```
+  kubectl delete validatingadmissionpolicybinding safe-upgrades.gateway.networking.k8s.io
+  kubectl delete validatingadmissionpolicy        safe-upgrades.gateway.networking.k8s.io
+  ```
+  Reverting first and deleting after does not work — the CRD write is rejected
+  before ArgoCD ever prunes the policy.
 
 **Per node, `serial: 1`, `any_errors_fatal`:** CNPG switchover → cordon → drain
 (from a *different* node) → upgrade → gates → uncordon → settle → re-assert.
@@ -231,6 +264,24 @@ worked (value wrapped onto a second line); `multipath.conf` existed on lab4/5
 and was wrong (missing `find_multipaths no`); the GHCR ExternalSecret reported
 `Ready=True` while delivering an expired token that froze five apps including
 the storage driver.
+
+**`pyroscope` OutOfSync is benign, permanent, and cannot be fixed by syncing.**
+Diagnosed 2026-08-02 by rendering the chart locally and diffing against the
+live object. The *entire* difference is one field:
+
+```
+spec/volumeClaimTemplates[0]/metadata/annotations: desired {} , absent in live
+```
+
+The chart emits an empty annotations map; the API server drops it. ArgoCD's
+differ sees a difference and `volumeClaimTemplates` is **immutable on a
+StatefulSet**, so no sync can ever converge it — the app will sit OutOfSync
+forever while being perfectly Healthy (STS 1/1, pyroscope 1.21.0). It is *not*
+a stuck operation: `.operation` is empty and the last sync reported Succeeded.
+Fix if the noise matters: an `ignoreDifferences` entry for that path. Note the
+ApplicationSet template is shared by all Helm apps and `app.yaml` is
+deliberately flat 5 keys, so this is a decision about a global rule, not a
+per-app tweak. Left alone for now.
 
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that
