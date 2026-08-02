@@ -42,14 +42,23 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
    lab5 carries stale sessions. Then re-run the storage proof and uncordon.
    *(lab4 is done — its multipathd restarted in the same second the conf was
    written, and it is already uncordoned.)*
-2. **Push** — 10 commits stacked locally from a WAN outage. ⚠️ Pushing is a
-   **cluster change**: ArgoCD `selfHeal` will immediately roll cert-manager
-   v1.14.5 → v1.20.3. Nothing else in the stack touches cluster state.
-   The 2 currently-OutOfSync apps are `prometheus` and `pyroscope` — unrelated
-   to this stack, and worth a separate look.
-3. **kube-vip Pod → DaemonSet** — design is now settled (see Phase 0), needs a
-   deliberate window because the API VIP blips.
-4. Then Phase 2 below.
+2. ~~**Push**~~ ✅ done 2026-08-02. cert-manager rolled v1.14.5 → **v1.20.3**,
+   Healthy — the first hard Phase 2 prerequisite is met. `prometheus` came back
+   into sync on its own; `pyroscope` is diagnosed benign (see findings).
+3. **Decide on the Envoy Gateway bump.** v1.6.1 → v1.8.3 is **committed but
+   deliberately unpushed** — read the one-way-door warning in Phase 2 first.
+   Every unpushed commit after it is inert Ansible (playbooks change nothing
+   until invoked), so the *only* cluster-affecting commit in the local stack is
+   this one. Pushing applies it.
+4. **kube-vip Pod → DaemonSet** — built and validated, ready to run:
+   `cd ansible && ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass --check --diff`
+   then without `--check`. Needs a deliberate window: the API VIP blips for a
+   few seconds during the cutover.
+5. **`30-upgrade.yml` is deliberately NOT written yet.** Its gates have to
+   assert against a 5-node-healthy cluster, and lab5 is still cordoned. Writing
+   it now would mean writing gates for a cluster state that does not exist.
+   Start it once items 1, 3 and 4 are done.
+6. Then Phase 2 below.
 
 ---
 
