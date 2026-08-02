@@ -133,14 +133,50 @@ Remaining:
       Expect a **brief VIP outage** during the cutover while the old Pod is
       removed and the first DaemonSet pod claims the lease. Deliberate op, done
       with a human watching — not a drive-by.
-- [ ] **Repoint `--server` off the VIP** — **materially less urgent since
-      2026-08-02**: the rationale below was written when the VIP was a single
-      Pod on lab1. It is now a 5/5 leader-elected DaemonSet, so the "shared
-      dependency" is no longer a single point of failure. Still worth doing to
-      remove the shared dependency entirely, but it is no longer upgrade-
-      blocking. Each node at a different peer's node IP. Must be a **systemd drop-in**: k3s CLI
-      args take precedence over config.yaml, so "Ansible owns config.yaml" does
-      not reach it. `k3s_config` role has this behind `k3s_repoint_server`.
+- [x] ~~**Repoint `--server` off the VIP**~~ **DECIDED AGAINST, 2026-08-02.**
+      The item was written when the VIP was a single Pod on lab1: back then
+      lab1 dying took the VIP, and with it the address four nodes used to find
+      the API. That is no longer true — kube-vip is a 5/5 leader-elected
+      DaemonSet with ~5s failover.
+
+      Pinning each node to a peer IP trades ONE shared dependency for **N
+      specific ones**: if lab2 points at lab1 and lab1 is down, lab2 cannot
+      rejoin on restart. It also bakes in a static topology that goes stale
+      whenever nodes change. An HA VIP has neither problem.
+
+      Residual risks, accepted knowingly: cold-start ordering (boot only a
+      non-init node with all others off and it waits for a VIP nobody holds —
+      k3s retries, so it resolves once a holder appears), and gratuitous-ARP
+      failover being slower than the lease on some switches.
+
+      ✅ **Checked and NOT a problem:** whether the VIP could move to a node
+      whose serving cert lacks it. `--tls-san 192.168.32.2` appears only in
+      lab1's unit, but k3s propagates it through the datastore — verified with
+      `openssl s_client` against all five node IPs, and every cert carries
+      `IP Address:192.168.32.2` plus every node IP. So the VIP can move
+      anywhere without breaking TLS.
+
+- [ ] **Normalise lab1's systemd unit — it is the only node that differs.**
+      ```
+      k8s-1:    --cluster-init --token … --tls-san 192.168.32.2
+      k8s-2..5: --server https://192.168.32.2:6443 --token …
+      ```
+      Harmless in steady state (`--cluster-init` after bootstrap just selects
+      embedded etcd; all five are equal etcd members, lab1 is not a master).
+
+      ⚠️ **The risk is the REBUILD path, and it is severe.** If lab1's disk
+      dies and it is rebuilt from `gitops/argo-install.md`, that runbook says
+      `--cluster-init` — which starts a **brand new empty cluster** instead of
+      rejoining. The four survivors would keep running while lab1 formed a
+      second cluster of one, and the failure would look like "lab1 came back
+      but the cluster is wrong". It must be rebuilt with `--server` pointing at
+      a survivor.
+
+      Fix: drop `--cluster-init` from lab1 and give it the same `--server` as
+      the rest, so all five units are identical and no node needs special
+      knowledge. Must be a **systemd drop-in** — CLI args in `ExecStart` beat
+      `config.yaml`, so the Ansible k3s_config role does not reach this.
+      Deliberate op, one node at a time, verifying etcd keeps its leader.
 - [ ] CoreDNS 1 → 3 replicas + PDB. **Built (`roles/coredns_ha`, wired into
       `site.yml`), not yet applied — needs one sudo run.**
 
