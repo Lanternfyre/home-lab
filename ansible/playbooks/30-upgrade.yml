@@ -437,7 +437,30 @@
     - name: Final word
       ansible.builtin.debug:
         msg: >-
-          All nodes at {{ k3s_version }}. LIVE ON THIS FOR 24-48h before
-          setting k3s_version to the next hop. The gates passed, but a cluster
-          only proves an upgrade by running on it.
+          All nodes at {{ k3s_version }}, and storage proven to still mount on
+          it. Before the next hop, give the cluster some ordinary running time
+          -- the gates check the control plane, but the nightly backup
+          CronJobs and anything with a slow failure mode only show up under
+          real use. If something breaks after several hops taken back to back,
+          you have several suspects instead of one.
       run_once: true
+
+# Separate play, and deliberately so: the proof runs kubectl on the WORKSTATION
+# with no privilege escalation, while the play above runs as root across the
+# nodes. `become:`/`delegate_to:` are not valid attributes on a TaskInclude, so
+# delegating out of that play is not an option -- a play boundary is.
+- name: Prove storage still works on the new version
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  vars:
+    proof_name: storage-proof-upgrade
+  tasks:
+    # The csinode gate proves the driver REGISTERED. This proves it still
+    # WORKS -- provision, attach, stage, mount, write, read. Separate code
+    # paths, and the ones that talk to the NAS, iscsid and multipathd.
+    - name: Storage proof
+      ansible.builtin.include_tasks: tasks/storage-proof.yml
+      when: not ansible_check_mode

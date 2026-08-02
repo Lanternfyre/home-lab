@@ -1,0 +1,153 @@
+---
+# Prove the QNAP CSI driver can still actually SERVE a volume after the upgrade.
+#
+# ── Why this is not redundant with the csinode gate ──────────────────────────
+# `csinode.spec.drivers` being non-empty proves the driver REGISTERED. It does
+# not prove it can provision, attach, stage and mount — and those are separate
+# code paths that talk to the NAS, to iscsid and to multipathd. k8s-lab4 sat
+# Ready with drivers registered and could not mount a thing; k8s-lab5 had a
+# correct multipath.conf that multipathd had never loaded. Both would have
+# passed a registration check.
+#
+# The QNAP driver is also the component with the worst history in this repo AND
+# the one with a hard version ceiling, so "does storage still work" is exactly
+# the question worth asking after each hop — while there is still a hop left to
+# not take.
+#
+# ⚠️ Cleanup runs in `always`. qnap-iscsi is reclaimPolicy: Retain, so a
+# deleted test PVC leaks the PV *and* the backend LUN on the NAS. The PV is
+# flipped to Delete BEFORE the claim is removed so the backend volume goes too.
+
+- name: "storage proof | clear any previous attempt"
+  ansible.builtin.command: >-
+    kubectl -n default delete pod {{ proof_name }} --ignore-not-found --wait=true
+  changed_when: false
+
+- name: "storage proof | clear any previous claim"
+  ansible.builtin.command: >-
+    kubectl -n default delete pvc {{ proof_name }} --ignore-not-found --wait=true
+  changed_when: false
+
+- name: Provision, mount and read back a real volume
+  block:
+    - name: "storage proof | render"
+      ansible.builtin.set_fact:
+        proof_manifest: |
+          apiVersion: v1
+          kind: PersistentVolumeClaim
+          metadata:
+            name: {{ proof_name }}
+            namespace: default
+          spec:
+            accessModes: [ReadWriteOnce]
+            storageClassName: qnap-iscsi
+            resources:
+              requests:
+                storage: 1Gi
+          ---
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: {{ proof_name }}
+            namespace: default
+          spec:
+            restartPolicy: Never
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: proof
+                image: busybox:1.37
+                command: [/bin/sh, -c]
+                args:
+                  - |
+                    set -e
+                    mount | grep /data
+                    dd if=/dev/urandom of=/data/proof.bin bs=1M count=16
+                    sync
+                    md5sum /data/proof.bin
+                    df -h /data
+                    echo "STORAGE PROOF PASSED"
+                volumeMounts:
+                  - { name: proof, mountPath: /data }
+            volumes:
+              - name: proof
+                persistentVolumeClaim: { claimName: {{ proof_name }} }
+
+    - name: "storage proof | apply"
+      ansible.builtin.shell: "kubectl apply -f -"
+      args:
+        stdin: "{{ proof_manifest }}"
+      changed_when: true
+
+    - name: "storage proof | wait for the pod to finish"
+      ansible.builtin.command: >-
+        kubectl -n default get pod {{ proof_name }} -o jsonpath={.status.phase}
+      register: proof_phase
+      changed_when: false
+      until: proof_phase.stdout | trim in ['Succeeded', 'Failed']
+      retries: 40
+      delay: 10
+
+    - name: "storage proof | read the verdict"
+      ansible.builtin.command: "kubectl -n default logs {{ proof_name }}"
+      register: proof_log
+      changed_when: false
+      failed_when: "'STORAGE PROOF PASSED' not in proof_log.stdout"
+
+    - name: "storage proof | PASSED"
+      ansible.builtin.debug:
+        msg: >-
+          QNAP CSI still provisions, attaches, stages and mounts on
+          {{ k3s_version }}. {{ proof_log.stdout_lines | select('search', 'mpath|Filesystem|/data') | list | join(' | ') }}
+
+  always:
+    # Flip to Delete BEFORE removing the claim, or Retain leaks the PV and the
+    # backend LUN and you are cleaning up with tridentctl later.
+    - name: "storage proof | find the PV"
+      ansible.builtin.command: >-
+        kubectl -n default get pvc {{ proof_name }} -o jsonpath={.spec.volumeName}
+      register: proof_pv
+      changed_when: false
+      failed_when: false
+
+    # ⚠️ shell + single quotes, NOT command. ansible.builtin.command runs no
+    # shell and shlex-splits, which STRIPS the double quotes out of the JSON
+    # patch -- kubectl then gets {spec:{persistentVolumeReclaimPolicy:Delete}},
+    # rejects it, and (with failed_when: false) the failure is invisible. The
+    # PV stays Retain and the backend LUN leaks. Caught by the self-test's own
+    # leak check, which is the only reason this was noticed at all.
+    - name: "storage proof | make the PV self-deleting"
+      ansible.builtin.shell: >-
+        kubectl patch pv {{ proof_pv.stdout | trim }}
+        -p '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}'
+      changed_when: true
+      when: (proof_pv.stdout | trim | length) > 0
+
+    - name: "storage proof | remove the pod"
+      ansible.builtin.command: >-
+        kubectl -n default delete pod {{ proof_name }} --ignore-not-found --wait=true
+      changed_when: true
+      failed_when: false
+
+    - name: "storage proof | remove the claim"
+      ansible.builtin.command: >-
+        kubectl -n default delete pvc {{ proof_name }} --ignore-not-found --wait=true
+      changed_when: true
+      failed_when: false
+
+    - name: "storage proof | confirm nothing leaked"
+      ansible.builtin.command: "kubectl get pv {{ proof_pv.stdout | trim }}"
+      register: proof_gone
+      changed_when: false
+      failed_when: false
+      until: proof_gone.rc != 0
+      retries: 12
+      delay: 5
+      when: (proof_pv.stdout | trim | length) > 0
+
+    - name: "storage proof | leak check result"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Test PV reclaimed, backend LUN released.' if proof_gone.rc | default(1) != 0
+             else 'WARNING: PV ' ~ (proof_pv.stdout | trim) ~ ' still exists -- check with tridentctl.' }}
+      when: (proof_pv.stdout | trim | length) > 0
