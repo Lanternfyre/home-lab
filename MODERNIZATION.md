@@ -78,7 +78,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ## Phases
 
-### Phase 0 — stabilize ✅ mostly done
+### Phase 0 — stabilize ✅ **complete** (bar one downgraded item)
 Done: backups, PV protection, CSI v1.6.2, lab4 repair, ServiceLB + traefik
 removal, ArgoCD baseline green, ingress made drain-safe, Ansible baseline.
 
@@ -198,12 +198,23 @@ Remaining:
       nothing left to repair it. Bootstrap and upgrade are the same code path
       (`-e argocd_bootstrap=true` adds the GHCR creds + root Application), so
       disaster recovery is exercised on every routine update.
-- [ ] PDB for ArgoCD (ingress-nginx has one; CoreDNS is handled above).
-      ⚠️ **No obvious home.** ArgoCD is bootstrapped out-of-band — there is no
-      `apps/argocd/` directory, and both ApplicationSets generate from
-      `apps/*/app.yaml` with `missingkey=error`, so a manifests-only app dir
-      would break the Helm appset. Needs a decision about where ArgoCD's own
-      config lives before the PDB can be written anywhere sensible.
+- [x] **PDB for ArgoCD** ✅ **2026-08-02.** The "no obvious home" problem
+      dissolved once ArgoCD moved under Ansible: the argo-cd chart has
+      per-component PDB support, so it lives in `gitops/argocd-values.yaml`.
+
+      ⚠️ **A PDB alone would have been useless or harmful.** Every ArgoCD
+      component ships at ONE replica, where `minAvailable: 1` gives
+      `disruptionsAllowed 0` and blocks every drain permanently, while
+      `maxUnavailable: 1` still permits the only pod to be evicted. So
+      `server` and `repoServer` went to **2 replicas** (stateless, scale
+      cleanly) with `maxUnavailable: 1` budgets and
+      `topologySpreadConstraints`. Verified: one pod each on lab1 and lab2,
+      both PDBs reporting `disruptionsAllowed=1`.
+
+      The singletons — controller, redis, dex, notifications, applicationset —
+      deliberately get **no PDB**. ArgoCD being briefly unavailable during a
+      drain costs a UI outage and a reconciliation pause, not workload
+      downtime; a deadlocked drain costs the whole upgrade.
 
 ### Phase 1 — Ansible ✅ largely built
 `site.yml` converges; `20-config-converge.yml` applies k3s config + restarts;
