@@ -60,6 +60,29 @@
   changed_when: false
   check_mode: false
 
+# `helm upgrade` always writes a new release revision, so running it
+# unconditionally makes every run report changed=1 -- and this repo's own rule
+# (site.yml) is that a second run should be changed=0, because anything else
+# hides genuine non-idempotency in the noise. So compare what is actually
+# deployed against what is asked for: the chart version AND the user-supplied
+# values as the release itself recorded them.
+- name: "detect | values currently stored in the release"
+  ansible.builtin.command: >-
+    helm -n {{ argocd_namespace }} get values {{ argocd_release_name }} -o yaml
+  register: argocd_live_values
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+- name: "detect | is anything actually different?"
+  ansible.builtin.set_fact:
+    # `helm get values` emits a "USER-SUPPLIED VALUES:" header and a null doc
+    # when there are none, so compare parsed structures rather than text.
+    argocd_values_differ: >-
+      {{ (argocd_live_values.stdout | default('') | from_yaml | default({}, true))
+         != (lookup('file', argocd_values_file) | from_yaml) }}
+    argocd_version_differs: "{{ (argocd_before.stdout | trim) != argocd_chart_version }}"
+
 - name: "report | what this run will do"
   ansible.builtin.debug:
     msg: >-
@@ -107,8 +130,22 @@
     --wait
     --timeout 15m
   register: argocd_helm_run
-  when: not ansible_check_mode
+  when:
+    - not ansible_check_mode
+    - argocd_version_differs | bool or argocd_values_differ | bool
+      or argocd_force_upgrade | bool
   changed_when: "'has been upgraded' in argocd_helm_run.stdout or 'has been installed' in argocd_helm_run.stdout"
+
+- name: "install | already at the target, nothing to do"
+  ansible.builtin.debug:
+    msg: >-
+      ArgoCD is already chart {{ argocd_chart_version }} with the values in
+      {{ argocd_values_file | basename }}; skipping helm to keep the run
+      idempotent. Force it with -e argocd_force_upgrade=true.
+  when:
+    - not (argocd_version_differs | bool)
+    - not (argocd_values_differ | bool)
+    - not (argocd_force_upgrade | bool)
 
 # ── Bootstrap-only steps ─────────────────────────────────────────────────────
 
@@ -138,25 +175,34 @@
   check_mode: false
   when: not ansible_check_mode
 
-- name: "verify | every ArgoCD Deployment is Available"
+# `kubectl wait`, not a jsonpath on .status.conditions, for two reasons found
+# the hard way on 2026-08-02:
+#
+#   1. ansible.builtin.command does NOT run a shell, and its argument splitting
+#      strips the quotes out of jsonpath={...[?(@.type=="Available")]...}.
+#      kubectl then received @.type==Available unquoted and failed with
+#      "unrecognized identifier Available" -- so the check reported a broken
+#      ArgoCD on an upgrade that had in fact succeeded. A verification step
+#      that fails for its own syntax reasons is worse than none: it cries wolf
+#      on a good run and teaches you to ignore it.
+#   2. Even correctly written, a bare read races the rollout. helm --wait
+#      covers the release, but argocd-server can still be restarting as the
+#      next task runs. `wait --for=condition=Available` has the retry built in.
+- name: "verify | every ArgoCD Deployment becomes Available"
   ansible.builtin.command: >-
-    kubectl -n {{ argocd_namespace }} get deploy {{ item }}
-    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
-  register: argocd_avail
+    kubectl -n {{ argocd_namespace }} wait --for=condition=Available
+    deployment/{{ item }} --timeout=300s
   loop: "{{ argocd_deployments }}"
   changed_when: false
   check_mode: false
-  failed_when: argocd_avail.stdout | trim != 'True'
   when: not ansible_check_mode
 
-- name: "verify | the application controller StatefulSet is ready"
+- name: "verify | the application controller StatefulSet rolls out"
   ansible.builtin.command: >-
-    kubectl -n {{ argocd_namespace }} get sts argocd-application-controller
-    -o jsonpath={.status.readyReplicas}
-  register: argocd_sts
+    kubectl -n {{ argocd_namespace }} rollout status
+    statefulset/argocd-application-controller --timeout=300s
   changed_when: false
   check_mode: false
-  failed_when: (argocd_sts.stdout | trim | default('0') | int) < 1
   when: not ansible_check_mode
 
 - name: "verify | the deployed image really is the version this file claims"

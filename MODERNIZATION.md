@@ -28,6 +28,8 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | API VIP | single Pod on lab1 | **5/5 DaemonSet, leader-elected** |
 | cert-manager | v1.14.5 | **v1.20.3** |
 | Envoy Gateway | v1.6.1 (EOL, k8s ≤1.33) | **v1.8.3**, GW API CRDs v1.5.1 |
+| ArgoCD | v3.3.6, installed by hand, version recorded nowhere | **v3.4.6**, pinned in Ansible |
+| CoreDNS | 1 replica, no PDB | **3 replicas on 3 nodes + PDB** |
 | ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
 | inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
 | Node config | prose runbook only | Ansible, detect-then-remediate |
@@ -180,6 +182,22 @@ Remaining:
       a single candidate; if that node is the one draining, the drain stalls
       against the CNPG PDB and the only ways out are waiting or
       `--force`/`--disable-eviction`, which kills a primary bypassing its PDB.
+- [x] **CoreDNS 3 replicas + PDB** ✅ **2026-08-02.** 3/3 Ready on three
+      distinct nodes (lab4, lab5, lab2), PDB allowing 1 disruption, and all
+      five nodes still resolving afterwards — checked because Pi-hole runs
+      in-cluster, so breaking cluster DNS also breaks the `.home` names Ansible
+      resolves its own inventory from.
+- [x] **ArgoCD under version control** ✅ **2026-08-02.** Was installed by a
+      hand-typed `helm install`, with the version recorded only in the
+      in-cluster Helm release secret. Now `roles/argocd` +
+      `playbooks/15-argocd.yml`, pinned at chart **10.2.2 (v3.4.6)**, upgraded
+      from 9.5.0 (v3.3.6). Runs on the workstation, so it is the only playbook
+      here needing no sudo. Deliberately **not** self-managed — ArgoCD's CRDs
+      hold every Application in the cluster and the ApplicationSets apply
+      `prune: true`, so a self-managing ArgoCD can prune its own CRDs with
+      nothing left to repair it. Bootstrap and upgrade are the same code path
+      (`-e argocd_bootstrap=true` adds the GHCR creds + root Application), so
+      disaster recovery is exercised on every routine update.
 - [ ] PDB for ArgoCD (ingress-nginx has one; CoreDNS is handled above).
       ⚠️ **No obvious home.** ArgoCD is bootstrapped out-of-band — there is no
       `apps/argocd/` directory, and both ApplicationSets generate from
@@ -276,6 +294,16 @@ a cleanup-phase, all-nodes-at-once change.
   (`selfHeal` + `prune` would fight a half-migrated state and delete the
   `CiliumNodeConfig`)
 - **Still needs a written rollback procedure before starting.**
+- ⚠️ **Six ArgoCD NetworkPolicies go live the moment Cilium can enforce them.**
+  ArgoCD chart 10.x flipped `global.networkPolicy.create` to `true`, so as of
+  2026-08-02 `kubectl -n argocd get netpol` returns 6 policies where it
+  previously returned 0. Flannel does not implement NetworkPolicy, so they are
+  **inert today and have never been exercised**. Cilium does implement it.
+  Verify ArgoCD still works — UI, repo-server fetching charts, controller
+  reaching the API — immediately after the *first* node moves to Cilium, not at
+  the end of the migration. If they turn out to be wrong, the escape is
+  `global.networkPolicy.create: false` in `gitops/argocd-values.yaml` plus
+  `ansible-playbook playbooks/15-argocd.yml`.
 
 ### Phase 4 — Headlamp + Alertmanager
 API-server OIDC via `kube-apiserver-arg` (Ansible owns config.yaml by then).
@@ -356,6 +384,15 @@ Fix if the noise matters: an `ignoreDifferences` entry for that path. Note the
 ApplicationSet template is shared by all Helm apps and `app.yaml` is
 deliberately flat 5 keys, so this is a decision about a global rule, not a
 per-app tweak. Left alone for now.
+
+**`prometheus` drifts in and out of Sync on its own.** Observed flapping twice
+on 2026-08-02 — `Secret/prometheus-operator-grafana` plus the matching
+`Deployment`. The shape is the classic one: a chart that generates a random
+value at render time produces a different Secret on every reconcile, and the
+Deployment's checksum annotation follows it. Not yet confirmed, and unlike
+`pyroscope` it is *not* diagnosed — worth pinning down rather than assuming,
+because a genuinely flapping app is indistinguishable at a glance from one that
+is quietly failing to converge.
 
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that

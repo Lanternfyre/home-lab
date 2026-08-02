@@ -53,3 +53,8 @@ argocd_crds:
 # Application after the install. Off by default so a routine upgrade cannot
 # accidentally re-bootstrap.
 argocd_bootstrap: false
+
+# Escape hatch: re-run helm even when the deployed chart version and the stored
+# values already match. Needed after a chart is re-released under the same
+# version, or to force a redeploy for any other reason.
+argocd_force_upgrade: false
