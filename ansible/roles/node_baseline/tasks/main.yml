@@ -82,6 +82,7 @@
 # stub-resolv.conf and lab1/2/3 have been healthy that way for 211 days.
 - name: "fix | pin global DNS resolvers"
   when: needs_dns
+  tags: [dns]
   block:
     - name: "fix | ensure resolved.conf.d exists"
       ansible.builtin.file:
@@ -157,6 +158,7 @@
 
 # --- storage packages: idempotent, cheap, always ensured. ---
 - name: "fix | install storage packages"
+  tags: [storage]
   ansible.builtin.apt:
     name: "{{ node_packages }}"
     state: present
@@ -165,6 +167,7 @@
 
 # --- multipath: only where find_multipaths is not already correct. ---
 - name: "fix | write multipath.conf"
+  tags: [storage]
   when: needs_multipath
   ansible.builtin.copy:
     dest: /etc/multipath.conf
@@ -190,6 +193,7 @@
 # fatal: an earlier `fail` here would have aborted the whole play on lab1/2/3
 # and refused to fix lab5, which carries a leftover test session.
 - name: "fix | restart multipathd (no LUNs attached)"
+  tags: [storage]
   when:
     - multipath_written.changed | default(false)
     - (not has_luns) or (multipath_force_restart | default(false) | bool)
@@ -198,6 +202,7 @@
     state: restarted
 
 - name: "fix | multipathd restart deferred"
+  tags: [storage]
   when:
     - multipath_written.changed | default(false)
     - has_luns
@@ -212,6 +217,7 @@
 
 # --- services: enable/start only where not already active. ---
 - name: "fix | enable and start storage services"
+  tags: [storage]
   when: needs_services
   ansible.builtin.systemd:
     name: "{{ item }}"

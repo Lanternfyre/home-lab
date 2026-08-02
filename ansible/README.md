@@ -30,24 +30,61 @@ Both pass a "does the file exist" check. Neither passes `node_verify`.
 
 ## Usage
 
+`site.yml` is the entrypoint. Run it against everything, any time.
+
 ```bash
 cd ansible                       # ansible.cfg paths are relative to here
 
-# read-only audit; no sudo, safe any time, run it FIRST
+# the "plan" -- shows what WOULD change, changes nothing
+ansible-playbook site.yml --ask-become-pass --check --diff
+
+# apply
+ansible-playbook site.yml --ask-become-pass
+
+# read-only audit; no sudo, no password prompt
 ansible-playbook playbooks/90-preflight.yml
 
-# review what would change, then apply
-ansible-playbook playbooks/10-baseline.yml --ask-become-pass --check --diff
-ansible-playbook playbooks/10-baseline.yml --ask-become-pass
-
-# scope to one node
-ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-4.home
+# subsets
+ansible-playbook site.yml --ask-become-pass --tags storage
+ansible-playbook site.yml --ask-become-pass --tags verify      # assertions only
+ansible-playbook site.yml --ask-become-pass --limit k8s-4.home
+ansible-playbook site.yml --list-tags
 ```
 
-Expect `--check` to show only the inotify sysctl fix on `k8s-1/2/3`, plus
-multipath.conf and DNS on `k8s-4/5`. Once applied, a re-run should be a clean
-no-op — **that no-op is the real gate**, because it proves the roles describe
-reality rather than merely having been run once.
+### There is no state file, and that is the right call
+
+Ansible does not record what ran where. Unlike Terraform there is no ledger --
+and that is a feature here, because a ledger can disagree with the machine.
+Instead every role **detects the node's effective state and remediates only what
+is actually wrong**. "Which node needs which fix" is answered from the node, not
+from memory that might be stale.
+
+What that buys you:
+
+* Re-running is safe and cheap; there is nothing to reconcile.
+* **The PLAY RECAP is the report.** `changed=0` means that node was already
+  correct. That is your "what ran where", derived rather than remembered.
+* **A second run immediately after a first should be `changed=0` everywhere.**
+  If it is not, some task is not idempotent -- a bug worth chasing, and the
+  cheapest test in this whole repo.
+
+Each run also prints a per-node detect line before touching anything:
+
+```
+k8s-lab1: DNS=ok, multipath=ok, sysctls=BROKEN, services=ok, liveLUNs=4
+k8s-lab4: DNS=BROKEN, multipath=BROKEN, sysctls=BROKEN, services=BROKEN, liveLUNs=0
+```
+
+### Deliberately NOT in site.yml
+
+Convergence only. These are separate because they are deliberate operations
+with their own verification windows -- folding them in would mean an innocent
+"converge" could drain the cluster:
+
+| playbook | what it does |
+|---|---|
+| `playbooks/30-upgrade.yml` | rolling k3s upgrade (drains + reboots) |
+| `playbooks/40-add-node.yml` | join a new node (installs k3s) |
 
 ## Setup
 

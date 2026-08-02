@@ -1,0 +1,76 @@
+---
+# site.yml — the convergence entrypoint. Run this against all nodes, any time.
+#
+#   ansible-playbook site.yml --ask-become-pass --check --diff   # the "plan"
+#   ansible-playbook site.yml --ask-become-pass                  # apply
+#
+# ── Why there is no state file ────────────────────────────────────────────────
+# Ansible does not record what ran where, and that is deliberate. A state store
+# (Terraform-style) can disagree with reality; Ansible instead asks the node.
+# Every role here DETECTS the effective state first and remediates only what is
+# actually wrong, so "which node needs which fix" is answered from the machine,
+# not from a ledger that might be stale.
+#
+# Practical consequences:
+#   * Running this repeatedly is safe and cheap.
+#   * The PLAY RECAP is your report: changed=0 means that node was already
+#     correct. That is the closest thing to "what ran where", and it is derived
+#     from the node rather than remembered.
+#   * A second run right after a first should be changed=0 everywhere. If it is
+#     not, a task is not idempotent -- that is a bug worth chasing.
+#
+# ── What is deliberately NOT here ────────────────────────────────────────────
+# Convergence only. These are excluded because they are deliberate operations
+# that must be invoked consciously, with their own verification windows:
+#
+#   playbooks/30-upgrade.yml    rolling k3s upgrade  (drains + reboots nodes)
+#   playbooks/40-add-node.yml   join a new node      (installs k3s)
+#
+# Folding those into site.yml would mean an innocent "converge" could drain the
+# cluster. They stay separate on purpose.
+#
+# ── Tags ─────────────────────────────────────────────────────────────────────
+#   ansible-playbook site.yml --list-tags
+#   ansible-playbook site.yml --ask-become-pass --tags storage
+#   ansible-playbook site.yml --ask-become-pass --skip-tags k3s-config
+#
+#   baseline   OS-level: DNS, sysctls, multipath, packages, services
+#   storage    just the multipath/iscsi parts of baseline
+#   dns        just the resolver parts of baseline
+#   k3s-config /etc/rancher/k3s/config.yaml (NEVER restarts k3s)
+#   verify     assertions only -- read-only, safe to run alone
+
+- name: Converge node OS baseline
+  hosts: k3s_servers
+  # serial: 1 so a broken node stops the run before the next one is touched.
+  # These tasks do not evict pods, but systemd-resolved and multipathd can
+  # bounce, and doing that on five nodes simultaneously is needless risk.
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: true
+  tags: [baseline]
+  roles:
+    - role: node_baseline
+
+- name: Converge k3s configuration
+  hosts: k3s_servers
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: false
+  tags: [k3s-config]
+  roles:
+    # Writes /etc/rancher/k3s/config.yaml and NEVER restarts k3s. Because CLI
+    # flags take precedence over config.yaml, a config that is a semantic
+    # superset of the current ExecStart changes nothing until the unit is
+    # normalised -- which makes this safe to converge at any time.
+    - role: k3s_config
+
+- name: Verify every node
+  hosts: k3s_servers
+  gather_facts: false
+  # NOT serial: verification is read-only, so run it everywhere at once and get
+  # the full picture in one pass rather than failing at the first bad node.
+  any_errors_fatal: false
+  tags: [verify]
+  roles:
+    - role: node_verify
