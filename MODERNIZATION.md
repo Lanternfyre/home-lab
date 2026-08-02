@@ -21,10 +21,13 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 |---|---|---|
 | Backups | **none at all** | 4 nightly jobs, restore-verified |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
-| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 1 OutOfSync / 54 Synced / **0 Unknown** |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 1 OutOfSync / 54 Synced / **0 Unknown** (the 1 is benign, diagnosed) |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
+| API VIP | single Pod on lab1 | **5/5 DaemonSet, leader-elected** |
+| cert-manager | v1.14.5 | **v1.20.3** |
+| Envoy Gateway | v1.6.1 (EOL, k8s ≤1.33) | **v1.8.3**, GW API CRDs v1.5.1 |
 | ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
 | inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
 | Node config | prose runbook only | Ansible, detect-then-remediate |
@@ -53,11 +56,12 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 2. ~~**Push**~~ ✅ done 2026-08-02. cert-manager rolled v1.14.5 → **v1.20.3**,
    Healthy — the first hard Phase 2 prerequisite is met. `prometheus` came back
    into sync on its own; `pyroscope` is diagnosed benign (see findings).
-3. **Decide on the Envoy Gateway bump.** v1.6.1 → v1.8.3 is **committed but
-   deliberately unpushed** — read the one-way-door warning in Phase 2 first.
-   Every unpushed commit after it is inert Ansible (playbooks change nothing
-   until invoked), so the *only* cluster-affecting commit in the local stack is
-   this one. Pushing applies it.
+3. ~~**Envoy Gateway bump**~~ ✅ **DONE 2026-08-02.** v1.6.1 → **v1.8.3**
+   rolled cleanly: deployment Running, 0 restarts, app **Synced/Healthy**, and
+   the Gateway API CRDs moved **v1.4.1 → v1.5.1**. Both hard Phase 2
+   prerequisites are now met. ⚠️ The `safe-upgrades.gateway.networking.k8s.io`
+   VAP + binding are now **live** — the rollback order in Phase 2 is no longer
+   hypothetical.
 4. ~~**kube-vip Pod → DaemonSet**~~ ✅ **DONE 2026-08-02.** Cut over cleanly:
    DaemonSet 5/5 ready, the old single Pod pruned, lease `plndr-cp-lock` held
    by k8s-lab1, API VIP answering, all five nodes Ready, **zero restarts**.
