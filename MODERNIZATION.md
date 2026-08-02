@@ -288,15 +288,27 @@ gates as a running sequence. The first hop is the test.
 
 ### Phase 2 — k3s 1.32.10 → **1.35.6** (hard stop)
 
-**Hop 1 (1.33.13) is IN PROGRESS as of 2026-08-02:** lab3, lab4, lab5 are on
-`v1.33.13+k3s1`; lab1 and lab2 are still on `v1.32.10+k3s1`. The cluster is
-healthy in that mixed state — etcd kept its leader throughout, readyz passed,
-all five Ready and schedulable — but a mixed-version control plane is not
-somewhere to linger. Finish with the same command; the playbook skips nodes
-already at the target.
+**Hop 1 (1.33.13) ✅ COMPLETE 2026-08-02.** All five nodes on
+`v1.33.13+k3s1`, all schedulable, readyz passed, `csi.trident.qnap.io`
+registered on every node, both CNPG clusters 3/3 healthy after two live
+primary failovers (lab2 and lab1 each hosted one), ArgoCD 54 Synced / 1
+OutOfSync (the known-benign pyroscope). Zero failed tasks on the completing
+run. **The playbook is now a proven procedure rather than just code.**
+
+⏳ **LIVE ON 1.33 FOR 24–48h** before setting `k3s_version` to `v1.34.9+k3s1`.
+The gates passed, but a cluster only proves an upgrade by running on it.
 
 ⚠️ **Before hop 2 (1.34.9): move Pi-hole off local-path** (Phase 0.D). lab3
-holds it, and hop 2 drains lab3 again, which reproduces the DNS outage.
+holds it, and hop 2 drains lab3 again, which reproduces the DNS outage
+exactly. This is the one blocking prerequisite for the next hop.
+
+**Remaining hops: exactly two.** `1.33.13 → 1.34.9 → 1.35.6`, then STOP.
+1.35 is the end of the road for this cluster until QNAP ships a CSI driver
+declaring 1.36 support — at which point `k3s_max_version` is raised
+deliberately, not incidentally. Note that the 1.35 ceiling is a recorded
+finding from QNAP's support matrix; it could NOT be re-derived from the live
+cluster (the driver logs no supported-version range), so re-check the vendor's
+matrix before assuming it still binds.
 
 Playbook: `playbooks/30-upgrade.yml`. ⚠️ Its CNPG step
 moves a primary by **deleting the primary pod**, which is a failover (a few
