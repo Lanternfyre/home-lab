@@ -21,7 +21,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 |---|---|---|
 | Backups | **none at all** | 4 nightly jobs, restore-verified |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
-| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 2 OutOfSync / 53 Synced / **0 Unknown** |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 1 OutOfSync / 54 Synced / **0 Unknown** |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
@@ -62,10 +62,10 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
    `cd ansible && ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass --check --diff`
    then without `--check`. Needs a deliberate window: the API VIP blips for a
    few seconds during the cutover.
-5. **`30-upgrade.yml` is deliberately NOT written yet.** Its gates have to
-   assert against a 5-node-healthy cluster, and lab5 is still cordoned. Writing
-   it now would mean writing gates for a cluster state that does not exist.
-   Start it once items 1, 3 and 4 are done.
+5. **`30-upgrade.yml` — now unblocked, and the next big build.** Its gates
+   assert against a 5-node-healthy cluster, which as of 2026-08-02 is finally
+   true. Write it after the kube-vip cutover, so the gates can assume a VIP
+   that survives losing a node.
 6. Then Phase 2 below.
 
 ---
