@@ -36,8 +36,9 @@
 #
 #   baseline   OS-level: DNS, sysctls, multipath, packages, services
 #   storage    just the multipath/iscsi parts of baseline
-#   dns        just the resolver parts of baseline
+#   dns        node resolver config AND cluster DNS (CoreDNS replicas + PDB)
 #   k3s-config /etc/rancher/k3s/config.yaml (NEVER restarts k3s)
+#   coredns    just the cluster-DNS play -- CoreDNS replicas + PDB, runs once
 #   verify     assertions only -- read-only, safe to run alone
 
 - name: Converge node OS baseline
@@ -64,6 +65,18 @@
     # superset of the current ExecStart changes nothing until the unit is
     # normalised -- which makes this safe to converge at any time.
     - role: k3s_config
+
+# Cluster-scoped, so it runs on ONE host rather than five. Included in the
+# converge (not held back as a deliberate op) because scaling a Deployment UP
+# and adding a PDB evicts nothing and disrupts nothing -- unlike the k3s
+# restarts and node drains that are deliberately kept out of site.yml.
+- name: Make cluster DNS survive a drain
+  hosts: "{{ coredns_manifest_host | default(groups['k3s_servers'][0]) }}"
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [coredns, dns]
+  roles:
+    - role: coredns_ha
 
 - name: Verify every node
   hosts: k3s_servers

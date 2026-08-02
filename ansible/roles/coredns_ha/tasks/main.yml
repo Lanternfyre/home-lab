@@ -1,0 +1,167 @@
+---
+# Make cluster DNS survive a drain.
+#
+# k3s ships CoreDNS at ONE replica, so for the whole rolling upgrade there is a
+# single node whose drain takes all of cluster DNS with it -- and Pi-hole runs
+# inside this cluster, so that also breaks the .home names Ansible resolves its
+# own inventory from (the circularity is documented in inventory/homelab.yml).
+#
+# ── Why scaling here is legitimate and not a "kubectl patch chart-managed
+#    resource" violation ─────────────────────────────────────────────────────
+# CoreDNS is not chart-managed and not in ArgoCD. It is a k3s Addon reconciled
+# from /var/lib/rancher/k3s/server/manifests/coredns.yaml by the deploy
+# controller. Verified 2026-08-02 by decoding the objectset's `applied`
+# annotation: that manifest does NOT contain a `replicas` field at all -- the
+# Deployment simply defaults to 1. A field absent from the applied set is not
+# managed by the controller, so setting it does not fight anything.
+#
+# That is also why this is safe to converge repeatedly: it is detect-then-
+# remediate against a field nothing else owns.
+#
+# ⚠️ The one thing NOT proven: whether replicas survives a k3s VERSION change,
+# when k3s rewrites coredns.yaml from the new release's template. It should --
+# the field would have to newly APPEAR in that template to start being managed
+# -- but no upgrade has happened yet to observe it. 30-upgrade.yml therefore
+# re-asserts this after every hop rather than trusting the reasoning.
+
+- name: "detect | current CoreDNS replicas"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n kube-system get deploy coredns
+    -o jsonpath={.spec.replicas}
+  register: cdns_current
+  changed_when: false
+  check_mode: false
+
+- name: "detect | how many schedulable nodes could hold a replica?"
+  # The bundled Deployment carries topologySpreadConstraints with
+  # whenUnsatisfiable: DoNotSchedule on kubernetes.io/hostname (verified live,
+  # 2026-08-02 -- this role does NOT need to add them). That is what actually
+  # spreads the replicas, but it also means asking for more replicas than there
+  # are schedulable nodes leaves the surplus Pending forever.
+  ansible.builtin.shell: >-
+    /usr/local/bin/k3s kubectl get nodes
+    -o jsonpath='{range .items[*]}{.spec.unschedulable}{"\n"}{end}'
+    | grep -c '^$' || true
+  register: cdns_schedulable
+  changed_when: false
+  check_mode: false
+
+- name: "detect | refuse to ask for more replicas than nodes that can hold them"
+  ansible.builtin.fail:
+    msg: >-
+      coredns_replicas is {{ coredns_replicas }} but only
+      {{ cdns_schedulable.stdout | trim }} node(s) are schedulable. CoreDNS
+      spreads with whenUnsatisfiable: DoNotSchedule, so the surplus replicas
+      would sit Pending indefinitely -- looking like extra redundancy while
+      providing none. Uncordon the nodes first, or lower coredns_replicas.
+  when: (cdns_schedulable.stdout | trim | int) < (coredns_replicas | int)
+
+- name: "fix | scale CoreDNS up"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n kube-system scale deploy coredns
+    --replicas={{ coredns_replicas }}
+  when: (cdns_current.stdout | trim | int) < (coredns_replicas | int)
+  register: cdns_scaled
+
+# Never scales DOWN. If someone has deliberately raised it further, this role
+# has no business overriding that, and an upgrade playbook that quietly reduced
+# DNS capacity would be a nasty surprise.
+- name: "report | already at or above the target"
+  ansible.builtin.debug:
+    msg: >-
+      CoreDNS already at {{ cdns_current.stdout | trim }} replicas
+      (target {{ coredns_replicas }}); leaving it alone.
+  when: (cdns_current.stdout | trim | int) >= (coredns_replicas | int)
+
+- name: "fix | install the PodDisruptionBudget as its own addon manifest"
+  ansible.builtin.template:
+    src: coredns-pdb.yaml.j2
+    dest: "{{ coredns_pdb_manifest_path }}"
+    mode: "0600"
+    validate: "python3 -c 'import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))' %s"
+
+# ── Verification: behaviour, not object counts ───────────────────────────────
+
+- name: "verify | wait for every replica to become Ready"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n kube-system get deploy coredns
+    -o jsonpath={.status.readyReplicas}
+  register: cdns_ready
+  changed_when: false
+  check_mode: false
+  until: (cdns_ready.stdout | trim | default('0') | int) >= (coredns_replicas | int)
+  retries: 30
+  delay: 5
+  when: not ansible_check_mode
+
+# THE assertion. Three replicas stacked on one node is not redundancy -- it is
+# one node's drain taking out all of cluster DNS while looking healthy. This
+# repo has already been bitten by exactly that shape: three ingress replicas
+# landed on a single node under `preferred` anti-affinity.
+- name: "verify | replicas are on DISTINCT nodes"
+  ansible.builtin.shell: >-
+    /usr/local/bin/k3s kubectl -n kube-system get pods -l k8s-app=kube-dns
+    --field-selector=status.phase=Running
+    -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}' | sort -u | wc -l
+  register: cdns_nodes
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | assert the spread actually happened"
+  ansible.builtin.assert:
+    that: "(cdns_nodes.stdout | trim | int) >= (coredns_replicas | int)"
+    fail_msg: >-
+      CoreDNS has {{ coredns_replicas }} replicas but they occupy only
+      {{ cdns_nodes.stdout | trim }} distinct node(s). Draining that node would
+      take out all of cluster DNS at once, which is the failure this change
+      exists to prevent -- the replica count would be redundancy on paper only.
+    success_msg: >-
+      CoreDNS spread across {{ cdns_nodes.stdout | trim }} distinct nodes
+  when: not ansible_check_mode
+
+- name: "verify | the PDB exists and permits exactly the intended disruption"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n kube-system get pdb coredns
+    -o jsonpath={.status.disruptionsAllowed}
+  register: cdns_pdb
+  changed_when: false
+  check_mode: false
+  until: (cdns_pdb.stdout | trim | default('') | length) > 0
+  retries: 20
+  delay: 3
+  when: not ansible_check_mode
+
+# A PDB allowing 0 disruptions blocks every drain, which during a serial:1
+# rolling upgrade presents as the whole run hanging on node 1 forever.
+- name: "verify | the PDB does not forbid all eviction"
+  ansible.builtin.assert:
+    that: "(cdns_pdb.stdout | trim | int) >= 1"
+    fail_msg: >-
+      The coredns PDB currently allows {{ cdns_pdb.stdout | trim }} disruptions.
+      A budget that permits none blocks EVERY drain, and during a serial:1
+      rolling upgrade that looks like the run hanging on the first node rather
+      than like a misconfigured budget.
+    success_msg: "coredns PDB allows {{ cdns_pdb.stdout | trim }} disruption(s)"
+  when: not ansible_check_mode
+
+# The point of all of the above.
+- name: "verify | cluster DNS actually resolves"
+  ansible.builtin.shell: >-
+    /usr/local/bin/k3s kubectl run coredns-ha-probe-{{ 999999 | random }}
+    --rm -i --restart=Never --image=busybox:1.37 --command --
+    nslookup kubernetes.default.svc.cluster.local
+  register: cdns_probe
+  changed_when: false
+  check_mode: false
+  failed_when: "'Address' not in cdns_probe.stdout"
+  when: not ansible_check_mode
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      CoreDNS: {{ cdns_ready.stdout | default('n/a') }} replica(s) Ready across
+      {{ cdns_nodes.stdout | default('n/a') | trim }} node(s), PDB allows
+      {{ cdns_pdb.stdout | default('n/a') }} disruption(s), and in-cluster DNS
+      resolves. A single node's drain no longer takes cluster DNS with it.
+  when: not ansible_check_mode

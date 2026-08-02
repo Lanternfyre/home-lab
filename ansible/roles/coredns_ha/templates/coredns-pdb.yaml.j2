@@ -1,0 +1,24 @@
+# Managed by Ansible -- ansible/roles/coredns_ha
+#
+# A SEPARATE addon manifest on purpose. k3s owns coredns.yaml and replaces it
+# wholesale when the k3s version changes; it never writes this filename, so the
+# PDB here survives all three upgrade hops while the Deployment's own manifest
+# does not.
+#
+# Deleting this file prunes the PDB (k3s objectset semantics), which is the
+# correct way to remove it -- not kubectl delete, which the deploy controller
+# would undo.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: coredns
+  namespace: kube-system
+  labels:
+    k8s-app: kube-dns
+spec:
+  # Absolute, never a percentage: at 3 replicas a percentage floors to 0 and
+  # the budget then forbids every eviction, which reads as a hung drain.
+  maxUnavailable: {{ coredns_pdb_max_unavailable }}
+  selector:
+    matchLabels:
+      k8s-app: kube-dns

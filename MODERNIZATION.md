@@ -131,16 +131,54 @@ Remaining:
       Expect a **brief VIP outage** during the cutover while the old Pod is
       removed and the first DaemonSet pod claims the lease. Deliberate op, done
       with a human watching — not a drive-by.
-- [ ] **Repoint `--server` off the VIP** — each node at a different peer's node
-      IP, removing the shared dependency. Must be a **systemd drop-in**: k3s CLI
+- [ ] **Repoint `--server` off the VIP** — **materially less urgent since
+      2026-08-02**: the rationale below was written when the VIP was a single
+      Pod on lab1. It is now a 5/5 leader-elected DaemonSet, so the "shared
+      dependency" is no longer a single point of failure. Still worth doing to
+      remove the shared dependency entirely, but it is no longer upgrade-
+      blocking. Each node at a different peer's node IP. Must be a **systemd drop-in**: k3s CLI
       args take precedence over config.yaml, so "Ansible owns config.yaml" does
       not reach it. `k3s_config` role has this behind `k3s_repoint_server`.
-- [ ] CoreDNS 1 → 3 replicas. It is a k3s **addon** reconciled from a node
-      manifest on checksum change, so `kubectl scale` is reverted by upgrades —
-      needs a durable mechanism.
-- [ ] CNPG `immich-db` 2 → 3 instances (lab3 is currently the sole switchover
-      target, a pinch point for all three upgrade hops).
-- [ ] PDBs for CoreDNS and ArgoCD (ingress-nginx now has one).
+- [ ] CoreDNS 1 → 3 replicas + PDB. **Built (`roles/coredns_ha`, wired into
+      `site.yml`), not yet applied — needs one sudo run.**
+
+      **Correction to what this file used to say.** It claimed `kubectl scale`
+      "is reverted by upgrades". Two things turned out to be wrong:
+
+      1. k3s does **not** rewrite `coredns.yaml` on every start — only when the
+         k3s *version* changes. Proven 2026-08-02: all five servers restarted
+         at 08:34–08:36 and the CoreDNS Deployment was still `generation=1`,
+         untouched since 2026-07-05.
+      2. The manifest does not contain a `replicas` field **at all** — decoded
+         from the objectset's `applied` annotation. The Deployment just
+         defaults to 1. A field absent from the applied set is not managed by
+         the deploy controller, so setting it fights nothing.
+
+      So scaling is legitimate and convergent, which is why it sits in
+      `site.yml` rather than being a deliberate op. What is *not* proven is
+      whether it survives a k3s **version** change, when the template is
+      replaced — so `30-upgrade.yml` re-asserts after every hop instead of
+      trusting the reasoning.
+
+      Two more things checked rather than assumed: the bundled Deployment
+      **already has** `topologySpreadConstraints` (`maxSkew: 1`,
+      `DoNotSchedule` on hostname), so the replicas genuinely spread and the
+      role does not need to add them — but that also means asking for more
+      replicas than schedulable nodes leaves the surplus Pending, so the role
+      refuses that case. And the **PDB lives in its own manifest file**
+      (`coredns-pdb.yaml`), which k3s never writes — so unlike the Deployment,
+      the PDB survives all three upgrade hops.
+- [~] CNPG `immich-db` 2 → 3 instances — **pushed 2026-08-02**, provisioning.
+      At 2 instances there is exactly one switchover target, so every drain has
+      a single candidate; if that node is the one draining, the drain stalls
+      against the CNPG PDB and the only ways out are waiting or
+      `--force`/`--disable-eviction`, which kills a primary bypassing its PDB.
+- [ ] PDB for ArgoCD (ingress-nginx has one; CoreDNS is handled above).
+      ⚠️ **No obvious home.** ArgoCD is bootstrapped out-of-band — there is no
+      `apps/argocd/` directory, and both ApplicationSets generate from
+      `apps/*/app.yaml` with `missingkey=error`, so a manifests-only app dir
+      would break the Helm appset. Needs a decision about where ArgoCD's own
+      config lives before the PDB can be written anywhere sensible.
 
 ### Phase 1 — Ansible ✅ largely built
 `site.yml` converges; `20-config-converge.yml` applies k3s config + restarts;

@@ -1,0 +1,27 @@
+---
+# CoreDNS runs at ONE replica by default in k3s, which makes cluster DNS a
+# single-pod dependency during every drain of the rolling upgrade.
+coredns_replicas: 3
+
+# Absolute, not a percentage. This repo already learned that percentage
+# maxUnavailable floors to 0 at 3 replicas, which deadlocks a rollout; the same
+# arithmetic applies to a PDB.
+#
+# maxUnavailable rather than minAvailable is also deliberate: minAvailable
+# equal to the replica count would block every drain permanently, and a PDB
+# that cannot be satisfied is indistinguishable from a hung upgrade at 2am.
+coredns_pdb_max_unavailable: 1
+
+# k3s owns coredns.yaml and rewrites it from its embedded template when the
+# k3s VERSION changes. It does NOT rewrite it on ordinary restarts -- verified
+# 2026-08-02: all five servers restarted at 08:34-08:36 and the CoreDNS
+# Deployment was still generation=1, untouched since 2026-07-05.
+#
+# The PDB therefore goes in a SEPARATE file. k3s never writes this name, so
+# the PDB survives k3s upgrades even though the Deployment's own manifest is
+# replaced by them.
+coredns_pdb_manifest_path: /var/lib/rancher/k3s/server/manifests/coredns-pdb.yaml
+
+# Which node's manifest directory to write through. Any server works -- the
+# objects are cluster-scoped -- but keeping it on one node keeps one writer.
+coredns_manifest_host: "{{ groups['k3s_servers'] | first }}"
