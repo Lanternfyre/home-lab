@@ -18,12 +18,14 @@ kube_vip_lease_duration: "5"
 kube_vip_renew_deadline: "3"
 kube_vip_retry_period: "1"
 
-# Which node's manifest directory owns the addon. k3s's deploy controller reads
-# /var/lib/rancher/k3s/server/manifests on each server independently, and the
-# existing kube-vip.yaml lives only on the --cluster-init node. Keeping it on
-# one node keeps the cutover to a single writer; the RUNTIME single point of
-# failure is what the DaemonSet removes, and that is the one that matters --
-# if this node dies the DaemonSet object survives in etcd and the VIP simply
-# moves to another node's pod.
-kube_vip_manifest_host: "{{ groups['k3s_servers'] | first }}"
+# EVERY server, not one. Each k3s server's deploy controller reconciles the
+# addon from ITS OWN manifests directory, so a stale copy on any other node
+# fights the good one -- the addon then flaps between DaemonSet and bare Pod
+# depending on which server restarted last. Observed twice during the 1.34/1.35
+# hops: the DaemonSet was pruned and the old Pod recreated moments after an
+# unrelated node's k3s restarted, taking the API VIP with it.
+#
+# Identical content everywhere means an identical checksum, so all five
+# controllers agree and nothing flaps.
+kube_vip_manifest_hosts: "{{ groups['k3s_servers'] }}"
 kube_vip_manifest_path: /var/lib/rancher/k3s/server/manifests/kube-vip.yaml

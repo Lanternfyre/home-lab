@@ -418,22 +418,6 @@
           delay: 10
           when: not ansible_check_mode
 
-        # The VIP disappearing is exactly the kind of failure that passes every
-        # other gate: nodes stay Ready, etcd keeps its leader, DaemonSets are
-        # even -- and the address every kubeconfig uses is simply gone.
-        - name: "{{ node_name }} | the API VIP still answers"
-          ansible.builtin.uri:
-            url: "https://{{ k3s_api_vip }}:6443/readyz"
-            validate_certs: false
-            status_code: [200, 401, 403]
-          delegate_to: localhost
-          become: false
-          register: g_vip
-          until: g_vip.status is defined
-          retries: 20
-          delay: 10
-          when: not ansible_check_mode
-
         - name: "{{ node_name }} | nothing fell into ImagePullBackOff"
           ansible.builtin.shell: >-
             set -o pipefail;
@@ -494,13 +478,46 @@
         # The cluster survived it, because joined nodes talk to peer IPs and
         # never the VIP (measured 2026-08-02), but every kubeconfig pointing at
         # the VIP broke. Re-assert it per hop, exactly like CoreDNS.
-        - name: "{{ node_name }} | re-assert the kube-vip DaemonSet"
+        # Deliberately NOT delegated. The role runs on the node just upgraded, so
+        # over a serial:1 pass every server ends up with identical content --
+        # which is the actual fix. Pinning it to one host is what let a stale
+        # kube-vip.yaml survive on the others and keep reverting the addon.
+        - name: "{{ node_name }} | re-assert the kube-vip DaemonSet here"
           ansible.builtin.include_role:
             name: kube_vip
-            apply:
-              delegate_to: "{{ groups['k3s_servers'] | first }}"
-          vars:
-            kube_vip_manifest_host: "{{ groups['k3s_servers'] | first }}"
+          when: not ansible_check_mode
+
+        # ⚠️ AFTER the re-assert above, never before. Placed earlier, this gate
+        # blocked the very step that repairs the VIP -- the run failed on lab2
+        # with "No route to host" while the fix sat unreached below it.
+        #
+        # `failed_when: false` + `until` because ansible.builtin.uri FAILS the
+        # task on a bad status rather than feeding `until`, so the original
+        # retries never ran (attempts: 1) and a VIP that was simply slow to
+        # migrate looked permanently gone.
+        - name: "{{ node_name }} | the API VIP answers again"
+          ansible.builtin.uri:
+            url: "https://{{ k3s_api_vip }}:6443/readyz"
+            validate_certs: false
+            status_code: [200, 401, 403]
+          delegate_to: localhost
+          become: false
+          register: g_vip
+          failed_when: false
+          until: g_vip.status | default(-1) in [200, 401, 403]
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | assert the VIP came back"
+          ansible.builtin.assert:
+            that: "g_vip.status | default(-1) in [200, 401, 403]"
+            fail_msg: >-
+              The API VIP {{ k3s_api_vip }} is not answering after upgrading
+              {{ node_name }}. Every other gate can pass while this is broken --
+              nodes Ready, etcd healthy, DaemonSets even -- and every kubeconfig
+              pointing at the VIP is dead. Check the kube-vip addon: a stale
+              kube-vip.yaml on any server will fight the managed one.
           when: not ansible_check_mode
 
         - name: "{{ node_name }} | done"

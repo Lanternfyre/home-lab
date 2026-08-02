@@ -22,19 +22,22 @@
     kv_already_ds: >-
       {{ (kv_current.content | default('') | b64decode) is search('kind:\s*DaemonSet') }}
 
-# The manifest is the deployment. If it is missing, writing ours would still
-# work -- but its absence means the addon lives somewhere this play does not
-# know about, and guessing would be how you end up with two things fighting
-# over one VIP.
-- name: "detect | refuse to guess if the manifest is not where we expect"
-  ansible.builtin.fail:
+# A missing file used to be fatal here, on the theory that writing a second
+# copy would put two deploy controllers on one objectset. That reasoning was
+# backwards. Every k3s server ALREADY reconciles this addon from its own
+# manifests directory; the danger is not a second copy, it is a second copy
+# with DIFFERENT content. A stale kube-vip.yaml on any node fights the managed
+# one, and the addon flaps between DaemonSet and bare Pod depending on which
+# server restarted last -- observed twice during the 1.34/1.35 hops, each time
+# taking the API VIP down.
+#
+# So this role now runs on EVERY server and writes identical content. Same
+# bytes everywhere means the same checksum, and nothing to fight over.
+- name: "detect | note where the manifest was absent"
+  ansible.builtin.debug:
     msg: >-
-      {{ kube_vip_manifest_path }} does not exist on {{ inventory_hostname }}.
-      The kube-vip Addon is reconciled from a manifest file on a k3s server;
-      confirm which node holds it with
-      `kubectl get addon -n kube-system kube-vip -o jsonpath='{.spec.source}'`
-      and set kube_vip_manifest_host accordingly. Writing a second copy on a
-      different node would put two deploy controllers on one objectset.
+      {{ kube_vip_manifest_path }} did not exist on {{ inventory_hostname }};
+      establishing it so every server's deploy controller agrees.
   when: not kv_present
 
 - name: "backup | keep the previous manifest"

@@ -65,8 +65,11 @@
           DaemonSet across {{ groups['k3s_servers'] | length }} nodes. Expect a
           few seconds of VIP downtime.
 
+# EVERY server: each one's deploy controller reconciles this addon from its own
+# manifests directory, so identical content everywhere is what stops the addon
+# flapping between DaemonSet and bare Pod as nodes restart.
 - name: Convert the kube-vip addon to a DaemonSet
-  hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  hosts: k3s_servers
   gather_facts: false
   any_errors_fatal: true
   roles:
