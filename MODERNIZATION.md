@@ -58,10 +58,10 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
    Every unpushed commit after it is inert Ansible (playbooks change nothing
    until invoked), so the *only* cluster-affecting commit in the local stack is
    this one. Pushing applies it.
-4. **kube-vip Pod → DaemonSet** — built and validated, ready to run:
-   `cd ansible && ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass --check --diff`
-   then without `--check`. Needs a deliberate window: the API VIP blips for a
-   few seconds during the cutover.
+4. ~~**kube-vip Pod → DaemonSet**~~ ✅ **DONE 2026-08-02.** Cut over cleanly:
+   DaemonSet 5/5 ready, the old single Pod pruned, lease `plndr-cp-lock` held
+   by k8s-lab1, API VIP answering, all five nodes Ready, **zero restarts**.
+   Losing lab1 no longer takes the API VIP with it.
 5. **`30-upgrade.yml` — now unblocked, and the next big build.** Its gates
    assert against a 5-node-healthy cluster, which as of 2026-08-02 is finally
    true. Write it after the kube-vip cutover, so the gates can assume a VIP
@@ -78,12 +78,20 @@ removal, ArgoCD baseline green, ingress made drain-safe, Ansible baseline.
 
 Remaining:
 - [x] lab5 multipath restart → storage proof → uncordon ✅ 2026-08-02
-- [ ] **kube-vip bare Pod → DaemonSet.** Today a single Pod on lab1. If lab1
-      dies the API VIP `192.168.32.2` disappears — and that VIP is the
-      `--server` join target in lab2–5's systemd units, the `tls-san`, and
-      every kubeconfig.
+- [x] **kube-vip bare Pod → DaemonSet** ✅ **2026-08-02.** Was a single Pod on
+      lab1; if lab1 died the API VIP `192.168.32.2` went with it, and that VIP
+      is the `--server` join target in lab2–5's systemd units, the `tls-san`,
+      and every kubeconfig. Now a 5/5 DaemonSet with leader election.
+      Run it again any time with
+      `ansible-playbook playbooks/25-kube-vip-daemonset.yml --ask-become-pass`
+      — idempotent, and a no-op when the rendered manifest is unchanged.
 
-      ✅ **Blocker resolved 2026-08-02 — the NIC-name problem does not exist.**
+      ✅ **The NIC-name blocker did not exist, and the live rollout proved it.**
+      One identical manifest, each node auto-bound to its own interface:
+      `kube-vip bind interface=eno1` on lab1/2/3, `enp0s31f6` on lab4,
+      `enp7s0` on lab5 — all preceded by
+      `No interface is specified for VIP in config, auto-detecting default
+      Interface`. Zero restarts on all five.
       kube-vip v1.0.3 auto-detects the default-route interface when
       `vip_interface` is unset. Verified three ways: the string
       `"No interface is specified for VIP in config, auto-detecting default
