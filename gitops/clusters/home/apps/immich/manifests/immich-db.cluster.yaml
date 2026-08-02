@@ -3,15 +3,24 @@
 # for CloudNativePG with the VectorChord extension pre-installed —
 # required for Immich's smart search / face recognition embeddings.
 #
-# 2 instances (1 primary + 1 replica) with modest resources. The existing
+# 3 instances (1 primary + 2 replicas) with modest resources. The existing
 # CNPG operator (deployed via the "postgres" ArgoCD app in the databases
 # namespace) manages this Cluster CR — no second operator needed.
+#
+# Why 3 and not 2 — this is an upgrade-safety change, not a capacity one.
+# At 2 instances there is exactly ONE switchover target, so every drain in the
+# rolling k3s upgrade (three hops, five nodes each) has a single candidate to
+# land on. If that node is the one being drained, or is unhealthy, the drain
+# stalls against the CNPG PDB — and the correct response to a stalled drain is
+# NEVER --force or --disable-eviction, which would kill a primary bypassing its
+# PDB. A third instance removes the pinch point instead of creating pressure to
+# bypass the safety.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: immich-db
 spec:
-  instances: 2
+  instances: 3
   imageName: ghcr.io/tensorchord/cloudnative-vectorchord:17-0.4.3
 
   # CNPG creates the per-instance PVCs itself, so they cannot be labelled in
