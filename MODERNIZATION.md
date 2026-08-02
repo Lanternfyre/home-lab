@@ -37,6 +37,34 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
+**0. Finish the redis migration — COMMITTED BUT NOT PUSHED.**
+`apps/redis/` is already switched to `ghcr.io/t3chy0n/charts` `redis` 0.1.0 in
+git. Before pushing, **confirm the helm-compendium workflow went green** and
+the chart actually published — it could not be verified from the workstation
+(helm/gh are not authenticated to GHCR; ArgoCD has `ghcr-repo-creds` and can
+pull what a human here cannot). Pushing with the chart absent leaves the app
+unable to render.
+
+After pushing, verify in this order:
+1. `kubectl -n redis get pods` — one `redis-master-0`, 1/1, image
+   `redis:8.10.0-alpine` (NOT bitnami)
+2. `kubectl -n redis get pdb` — none (the chart refuses one at a single instance)
+3. `kubectl -n immich get pods` — `immich-server` Running; it needs NO config
+   change because the Service is still `redis-master`
+4. Drain-safety is the real proof: the next node drain must not stall.
+
+Rollback: `git revert` the app.yaml change. The old Bitnami release is gone but
+the parked data is still on the volumes (see below).
+
+**Do NOT delete these until redis is proven on the new chart** — they are the
+rollback:
+- `appendonlydir.rdb14-parked*` / `parked-appendonlydir*` on both redis PVCs
+  (~63 MB each, one dated 2026-06-27 predating this session)
+- the old `pihole` PVC on local-path — one of the two benign OutOfSync apps
+- stray `coredns-pdb.yaml` copies on lab2–5 from a delegation bug; identical
+  content so they do not flap, untidy rather than harmful
+
+
 1. ~~**lab5**~~ ✅ **DONE 2026-08-02.** The forced multipathd restart landed
    (daemon now newer than its config), and the storage proof **passed**: the
    pod mounted `/dev/mapper/mpathb`, wrote and read back 16 MB. The multipath

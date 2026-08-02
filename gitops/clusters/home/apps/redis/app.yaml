@@ -1,5 +1,5 @@
-repoURL: "registry-1.docker.io/bitnamicharts"
+repoURL: "ghcr.io/t3chy0n/charts"
 chart: "redis"
-targetRevision: "25.3.10"
+targetRevision: "0.1.0"
 releaseName: "redis"
 namespace: "redis"

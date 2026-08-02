@@ -1,57 +1,61 @@
-# Shared in-cluster Redis with replication (no Sentinel), exposed on the
-# LAN as redis.lab.techyon.dev via a MetalLB LoadBalancer Service (see
-# manifests/redis-lb-service.yaml). Every stateful consumer in the lab
-# that needs a Redis cache points here — Immich is the first one.
+# Shared in-cluster Redis, on OUR chart and the OFFICIAL redis image.
 #
-# Plain replication creates SEPARATE master + replica StatefulSets with
-# dedicated Services (redis-master:6379, redis-replicas:6379). Write
-# clients connect to redis-master — no READONLY errors. The trade-off
-# vs Sentinel: no automatic failover, but for a home lab job queue that's
-# fine — StatefulSet restarts a dead master pod within seconds.
+# ── Why we left bitnami ──────────────────────────────────────────────────────
+# bitnami/redis publishes NO version tags on the free tier -- only `latest` and
+# digests -- and that tag moved BACKWARDS. A pod wrote an RDB v14 file, `latest`
+# was later repointed at Redis 8.6.2 (which supports <=13), and on the next
+# reschedule Redis could not read its own AOF:
+#   "Can't handle RDB format version 14"
+# Both pods CrashLooped, immich-server went down with them, and because the
+# PDBs then reported disruptionsAllowed=0 the broken pods could not be evicted
+# -- which deadlocked a node drain and stalled the k3s upgrade twice.
 #
-# Credentials come from the redis-auth Secret (populated by ExternalSecrets
-# from the RedisHA 1Password item). Rotating the password in 1Password
-# flows through automatically via Reloader (commonAnnotations).
+# A parked directory dated 2026-06-27 on the master's volume shows this had
+# been happening silently for over a month; the upgrade only made it visible by
+# forcing reschedules.
+#
+# Forking their chart would not have helped: Bitnami charts are coupled to
+# Bitnami images (/opt/bitnami paths, their entrypoint scripts and shell
+# libraries), so the image is not swappable. The official image publishes real
+# semver tags, which is the actual fix.
 
-architecture: replication
+# ── Topology ─────────────────────────────────────────────────────────────────
+# standalone, deliberately. The previous master+replica pair provided NO
+# failover -- immich connects to redis-master directly and there is no Sentinel,
+# so a dead master was never promoted from the replica. It bought nothing and
+# cost a second PDB that helped deadlock the drain.
+#
+# Recovery here is "the StatefulSet reschedules it": seconds on a planned
+# drain. That is honest fast-recovery, not high availability.
+architecture: standalone
 
-# Reloader annotation — rolls both master and replica StatefulSets
-# whenever the redis-auth Secret content changes.
-commonAnnotations:
-  reloader.stakater.com/auto: "true"
-
+# Credentials from the redis-auth Secret (ExternalSecrets -> 1Password RedisHA).
+# The chart appends it to a config file in the pod's own tmpfs, never argv.
 auth:
   enabled: true
   existingSecret: redis-auth
   existingSecretPasswordKey: password
 
-master:
-  persistence:
-    enabled: true
-    storageClass: qnap-iscsi
-    size: 8Gi
-  resources:
-    requests: { cpu: 100m, memory: 256Mi }
-    limits:   { cpu: 500m, memory: 512Mi }
-
-replica:
-  replicaCount: 1
-  persistence:
-    enabled: true
-    storageClass: qnap-iscsi
-    size: 8Gi
-  resources:
-    requests: { cpu: 100m, memory: 256Mi }
-    limits:   { cpu: 500m, memory: 512Mi }
-
-# Sentinel disabled — plain replication gives us separate master/replica
-# Services which is what we need for write-only clients like Immich.
-sentinel:
+# ── No persistence, and this is the point ────────────────────────────────────
+# Redis here holds BullMQ job queues and cache. Immich's real data is Postgres
+# plus the library PVC. Dropping the volume means:
+#   * nothing to detach, so a node loss is a seconds-long reschedule
+#   * NOTHING ON DISK to be format-incompatible with -- the entire class of bug
+#     above becomes impossible
+# Cost: queued background jobs are lost on restart. Immich re-runs them from
+# the admin UI.
+persistence:
   enabled: false
 
-metrics:
-  enabled: true
-  serviceMonitor:
-    enabled: true
-    additionalLabels:
-      release: prometheus-operator
+service:
+  type: ClusterIP
+  port: 6379
+
+# No PDB: at one instance it either forbids every eviction (blocking drains, as
+# happened) or protects nothing. The chart refuses to render one here anyway.
+podDisruptionBudget:
+  enabled: false
+
+resources:
+  requests: { cpu: 50m, memory: 128Mi }
+  limits: { memory: 512Mi }
