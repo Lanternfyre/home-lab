@@ -39,7 +39,14 @@
     - ../roles/kube_vip/defaults/main.yml
 
   tasks:
-    - name: The API VIP answers right now
+    # RECORDED, not asserted. This playbook is both the original cutover AND
+    # the repair tool, and a repair tool that refuses to run while the thing is
+    # broken is useless. Demanding a healthy VIP here blocked the very run that
+    # restores it -- the third gate-blocks-its-own-remedy bug in one evening.
+    #
+    # A down VIP is a perfectly good reason to be here. The verification play
+    # at the end is where the VIP genuinely must answer.
+    - name: Note whether the API VIP is currently answering
       ansible.builtin.uri:
         url: "https://{{ k3s_api_vip }}:{{ kube_vip_port }}/readyz"
         validate_certs: false
@@ -48,6 +55,7 @@
       become: false
       check_mode: false
       register: vip_before
+      failed_when: false
 
     # Converting to a DaemonSet while a node is unreachable means that node
     # gets a VIP candidate whenever it returns, with no one watching.
@@ -60,10 +68,14 @@
     - name: Report the starting point
       ansible.builtin.debug:
         msg: >-
-          API VIP {{ k3s_api_vip }} healthy (HTTP {{ vip_before.status }}).
-          Converting the kube-vip addon on {{ inventory_hostname }} from Pod to
-          DaemonSet across {{ groups['k3s_servers'] | length }} nodes. Expect a
-          few seconds of VIP downtime.
+          API VIP {{ k3s_api_vip }} is
+          {{ 'answering (HTTP ' ~ vip_before.status ~ ')' if (vip_before.status | default(-1)) in [200, 401, 403]
+             else 'DOWN -- which is very likely why you are running this' }}.
+          Writing the DaemonSet manifest to ALL
+          {{ groups['k3s_servers'] | length }} servers so every deploy
+          controller agrees; a stale copy on any one of them is what makes the
+          addon flap back to the bare Pod. Expect a few seconds of VIP movement
+          if it is currently up.
 
 # EVERY server: each one's deploy controller reconciles this addon from its own
 # manifests directory, so identical content everywhere is what stops the addon

@@ -529,6 +529,28 @@ etc) are ignored."* Three consequences, all of which changed decisions here:
    explicit bootstrap-time argument, and `k3s_config` refuses to render
    `cluster-init` on a node with no datastore while other servers exist.
 
+**A gate placed before its own remedy blocks the repair.** Three instances in
+one evening, all self-inflicted: the upgrade's VIP gate ran before the
+kube-vip re-assert that fixes the VIP, so the run died with "No route to host"
+while the fix sat unreached below it; the cutover playbook asserted the VIP was
+healthy *before* converting it, which refused the exact run that restores a
+down VIP; and the preflight refused to resume any hop that had left a node
+cordoned — which is the state an interrupted hop always leaves. **When writing
+a check, ask what state the operator is in when they need this tool most.** For
+a repair tool that is the broken state, so the precondition belongs at the END
+as verification, not at the start as a gate.
+
+**Every k3s server reconciles addons from ITS OWN manifests directory, so a
+stale copy anywhere fights the managed one.** The kube-vip DaemonSet was
+written to a single node on the theory that a second copy would put two deploy
+controllers on one objectset. Backwards: they already all reconcile it. The
+danger is not a second copy, it is a second copy with different CONTENT — the
+addon then flaps between DaemonSet and bare Pod depending on which server
+restarted last, and the bare Pod hardcodes `vip_interface: eno1`, so it
+CrashLoops on any node whose NIC differs and the API VIP vanishes. Happened
+twice. The fix is identical bytes on every server: same checksum, nothing to
+fight over.
+
 **A k3s VERSION change reverts CUSTOM addon manifests, not just bundled ones.**
 Proven the hard way on the 1.34 hop: the kube-vip addon reverted to its
 pre-DaemonSet bare-Pod manifest (the Addon checksum returned to its exact
