@@ -1,0 +1,45 @@
+# Pi-hole's data volume, moved off local-path onto QNAP iSCSI.
+#
+# ── Why ──────────────────────────────────────────────────────────────────────
+# A `local-path` PV carries nodeAffinity pinning it to ONE machine. Pi-hole's
+# old claim was pinned to k8s-lab3, so cordoning that node left the pod
+# Pending with "4 node(s) had volume node affinity conflict" — it could not
+# reschedule anywhere, and stayed down until lab3 came back. That took LAN DNS
+# with it during the first k3s upgrade hop on 2026-08-02, and because Pi-hole
+# serves the .home names, it also broke Ansible's ability to reach the node it
+# was mid-upgrade on.
+#
+# An iSCSI volume detaches and re-attaches on whichever node the pod lands on,
+# so a node failure becomes a reschedule of a few seconds rather than an
+# outage lasting until that specific machine returns.
+#
+# This also removes what the chart values called "the most fragile protected
+# volume here": local-path lives on one node's disk, so reclaimPolicy: Retain
+# did nothing to protect it from that disk dying.
+#
+# ── Explicit manifest, not chart-generated ───────────────────────────────────
+# The chart can create its own PVC, but cannot put LABELS on it — only
+# annotations. The protect label therefore had to be applied imperatively,
+# which is the kind of out-of-band state this repo keeps removing. Declaring
+# the claim here makes the label declarative, and the chart is pointed at it
+# with persistentVolumeClaim.existingClaim.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pihole-data
+  namespace: dns
+  labels:
+    # Read by scripts/audit-protected-volumes.py and the ArgoCD delete guards.
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    # Pi-hole's config is the LAN's DNS. Never let a sync prune this.
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: qnap-iscsi
+  resources:
+    requests:
+      # The old claim was 5Gi and barely used; keeping the same size means the
+      # copy cannot fail on space and leaves room for query history.
+      storage: 5Gi
