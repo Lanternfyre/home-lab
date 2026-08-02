@@ -287,7 +287,18 @@ What is NOT validated: the CNPG primary move, the drain, the install, and the
 gates as a running sequence. The first hop is the test.
 
 ### Phase 2 — k3s 1.32.10 → **1.35.6** (hard stop)
-Playbook: `playbooks/30-upgrade.yml`, written but never run. ⚠️ Its CNPG step
+
+**Hop 1 (1.33.13) is IN PROGRESS as of 2026-08-02:** lab3, lab4, lab5 are on
+`v1.33.13+k3s1`; lab1 and lab2 are still on `v1.32.10+k3s1`. The cluster is
+healthy in that mixed state — etcd kept its leader throughout, readyz passed,
+all five Ready and schedulable — but a mixed-version control plane is not
+somewhere to linger. Finish with the same command; the playbook skips nodes
+already at the target.
+
+⚠️ **Before hop 2 (1.34.9): move Pi-hole off local-path** (Phase 0.D). lab3
+holds it, and hop 2 drains lab3 again, which reproduces the DNS outage.
+
+Playbook: `playbooks/30-upgrade.yml`. ⚠️ Its CNPG step
 moves a primary by **deleting the primary pod**, which is a failover (a few
 seconds of write unavailability), not a graceful switchover — `kubectl cnpg
 promote` needs the CNPG plugin and it is not installed. The step is gated on
@@ -496,6 +507,28 @@ etc) are ignored."* Three consequences, all of which changed decisions here:
    error: the node comes up `Ready`, with nothing on it. The flag is now an
    explicit bootstrap-time argument, and `k3s_config` refuses to render
    `cluster-init` on a node with no datastore while other servers exist.
+
+**`local-path` volumes pin a pod to ONE node, and draining it strands them.**
+A local-path PV carries `nodeAffinity` to the machine that holds it, so
+cordoning that node yields `0/5 nodes are available: 1 node(s) were
+unschedulable, 4 node(s) had volume node affinity conflict` — Pending until
+that exact node returns. Bit us on the first 1.33 hop: Pi-hole's PVC is
+local-path pinned to k8s-lab3, so draining lab3 took DNS down for the whole
+LAN. Worse, because Pi-hole serves the `.home` names the Ansible inventory
+resolved, the playbook then reported the node it was mid-upgrade on as
+UNREACHABLE. Two fixes: the inventory now carries explicit `ansible_host` IPs
+so Ansible resolves nothing (3/5 → 5/5 reachable immediately), and
+`30-upgrade.yml` pre-flight enumerates every local-path PVC up front. Exactly
+one exists cluster-wide: `dns/pihole`.
+
+**`ansible.builtin.command` runs no shell and shlex-splits its arguments,
+which EATS backslashes and quotes.** Two separate bugs in one day from this.
+`jsonpath={.metadata.labels.cnpg\.io/cluster}` reached kubectl as
+`cnpg.io/cluster` — a nested-key lookup — and returned empty; and
+`jsonpath={...[?(@.type=="Available")]...}` lost its quotes and died with
+"unrecognized identifier Available". Both looked like the cluster was broken
+when the query was. Use `ansible.builtin.shell` with the jsonpath quoted, or
+avoid characters the splitter consumes.
 
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that
