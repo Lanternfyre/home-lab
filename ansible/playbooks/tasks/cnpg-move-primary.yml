@@ -1,0 +1,92 @@
+---
+# Move ONE CNPG primary off the node about to be drained.
+#
+# primary_ref arrives as "namespace/pod/nodeName".
+#
+# Why by deleting the pod: CNPG promotes a healthy replica when the primary
+# disappears. That is a failover, not a graceful switchover -- a few seconds of
+# write unavailability -- but `kubectl cnpg promote` needs the CNPG plugin,
+# which is not installed on these nodes, and inventing a switchover by patching
+# status subresources would be worse.
+#
+# The alternative is to let the drain block on the <cluster>-primary PDB (which
+# permits ZERO disruptions, by design) and hope CNPG notices the cordon. That
+# is not something this repo should be guessing at during an upgrade, so the
+# primary is moved deliberately and the move is VERIFIED before draining.
+#
+# ⚠️ Gated on a healthy replica existing. Doing this to a single-instance
+# cluster is an outage, not a failover.
+
+- name: "cnpg | parse the reference"
+  ansible.builtin.set_fact:
+    cnpg_ns: "{{ primary_ref.split('/')[0] }}"
+    cnpg_pod: "{{ primary_ref.split('/')[1] }}"
+
+- name: "cnpg | which Cluster owns {{ cnpg_pod }}?"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} get pod {{ cnpg_pod }}
+    -o jsonpath={.metadata.labels.cnpg\.io/cluster}
+  register: cnpg_cluster
+  changed_when: false
+  delegate_to: "{{ peer }}"
+
+- name: "cnpg | how many instances are ready?"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} get cluster {{ cnpg_cluster.stdout | trim }}
+    -o jsonpath={.status.readyInstances}
+  register: cnpg_ready
+  changed_when: false
+  delegate_to: "{{ peer }}"
+
+- name: "cnpg | refuse to fail over a cluster with no replica to fail over TO"
+  ansible.builtin.fail:
+    msg: >-
+      {{ cnpg_ns }}/{{ cnpg_cluster.stdout | trim }} has
+      {{ cnpg_ready.stdout | trim }} ready instance(s), so removing its primary
+      would be an OUTAGE, not a failover. Scale the cluster to at least 2
+      healthy instances before upgrading the node that hosts its primary.
+  when: (cnpg_ready.stdout | trim | int) < 2
+
+- name: "cnpg | promote a replica by removing the primary from {{ inventory_hostname }}"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} delete pod {{ cnpg_pod }} --wait=false
+  delegate_to: "{{ peer }}"
+  changed_when: true
+
+# Verify the primary actually MOVED. Waiting for "a primary exists" is not
+# enough -- CNPG could have restarted the pod on the same node, and then the
+# drain would still block on the PDB.
+- name: "cnpg | wait for a primary on a DIFFERENT node"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} get pods
+    -l cnpg.io/cluster={{ cnpg_cluster.stdout | trim }},cnpg.io/instanceRole=primary
+    -o jsonpath='{range .items[*]}{.spec.nodeName}{"\n"}{end}'
+  args:
+    executable: /bin/bash
+  register: cnpg_newprimary
+  changed_when: false
+  delegate_to: "{{ peer }}"
+  until:
+    - cnpg_newprimary.stdout | trim | length > 0
+    - node_name not in cnpg_newprimary.stdout
+  retries: 60
+  delay: 5
+
+- name: "cnpg | confirm the cluster is healthy again before draining"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n {{ cnpg_ns }} get cluster {{ cnpg_cluster.stdout | trim }}
+    -o jsonpath={.status.readyInstances}
+  register: cnpg_after
+  changed_when: false
+  delegate_to: "{{ peer }}"
+  until: (cnpg_after.stdout | trim | int) >= 2
+  retries: 60
+  delay: 5
+
+- name: "cnpg | moved"
+  ansible.builtin.debug:
+    msg: >-
+      {{ cnpg_ns }}/{{ cnpg_cluster.stdout | trim }} primary is now on
+      {{ cnpg_newprimary.stdout | trim }} ({{ cnpg_after.stdout | trim }}
+      instances ready). Safe to drain {{ node_name }}.

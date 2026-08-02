@@ -1,0 +1,402 @@
+---
+# Rolling k3s upgrade. THE most dangerous playbook in this repo.
+#
+#   # 1. see where you are, change nothing
+#   ansible-playbook playbooks/30-upgrade.yml --check
+#
+#   # 2. one hop, deliberately, watching it
+#   ansible-playbook playbooks/30-upgrade.yml --ask-become-pass
+#
+# The target is ONE variable: k3s_version in inventory/group_vars/all.yml.
+# Three hops, one at a time, live 24-48h on each:
+#   v1.32.10+k3s1 -> v1.33.13+k3s1 -> v1.34.9+k3s1 -> v1.35.6+k3s1
+#
+# ⚠️⚠️ MINOR DOWNGRADES ARE IMPOSSIBLE. ⚠️⚠️
+# There is no "undo". The only rollback is an etcd restore:
+# `--cluster-reset --cluster-reset-restore-path` on one node, then wiping
+# /var/lib/rancher/k3s/server/db on the other four and rejoining them. Hours,
+# destructive, and unrehearsed. THAT is why the gates below are strict and why
+# nothing here uses --force.
+#
+# ⚠️ HARD CEILING 1.35. The QNAP CSI driver declares Kubernetes support only to
+# 1.35, even at v1.6.2. k3s `stable` is already 1.36.x, so the assertion below
+# is doing real work rather than being theoretical.
+#
+# ── Order: lab1 LAST ─────────────────────────────────────────────────────────
+# `order: reverse_inventory` gives lab5, lab4, lab3, lab2, lab1. lab1 is the
+# original cluster-init node and the usual kube-vip lease holder, so it is
+# upgraded when four nodes are already known-good at the new version.
+
+- name: Pre-flight -- refuse to start on a cluster that is not already healthy
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+  # Needs root even for the read-only checks: /etc/rancher/k3s/k3s.yaml is 0600,
+  # so `k3s kubectl` fails with "permission denied" without it. That means even
+  # `--check` needs --ask-become-pass on this playbook.
+  become: true
+
+  tasks:
+    - name: "preflight | what is running now?"
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: pre_ver
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | the ceiling is real -- assert the target is below it"
+      ansible.builtin.assert:
+        that:
+          - k3s_version is version(k3s_max_version, '<')
+        fail_msg: >-
+          k3s_version={{ k3s_version }} is at or above k3s_max_version
+          {{ k3s_max_version }}. The QNAP CSI driver (csi.trident.qnap.io)
+          declares Kubernetes support only up to 1.35. Going higher means the
+          storage driver is unsupported on every node, with no downgrade path.
+        success_msg: "target {{ k3s_version }} is below the {{ k3s_max_version }} ceiling"
+      run_once: true
+
+    # A minor downgrade cannot be undone, so it must not be startable.
+    - name: "preflight | refuse to move backwards"
+      ansible.builtin.assert:
+        that:
+          - (pre_ver.stdout_lines[0].split()[2]) is version(k3s_version, '<=')
+        fail_msg: >-
+          {{ inventory_hostname }} runs
+          {{ pre_ver.stdout_lines[0].split()[2] }}, which is NEWER than the
+          requested {{ k3s_version }}. k3s cannot be downgraded across a minor
+          version -- the only path back is an etcd restore. Refusing.
+        success_msg: "{{ pre_ver.stdout_lines[0].split()[2] }} -> {{ k3s_version }}"
+
+    - name: "preflight | every node is Ready and schedulable"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.unschedulable}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}'
+      args:
+        executable: /bin/bash
+      register: pre_nodes
+      changed_when: false
+      check_mode: false
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+
+    # Upgrading into a cluster that is already one node down means the drain
+    # has fewer places to put things, and a CNPG switchover may have nowhere
+    # to go. Start healthy or do not start.
+    - name: "preflight | assert nothing is already cordoned or NotReady"
+      ansible.builtin.assert:
+        that:
+          - "'True' in item"
+          - "'true' not in item.split()[1:2]"
+        fail_msg: >-
+          Node line "{{ item }}" is cordoned or not Ready. Fix that first: an
+          upgrade that starts a node down has fewer drain targets and may leave
+          a CNPG switchover with nowhere to go.
+      loop: "{{ pre_nodes.stdout_lines }}"
+      run_once: true
+
+    - name: "preflight | etcd is healthy on ALL five right now"
+      # All five answering IS the member-count check -- a node whose etcd is
+      # gone does not serve :2381 at all.
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:2381/metrics"
+        return_content: true
+      register: pre_etcd
+      check_mode: false
+
+    - name: "preflight | assert leader present and zero health failures"
+      ansible.builtin.assert:
+        that:
+          - "'etcd_server_has_leader 1' in pre_etcd.content"
+          - "'etcd_server_health_failures 0' in pre_etcd.content"
+        fail_msg: >-
+          etcd on {{ inventory_hostname }} reports no leader or non-zero health
+          failures. Upgrading now risks losing quorum with no way back except
+          a restore.
+        success_msg: "etcd healthy on {{ inventory_hostname }}"
+
+    - name: "preflight | nothing is already in ImagePullBackOff"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pods -A
+        -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}'
+        | grep -c ImagePullBackOff || true
+      args:
+        executable: /bin/bash
+      register: pre_ipbo
+      changed_when: false
+      check_mode: false
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      failed_when: (pre_ipbo.stdout | trim | int) > 0
+
+    # Cheap insurance, and the one thing that makes the unrehearsed restore
+    # path even theoretically available.
+    - name: "preflight | take an on-demand etcd snapshot"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s etcd-snapshot save
+        --name pre-upgrade-{{ k3s_version | regex_replace('[^a-zA-Z0-9]', '-') }}
+      become: true
+      run_once: true
+      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      when: not ansible_check_mode
+      changed_when: true
+
+    - name: "preflight | summary"
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: {{ pre_ver.stdout_lines[0].split()[2] }}
+          -> {{ k3s_version }}. Cluster healthy, etcd has a leader, snapshot
+          taken. Nodes will be upgraded one at a time, lab1 last.
+
+- name: Roll the upgrade, one node at a time, lab1 last
+  hosts: k3s_servers
+  gather_facts: false
+  serial: 1
+  order: reverse_inventory
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    # Any node that is NOT the one being upgraded. Drain must be issued from
+    # elsewhere: asking a node to evict its own pods while its API server is
+    # about to restart is how a drain hangs half-done.
+    peer: >-
+      {{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) }}
+    node_name: "{{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}"
+
+  tasks:
+    - name: "{{ node_name }} | skip if already at the target version"
+      ansible.builtin.command: /usr/local/bin/k3s --version
+      register: cur_ver
+      changed_when: false
+      check_mode: false
+      become: false
+
+    - name: "{{ node_name }} | already upgraded"
+      ansible.builtin.debug:
+        msg: "{{ node_name }} is already {{ k3s_version }}; nothing to do."
+      when: k3s_version in cur_ver.stdout
+
+    - name: Upgrade this node
+      when: k3s_version not in cur_ver.stdout
+      block:
+
+        # ── CNPG: move primaries OFF this node before draining ──────────────
+        # The <cluster>-primary PDB allows ZERO disruptions by design, so a
+        # drain of the node holding a primary blocks until the primary moves.
+        # The wrong response is --force or --disable-eviction, which kills a
+        # primary bypassing its PDB. The right one is to move it first.
+        - name: "{{ node_name }} | which CNPG primaries live here?"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get pods -A
+            -l cnpg.io/instanceRole=primary
+            -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.spec.nodeName}{"\n"}{end}'
+            | grep "/{{ node_name }}$" || true
+          args:
+            executable: /bin/bash
+          register: cnpg_here
+          changed_when: false
+          check_mode: false
+          delegate_to: "{{ peer }}"
+
+        - name: "{{ node_name }} | report CNPG primaries to move"
+          ansible.builtin.debug:
+            msg: >-
+              CNPG primaries on {{ node_name }}:
+              {{ cnpg_here.stdout_lines | default([]) | join(', ') | default('none', true) }}
+
+        # Deleting the primary pod makes CNPG promote a healthy replica. That
+        # is a failover rather than a graceful switchover -- a few seconds of
+        # write unavailability -- but it needs no kubectl plugin, and the
+        # plugin is not installed here. Gated on a replica actually existing:
+        # doing this to a single-instance cluster would be an outage, not a
+        # failover.
+        - name: "{{ node_name }} | move each primary off this node"
+          ansible.builtin.include_tasks: tasks/cnpg-move-primary.yml
+          loop: "{{ cnpg_here.stdout_lines | default([]) }}"
+          loop_control:
+            loop_var: primary_ref
+          when:
+            - cnpg_here.stdout | trim | length > 0
+            - not ansible_check_mode
+
+        # ── Cordon and drain ────────────────────────────────────────────────
+        - name: "{{ node_name }} | cordon"
+          ansible.builtin.command: "/usr/local/bin/k3s kubectl cordon {{ node_name }}"
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        # NEVER --force, NEVER --disable-eviction. Both bypass PodDisruption
+        # Budgets, and the budgets here are protecting database primaries. If
+        # this times out, that is the safety working: something could not be
+        # moved, and the correct response is to find out what -- not to
+        # overrule it.
+        - name: "{{ node_name }} | drain (respecting every PDB)"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl drain {{ node_name }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout={{ k3s_drain_timeout | default('600s') }}
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        # ── Upgrade ─────────────────────────────────────────────────────────
+        - name: "{{ node_name }} | install the new k3s"
+          ansible.builtin.shell: |
+            curl -sfL https://get.k3s.io | \
+              INSTALL_K3S_VERSION={{ k3s_version }} \
+              INSTALL_K3S_SKIP_START=true \
+              sh -s -
+          environment: {}   # keep stray K3S_* out of the regenerated service env
+          when: not ansible_check_mode
+          changed_when: true
+
+        - name: "{{ node_name }} | restart k3s onto the new version"
+          ansible.builtin.systemd:
+            name: k3s
+            state: restarted
+            daemon_reload: true
+          when: not ansible_check_mode
+
+        # ── Gates. Every one of these has to pass before the next node. ─────
+        - name: "{{ node_name }} | Ready AT THE NEW VERSION"
+          # Deliberately not just "Ready": a node can report Ready while still
+          # running the old kubelet, which would let the loop move on having
+          # upgraded nothing.
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get node {{ node_name }}
+            -o jsonpath='{.status.nodeInfo.kubeletVersion}{" "}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}'
+          args:
+            executable: /bin/bash
+          register: g_ready
+          delegate_to: "{{ peer }}"
+          changed_when: false
+          until: g_ready.stdout is search(k3s_version | regex_replace('\\+', '.') ~ '.*True')
+          retries: 60
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | etcd has a leader on ALL FIVE"
+          # All five answering IS the member-count check.
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:2381/metrics"
+            return_content: true
+          register: g_etcd
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['k3s_servers'] }}"
+          until:
+            - "'etcd_server_has_leader 1' in g_etcd.content"
+            - "'etcd_server_health_failures 0' in g_etcd.content"
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | /readyz reports etcd ok"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl get --raw=/readyz?verbose
+          register: g_readyz
+          changed_when: false
+          until: "'[+]etcd ok' in g_readyz.stdout"
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | every DaemonSet has desired == ready"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get ds -A
+            -o jsonpath='{range .items[*]}{.status.desiredNumberScheduled}{" "}{.status.numberReady}{"\n"}{end}'
+            | awk '$1 != $2' | wc -l
+          args:
+            executable: /bin/bash
+          register: g_ds
+          delegate_to: "{{ peer }}"
+          changed_when: false
+          until: (g_ds.stdout | trim | int) == 0
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        # THE storage gate. k8s-lab4 sat Ready, untainted and schedulable with
+        # ZERO CSI drivers, and nothing in `kubectl get nodes` revealed it.
+        # Any PVC-bearing pod landing there hangs in ContainerCreating forever.
+        - name: "{{ node_name }} | csinode is non-empty"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl get csinode {{ node_name }}
+            -o jsonpath={.spec.drivers[*].name}
+          register: g_csi
+          delegate_to: "{{ peer }}"
+          changed_when: false
+          until: (g_csi.stdout | trim | length) > 0
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | nothing fell into ImagePullBackOff"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get pods -A
+            -o jsonpath='{range .items[*].status.containerStatuses[*]}{.state.waiting.reason}{"\n"}{end}'
+            | grep -c ImagePullBackOff || true
+          args:
+            executable: /bin/bash
+          register: g_ipbo
+          delegate_to: "{{ peer }}"
+          changed_when: false
+          until: (g_ipbo.stdout | trim | int) == 0
+          retries: 20
+          delay: 15
+          when: not ansible_check_mode
+
+        # ── Back into service ───────────────────────────────────────────────
+        - name: "{{ node_name }} | uncordon"
+          ansible.builtin.command: "/usr/local/bin/k3s kubectl uncordon {{ node_name }}"
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        - name: "{{ node_name }} | settle before touching the next node"
+          ansible.builtin.wait_for:
+            timeout: "{{ k3s_settle_seconds | default(30) }}"
+          when: not ansible_check_mode
+
+        # ── Re-assert what the upgrade resets ───────────────────────────────
+        # k3s rewrites its bundled addon manifests when the VERSION changes, so
+        # coredns.yaml is replaced by the new release's template. Verified
+        # 2026-08-02 that ordinary restarts do NOT do this -- only version
+        # changes -- which is exactly why re-assertion belongs HERE and not in
+        # site.yml.
+        - name: "{{ node_name }} | re-assert CoreDNS HA"
+          ansible.builtin.include_role:
+            name: coredns_ha
+          vars:
+            coredns_manifest_host: "{{ peer }}"
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | done"
+          ansible.builtin.debug:
+            msg: >-
+              {{ node_name }} is {{ k3s_version }}, Ready, uncordoned, CSI
+              drivers registered, etcd healthy on all five. Moving on.
+
+- name: Post-upgrade verification across the whole cluster
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: false
+  become: true
+  roles:
+    - node_verify
+
+  post_tasks:
+    - name: Final word
+      ansible.builtin.debug:
+        msg: >-
+          All nodes at {{ k3s_version }}. LIVE ON THIS FOR 24-48h before
+          setting k3s_version to the next hop. The gates passed, but a cluster
+          only proves an upgrade by running on it.
+      run_once: true

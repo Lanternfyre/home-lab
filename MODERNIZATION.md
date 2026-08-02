@@ -271,10 +271,29 @@ Remaining:
 `site.yml` converges; `20-config-converge.yml` applies k3s config + restarts;
 `40-add-node.yml` joins a node safely; `90-preflight.yml` audits read-only.
 
-Still to write: `30-upgrade.yml` (the rolling upgrade — see Phase 2 for the
-gates it must implement).
+`30-upgrade.yml` is **written (2026-08-02) but UNRUN** — no hop has been taken
+with it, so it is code, not yet a proven procedure. It needs
+`--ask-become-pass` even for `--check`, because `k3s kubectl` cannot read the
+0600 `k3s.yaml` without root.
+
+What is already validated: syntax, the pre-flight ceiling and no-downgrade
+assertions (dry-run against the live cluster), every gate query run by hand
+against the live cluster, the upgrade ORDER (`order: reverse_inventory` →
+lab5→lab1, lab1 last), and the version-match regex, which correctly rejects
+old-version-but-Ready, new-version-but-NotReady, and a similar-but-wrong
+version string.
+
+What is NOT validated: the CNPG primary move, the drain, the install, and the
+gates as a running sequence. The first hop is the test.
 
 ### Phase 2 — k3s 1.32.10 → **1.35.6** (hard stop)
+Playbook: `playbooks/30-upgrade.yml`, written but never run. ⚠️ Its CNPG step
+moves a primary by **deleting the primary pod**, which is a failover (a few
+seconds of write unavailability), not a graceful switchover — `kubectl cnpg
+promote` needs the CNPG plugin and it is not installed. The step is gated on
+the cluster having ≥2 ready instances and VERIFIES the primary landed on a
+different node before draining. Watch this closely on the first hop; if it is
+unacceptable, install the plugin and switch to a real switchover.
 Three sequential hops: `1.33.13 → 1.34.9 → 1.35.6`, **one variable**
 (`k3s_version` in `inventory/group_vars/all.yml`), three deliberate runs, live
 on each 24–48h.
