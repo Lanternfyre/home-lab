@@ -144,10 +144,25 @@ Remaining:
       rejoin on restart. It also bakes in a static topology that goes stale
       whenever nodes change. An HA VIP has neither problem.
 
-      Residual risks, accepted knowingly: cold-start ordering (boot only a
+      ✅ **MEASURED 2026-08-02, not inferred.** On k8s-lab4 — a node whose
+      unit explicitly says `--server https://192.168.32.2:6443` —
+      `ss -tn | grep 6443 | grep -c 192.168.32.2` returns **0**. It holds
+      direct connections to peer node IPs instead. So an already-joined server
+      consults the VIP at join and never again, exactly as the k3s docs
+      sentence implies. A VIP outage cannot disturb a running cluster; it can
+      only delay a node that is joining or re-bootstrapping.
+
+      Residual risk, accepted knowingly: cold-start ordering (boot only a
       non-init node with all others off and it waits for a VIP nobody holds —
-      k3s retries, so it resolves once a holder appears), and gratuitous-ARP
-      failover being slower than the lease on some switches.
+      k3s retries, so it resolves once a holder appears). Gratuitous-ARP
+      failover latency is now a non-issue for running nodes, since they do not
+      use the VIP at all.
+
+      *Measurement gotcha worth remembering:* `sudo grep /var/lib/rancher/k3s/agent/*.kubeconfig`
+      does NOT work — the shell expands the glob as the unprivileged user
+      before sudo applies, and that directory is 0700, so the pattern stays
+      literal and grep reports "No such file". Use `sudo sh -c '...'` when
+      globbing inside root-only paths.
 
       ✅ **Checked and NOT a problem:** whether the VIP could move to a node
       whose serving cert lacks it. `--tls-san 192.168.32.2` appears only in
