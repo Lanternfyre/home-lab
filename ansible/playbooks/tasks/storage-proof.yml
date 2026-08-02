@@ -135,13 +135,19 @@
       changed_when: true
       failed_when: false
 
+    # 3 minutes, not 60s. Trident has to delete the LUN on the NAS before the PV
+    # object goes, and on the 1.34 hop that took longer than the old 12x5s
+    # window -- so the play reported "WARNING: PV still exists, check with
+    # tridentctl" for a volume that was in fact reclaimed moments later. A leak
+    # check that cries wolf is worse than none: it trains you to ignore the one
+    # time it is real.
     - name: "storage proof | confirm nothing leaked"
       ansible.builtin.command: "kubectl get pv {{ proof_pv.stdout | trim }}"
       register: proof_gone
       changed_when: false
       failed_when: false
       until: proof_gone.rc != 0
-      retries: 12
+      retries: 36
       delay: 5
       when: (proof_pv.stdout | trim | length) > 0
 
