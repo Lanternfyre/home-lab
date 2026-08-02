@@ -80,29 +80,74 @@
 # qnap-iscsi volume ("multipath device not found when it is expected"). A
 # green verify run on a node that cannot mount a PVC is the exact failure this
 # role exists to prevent, so assert the DAEMON, not just the file.
-- name: Read multipath.conf mtime and multipathd start time
+- name: Read multipath.conf mtime, multipathd start time, and live mpath devices
   ansible.builtin.shell: |
     set -e
     conf=$(stat -c %Y /etc/multipath.conf)
     started=$(date -d "$(systemctl show multipathd -p ActiveEnterTimestamp --value)" +%s)
-    echo "$conf $started"
+    mpaths=$(ls /dev/mapper 2>/dev/null | grep -c mpath || true)
+    sessions=$(ls /sys/class/iscsi_session 2>/dev/null | wc -l)
+    echo "$conf $started $mpaths $sessions"
   register: mpath_freshness
   changed_when: false
   check_mode: false
 
-- name: Assert multipathd has actually loaded the current multipath.conf
+- name: "Interpret multipath freshness"
+  ansible.builtin.set_fact:
+    mp_conf_mtime: "{{ mpath_freshness.stdout.split()[0] | int }}"
+    mp_started: "{{ mpath_freshness.stdout.split()[1] | int }}"
+    mp_devices: "{{ mpath_freshness.stdout.split()[2] | int }}"
+    mp_sessions: "{{ mpath_freshness.stdout.split()[3] | int }}"
+
+- name: "Interpret multipath freshness | derive"
+  ansible.builtin.set_fact:
+    mp_stale: "{{ (mp_started | int) < (mp_conf_mtime | int) }}"
+
+# A stale config is NOT automatically a failure, and conflating the two would
+# make this role fail nodes that are behaving exactly as designed. node_baseline
+# DELIBERATELY writes multipath.conf and defers the restart on any node with
+# attached LUNs -- that is lab1/2/3, four LUNs each -- so the first time the
+# template changes they are legitimately stale until their next restart.
+#
+# The discriminator is behavioural, not temporal: does the running daemon still
+# produce device-mapper entries?
+#   * stale + mpath devices present  -> deferred restart, staging demonstrably
+#                                       works, takes effect at the next reboot.
+#                                       WARN.
+#   * stale + ZERO mpath devices     -> exactly lab5 on 2026-08-02: sessions
+#                                       attached, no dm entries, and a proven
+#                                       inability to stage a qnap-iscsi volume.
+#                                       FAIL.
+- name: "multipathd config is stale but staging still works (deferred restart)"
+  ansible.builtin.debug:
+    msg: >-
+      NOTE: multipathd on {{ inventory_hostname }} predates its multipath.conf
+      by {{ (mp_conf_mtime | int) - (mp_started | int) }}s, but the node has
+      {{ mp_devices }} live multipath device(s), so staging works and the
+      restart was deferred on purpose ({{ mp_sessions }} iSCSI session(s)
+      attached). The new config takes effect at the next restart or reboot --
+      which the k3s upgrade provides. To force it sooner, drain the node and
+      re-run with -e multipath_force_restart=true.
+  when:
+    - mp_stale | bool
+    - (mp_devices | int) > 0
+
+- name: Assert multipathd is not running a stale config on a node that cannot stage
   ansible.builtin.assert:
-    that: "(mpath_freshness.stdout.split()[1] | int) >= (mpath_freshness.stdout.split()[0] | int)"
+    that: "not (mp_stale | bool) or (mp_devices | int) > 0"
     fail_msg: >-
       multipathd on {{ inventory_hostname }} started
-      {{ (mpath_freshness.stdout.split()[0] | int) - (mpath_freshness.stdout.split()[1] | int) }}s
-      BEFORE /etc/multipath.conf was last written, so the running daemon is
-      using the OLD config. The file being correct is not enough -- this node
-      will still fail to stage a QNAP volume with "multipath device not found
-      when it is expected". Fix:
+      {{ (mp_conf_mtime | int) - (mp_started | int) }}s BEFORE
+      /etc/multipath.conf was last written, and the node has ZERO multipath
+      devices ({{ mp_sessions }} iSCSI session(s) attached). The running daemon
+      is using the OLD config and this node will fail to stage a QNAP volume
+      with "multipath device not found when it is expected" -- the file being
+      correct is not enough. Fix:
       ansible-playbook playbooks/10-baseline.yml --ask-become-pass
       --limit {{ inventory_hostname }} -e multipath_force_restart=true
-    success_msg: "multipathd started after the current multipath.conf was written"
+    success_msg: >-
+      multipath config effective ({{ mp_devices }} mpath device(s),
+      {{ 'daemon newer than config' if not (mp_stale | bool) else 'stale but staging works' }})
 
 - name: Assert storage services are running
   ansible.builtin.command: "systemctl is-active {{ item }}"

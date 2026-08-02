@@ -54,6 +54,25 @@
     dest: "{{ kube_vip_manifest_path }}"
     mode: "0600"
     # A manifest that does not parse is applied by nothing and prunes nothing,
-    # so a syntax error here fails silently as "the VIP just stopped moving".
-    validate: "/usr/local/bin/k3s kubectl apply --dry-run=client -f %s"
+    # so a syntax error here would fail silently as "the VIP stopped moving".
+    #
+    # Deliberately a plain YAML parse, NOT `k3s kubectl apply --dry-run`: this
+    # runs inside the write path of the one operation that can take the API VIP
+    # down, so it must not itself depend on the API server being reachable
+    # through that VIP. Schema validity is established at authoring time
+    # instead -- the rendered manifest was checked with
+    # `kubectl apply --dry-run=server` against the live cluster. This catches
+    # the failure mode that actually belongs here: a template that rendered to
+    # something unparseable.
+    validate: "python3 -c 'import sys,yaml; list(yaml.safe_load_all(open(sys.argv[1])))' %s"
   register: kv_written
+
+- name: "report | nothing to do"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} already carried the DaemonSet manifest and it
+      rendered identically, so the addon checksum is unchanged and k3s
+      reconciles nothing. No VIP interruption.
+  when:
+    - kv_already_ds | bool
+    - not kv_written.changed

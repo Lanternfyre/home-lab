@@ -303,10 +303,19 @@ not tell the difference.** lab5 passed every assertion — `multipath.conf`
 contains `find_multipaths no` — while provably unable to stage a `qnap-iscsi`
 volume, because multipathd last started 2026-07-31 and the file was written
 2026-08-02. Two hours of "verified healthy" on a node that could not mount a
-PVC. `node_verify` now compares multipathd's `ActiveEnterTimestamp` against the
-file's mtime and fails if the daemon predates its own config. This is the
-third variant of the same lesson: the file existing was not enough, the file's
-*contents* being right was not enough either.
+PVC. This is the third variant of the same lesson: the file existing was not
+enough, the file's *contents* being right was not enough either.
+
+`node_verify` now compares multipathd's `ActiveEnterTimestamp` against the
+file's mtime — but **staleness alone is deliberately not a failure**, because
+`node_baseline` is *designed* to write the file and defer the restart on any
+node with attached LUNs (lab1/2/3, four each). Failing on staleness would red-
+flag three nodes doing exactly what the role intends. The discriminator is
+behavioural: stale **and zero multipath devices** fails (lab5's signature —
+sessions attached, no dm entries, proven unable to stage); stale **with** live
+mpath devices warns and notes that the config lands at the next restart.
+Verified against all five: lab1/2/3 pass with 4 devices each, lab4 passes,
+lab5 fails.
 
 **The `multipath_force_restart` escape hatch could not reach the only node it
 was built for.** The restart was gated on `multipath_written.changed` *and*
