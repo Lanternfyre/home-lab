@@ -3,6 +3,41 @@
 crds:
   enabled: true
 
+# ── k3s runs these INSIDE the server process, so they are not scrapeable ─────
+# kube-prometheus-stack assumes a kubeadm-style cluster where the scheduler,
+# controller-manager and kube-proxy are separate pods with their own metrics
+# endpoints. In k3s all three live inside the k3s server process and expose no
+# such endpoint, so the shipped ServiceMonitors scrape nothing and the matching
+# alerts fire permanently:
+#
+#   KubeSchedulerDown · KubeControllerManagerDown · KubeProxyDown
+#
+# All three were firing on 2026-08-03 and had been for as long as the stack has
+# been installed. They are false, they can never resolve, and they are exactly
+# the kind of noise that trains you to ignore the alert that matters — this
+# repo already learned that from a leak check that cried wolf.
+#
+# ⚠️ BOTH halves are required, and disabling only the components makes it
+# WORSE. The alerts are `absent(up{job="kube-scheduler"} == 1)` style, so
+# removing the ServiceMonitor removes the job entirely and absent() then
+# matches even more confidently. The `defaultRules.rules.*` toggles are what
+# actually stop them.
+#
+# kubeEtcd is deliberately LEFT ENABLED: k3s does expose etcd metrics on :2381
+# and no etcd alert is firing, so it is genuinely being scraped.
+kubeScheduler:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeProxy:
+  enabled: false
+
+defaultRules:
+  rules:
+    kubeSchedulerAlerting: false
+    kubeControllerManager: false
+    kubeProxy: false
+
 # Accept Prometheus remote_write pushes on the main instance. OTLP metrics from
 # external apps (e.g. the Necronia dev server) are relayed by alloy-gateway via
 # prometheus.remote_write and now land here, the same instance Grafana queries by
