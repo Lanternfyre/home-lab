@@ -1,0 +1,51 @@
+# Headlamp — Kubernetes UI.
+#
+# Ingress lives in manifests/headlamp.ingress.yaml, NOT here, so it matches the
+# oauth2-proxy pattern every other app in this repo uses. The chart's own
+# `ingress.enabled` is therefore left false.
+
+replicaCount: 1
+
+config:
+  inCluster: true
+
+  # ⚠️ DELIBERATELY FALSE, and this is the security decision in this file.
+  #
+  # `unsafeUseServiceAccountToken: true` makes Headlamp talk to the API server
+  # with its OWN ServiceAccount and skip the login screen entirely. Combined
+  # with the chart's default cluster-admin binding, that turns "can reach the
+  # URL" into "is cluster-admin" — so the ingress annotations become the ONLY
+  # thing between the LAN and full cluster control. The chart calls it unsafe
+  # for that reason.
+  #
+  # Left false means Headlamp authenticates each user with a token THEY supply,
+  # so the API server does the authorisation, not the ingress. The cost is
+  # pasting a token per session; that goes away once Phase 4's API-server OIDC
+  # lands and Headlamp can use Google directly with real per-user RBAC.
+  unsafeUseServiceAccountToken: false
+
+# ⚠️ The chart DEFAULTS this to true with clusterRoleName: cluster-admin.
+# Disabled because nothing here uses Headlamp's own ServiceAccount for API
+# calls — user tokens are used instead (see above) — and a standing
+# cluster-admin binding on an unused identity is pure downside: it is the thing
+# an attacker escalates to if they ever get the SA token, and it is invisible
+# in normal operation.
+#
+# If Headlamp misbehaves in a way that looks permission-shaped, flip this to
+# true to confirm the diagnosis, then work out the minimum role it actually
+# needs rather than leaving cluster-admin in place.
+clusterRoleBinding:
+  create: false
+
+ingress:
+  enabled: false
+
+resources:
+  requests:
+    cpu: 10m
+    memory: 64Mi
+  # No CPU limit set from here; see the qnap-trident values for why a
+  # too-small one throttles far below the number you would expect. If one is
+  # added later, size it for burst.
+  limits:
+    memory: 256Mi

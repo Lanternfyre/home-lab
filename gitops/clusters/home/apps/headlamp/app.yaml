@@ -1,0 +1,5 @@
+repoURL: "https://kubernetes-sigs.github.io/headlamp/"
+chart: "headlamp"
+targetRevision: "0.44.0"
+releaseName: "headlamp"
+namespace: "headlamp"
