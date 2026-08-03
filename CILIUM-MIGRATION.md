@@ -197,10 +197,59 @@ Clean. `cni.customConf: true` means no CNI conf was ever written, and
 
 ## Stage 2 — migrate ONE node (k8s-lab5)
 
+### ✅ DONE 2026-08-03 — lab5 is on Cilium, every gate passed
+
+Sequence as run: CiliumNodeConfig applied (0 nodes matched) → both CNPG
+primaries failed over off lab5, each waited back to 3/3 before the next →
+cordon + drain (24 pods evicted, **no `--force`**, every PDB respected) →
+label → agent restart → reboot → gates → uncordon.
+
+Gates, all passed:
+
+| gate | result |
+|---|---|
+| cilium agent | `Ok 1.20.0`, IPAM `10.245.4.0/24`, Tunnel vxlan, Host Legacy |
+| `csinode` | `csi.trident.qnap.io` registered |
+| DaemonSets | every `desired == ready` |
+| etcd | `has_leader 1`, `health_failures 0` on **all five** |
+| pod IP on lab5 | **10.245.4.2** — Cilium IPAM, not flannel |
+| DNS | resolves via CoreDNS `10.43.0.10` |
+| **cross-CNI** | **ping to a flannel pod `10.42.0.131` on another node: 0% loss, 0.47ms** |
+| ClusterIP | `kubernetes.default` → 401 (kube-proxy still routing) |
+| storage | mounted `/dev/mapper/mpathq`, ext4, 16 MB written + read back, md5 match |
+
+The cross-CNI row is the one that mattered: it is the empirical confirmation of
+the premise this whole per-node shape rests on. It is no longer inherited from
+a doc.
+
+Also observed and worth keeping: **lab5 was the busiest node in the cluster** —
+it held *both* CNPG primaries plus Pi-hole plus an ingress replica. The
+primary-move-first step was not ceremonial; the two `*-primary` PDBs allow zero
+disruptions, so the drain would have blocked without it.
+
+⚠️ Test volumes leak on `Retain`. Both proof PVCs left a PV **and** a QNAP
+backend volume; cleaned with `tridentctl delete volume` via the trident
+controller pod (`tridentctl` is not on the workstation). Verified back to 19
+volumes with the audit passing.
+
+---
+
 **⚠️ THIS IS THE FIRST IRREVERSIBLE-WITHOUT-SUDO STEP. It requires a node
 reboot, and its rollback requires sudo on the node.**
 
 Do not start this while nobody can log into the nodes.
+
+> 🪤 **Set an explicit `-n` on every command in this section.** This
+> workstation's kubeconfig context has `namespace: kube-system`, so a bare
+> `kubectl run cil-probe` creates the probe in **kube-system**, and a bare
+> `kubectl get pod <name>` silently looks there too. During the live run that
+> cost ~15 minutes and a wrong conclusion: a proof pod that had actually
+> **completed successfully** in `default` read as NotFound, which was
+> misdiagnosed as "something deleted it" — and acted on by deleting a backend
+> volume that was still claimed. No damage, because it was a test volume, but
+> the reasoning was wrong for 15 minutes. Same family as the rest of this
+> repo's findings: the command succeeded, it just answered a different question
+> than the one being asked.
 
 ```bash
 # 1. a CiliumNodeConfig that only applies to labelled nodes

@@ -157,18 +157,29 @@ you want; the rest still stand:
    - **its `desired == ready` DaemonSet gate will trip during a Cilium
      migration**, when the cilium DaemonSet is legitimately part-ready. Do not
      run a k3s hop and the CNI migration in the same window.
-6. **Phase 3 (Cilium) — ✅ STAGE 1 DONE 2026-08-03. Stage 2 is next.**
+6. **Phase 3 (Cilium) — ✅ STAGES 1 AND 2 DONE 2026-08-03. lab4 is next.**
    See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md).
 
-   Cilium 1.20.0 is installed cluster-wide in migration mode and has taken
-   over **nothing**: 12/12 pods ready with zero restarts, 0 pods on
-   10.245.x.x, all five nodes Ready, VIP and LAN DNS fine, ArgoCD unchanged.
-   containerd's `bin_dirs`/`conf_dir` were read with sudo and match the values
-   exactly. The CNI directory proof passed — `cilium-cni` was added and every
-   k3s symlink (`flannel`, `loopback`, …) survived.
+   Cilium 1.20.0 installed cluster-wide in migration mode, and **k8s-lab5 is
+   migrated and back in service.** 3 pods on 10.245.x.x, 63 still on flannel —
+   the mixed state is live and working.
 
-   **Next is stage 2: migrate k8s-lab5.** That drains and REBOOTS a node, and
-   its rollback needs sudo. Deliberate op with a human watching.
+   ✅ **The premise of the whole per-node plan is now MEASURED, not inherited:**
+   a pod on lab5 with a Cilium address (`10.245.4.2`) pinged a pod still on
+   flannel (`10.42.0.131`) on another node — **0% loss, 0.47 ms**. Storage also
+   proved on the migrated node: `/dev/mapper/mpathq`, 16 MB written and read
+   back with matching md5.
+
+   Everything else stayed up: all five Ready, both CNPG clusters 3/3, VIP
+   answering, LAN DNS resolving, no unhealthy pods.
+
+   ⚠️ **The rollback in the runbook was wrong until this run corrected it.**
+   `cni-exclusive: true` makes Cilium **rename** flannel's conflist to
+   `10-flannel.conflist.cilium_bak` rather than leave it. Deleting only
+   `05-cilium.conflist` — which is what the procedure said — would have left
+   the node with **no CNI configuration at all**. Caught before the reboot.
+
+   **Next is lab4**, then lab3, lab2, and lab1 last. ≥24h on lab5 first.
 
 ---
 
@@ -765,6 +776,22 @@ which EATS backslashes and quotes.** Two separate bugs in one day from this.
 "unrecognized identifier Available". Both looked like the cluster was broken
 when the query was. Use `ansible.builtin.shell` with the jsonpath quoted, or
 avoid characters the splitter consumes.
+
+**This workstation's kubeconfig context defaults to `namespace: kube-system`,
+and that silently redirects every un-namespaced `kubectl`.** Found the hard way
+on 2026-08-03. A storage-proof pod was created in `default` via an explicit
+manifest, then polled with a bare `kubectl get pod <name>` — which looked in
+`kube-system`, returned NotFound, and made a pod that had **completed
+successfully** look as though something had deleted it. The wrong conclusion
+was then acted on: a PV and its QNAP backend volume were deleted while the PVC
+still existed. It was a test volume so nothing was lost, but the diagnosis was
+wrong for fifteen minutes and a real cleanup was performed on a false premise.
+
+Two habits follow. **Pass `-n` explicitly in anything written down**, because a
+runbook command that works interactively for one person silently targets a
+different namespace for the next. And when a resource "vanishes", check *where
+you looked* before concluding *what happened to it* — `NotFound` is an answer
+about a namespace, not about existence.
 
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that
