@@ -7,7 +7,7 @@ Values: [`gitops/cilium-values-migration.yaml`](gitops/cilium-values-migration.y
 (stages 1–4) and [`gitops/cilium-values-production.yaml`](gitops/cilium-values-production.yaml)
 (stage 5).
 
-Last updated: 2026-08-03. **Nothing in here has been executed yet.**
+Last updated: 2026-08-03. **Stages 1–4 are DONE; only stage 5 (cleanup) remains.**
 
 ---
 
@@ -131,10 +131,17 @@ inert because CNI only loads plugins named in the conflist.
 reason: lab1 is the historical VIP holder and the `peer` every other playbook
 delegates to.
 
-**Live on each node ≥24h before the next.** The failure this catches is not
-"the node is broken" — the gates catch that in minutes. It is the slow one:
-something that only talks across nodes occasionally, or a PVC that only
-remounts on a pod restart.
+~~**Live on each node ≥24h before the next.**~~ **Dropped for stages 3–4, on
+purpose, 2026-08-03.** Once stage 2 had *measured* cross-CNI routing, storage
+and DNS on a real migrated node, the per-node soak was buying little: the
+failure it guards against is a slow one, but the mixed two-overlay state is
+itself the least-tested configuration this cluster can be in, so sitting in it
+for a week is its own risk. The nodes were rolled back-to-back with the full
+gate set on each.
+
+**The soak that was KEPT is the one before stage 5**, which is where the
+genuinely irreversible changes live (policy enforcement, then removing flannel
+from k3s). Be happy on Cilium for a week before going there.
 
 ---
 
@@ -388,19 +395,63 @@ before declaring it recovered.**
 
 ---
 
-## Stage 3 — migrate lab4, lab3, lab2
+## Stages 3 and 4 — lab4, lab3, lab2, lab1
 
-Identical to stage 2, one node at a time, ≥24h apart, same gates each time.
+### ✅ DONE 2026-08-03 — all five nodes are on Cilium
 
-Nothing new is being decided here; the decisions were all made at stage 2. If
-a node behaves differently from lab5, **stop and find out why** rather than
-adjusting the procedure to fit — a divergence at node three means the model of
-what is happening is wrong.
+Run by `ansible/playbooks/35-cilium-migrate.yml` rather than by hand, so the
+whole remainder took one `--ask-become-pass` prompt. Final state:
 
-### Rollback — stage 3 (N nodes migrated, mixed cluster)
+```
+cilium 10.245.x : 63 pods
+flannel 10.42.x : 0 pods
+Cluster health  : 5/5 reachable      (was 0/0 — nothing was managed before)
+```
+
+All five Ready and uncordoned, every agent 1/1 with a single restart (its
+reboot), no unhealthy pods anywhere, both CNPG clusters 3/3, etcd leader on all
+five, VIP answering, LAN DNS resolving, ingress responding, audit clean, and no
+leftover proof pods or PVCs.
+
+The 24h-per-node soak was deliberately dropped for stages 3–4 — see the note
+under "Order". The soak that was kept is the one before stage 5.
+
+⚠️ **The rollback material is intact on every node**, verified rather than
+assumed: all five still hold `10-flannel.conflist.cilium_bak` next to
+`05-cilium.conflist`. That is what makes a per-node rollback possible right up
+until stage 5b removes flannel from k3s itself.
+
+### What the first live runs actually cost — all gate bugs, zero cluster damage
+
+Three consecutive failures, none of them the cluster's fault, all of them mine.
+Recording them because the pattern is now established beyond doubt: on this
+repo the gates are more fragile than the operations they guard.
+
+1. **A YAML folded scalar (`>-`) split one command into four.** Folding joins
+   lines with spaces *only* while they keep the first line's indentation; a
+   more-indented continuation keeps its newline. `kubectl exec … --` and
+   `cilium-dbg status` became separate commands, and newlines inside `$( )`
+   broke the pod lookup too. It failed 60 retries against **k8s-lab4, a node
+   that had migrated perfectly.**
+2. **`set -o pipefail` + `awk '{print $1; exit}'`.** awk exiting early closed
+   the pipe, kubectl took SIGPIPE and died rc 141, and pipefail reported the
+   pipeline as failed — *while stdout held the correct answer*. The same trap
+   applies to `| head -1`.
+3. **Gates living inside the `when: not already_migrated` block.** The first
+   failure left lab4 migrated-but-cordoned; a resume would have called it
+   "already migrated", skipped everything, and left it cordoned forever with no
+   gate ever having passed. `30-upgrade.yml` had already learned this; the new
+   playbook had copied its shape but not that scar. Resumes now re-verify.
+
+Also found and fixed: `peer` used the `difference` filter, which is a **set**
+operation and does not preserve order, so the delegation target was arbitrary
+(`k8s-5 -> k8s-4` where the expression reads as `k8s-1`). Harmless — any peer
+works — but unpredictable. `30-upgrade.yml` still has this.
+
+### Rollback — stages 3/4 (N nodes migrated)
 Per node, exactly the stage-2 rollback, in **reverse migration order**. 🔑 sudo.
 The mixed state is explicitly supported, so there is no rush to unwind all of
-them at once.
+them at once. Every node still has its `.cilium_bak` file.
 
 ---
 

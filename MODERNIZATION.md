@@ -34,6 +34,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
 | inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
 | Node config | prose runbook only | Ansible, detect-then-remediate |
+| CNI | flannel (in the k3s server process) | **Cilium 1.20.0 on all 5**, 63/63 pods, 5/5 reachable |
 
 ### Immediately next
 
@@ -157,29 +158,38 @@ you want; the rest still stand:
    - **its `desired == ready` DaemonSet gate will trip during a Cilium
      migration**, when the cilium DaemonSet is legitimately part-ready. Do not
      run a k3s hop and the CNI migration in the same window.
-6. **Phase 3 (Cilium) — ✅ STAGES 1 AND 2 DONE 2026-08-03. lab4 is next.**
+6. **Phase 3 (Cilium) — ✅ STAGES 1–4 DONE 2026-08-03. Only cleanup remains.**
    See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md).
 
-   Cilium 1.20.0 installed cluster-wide in migration mode, and **k8s-lab5 is
-   migrated and back in service.** 3 pods on 10.245.x.x, 63 still on flannel —
-   the mixed state is live and working.
+   **All five nodes are on Cilium.** 63 pods on `10.245.x.x`, **zero on
+   flannel**, and `Cluster health: 5/5 reachable` where it read `0/0` before.
+   Every agent 1/1 with a single restart (its reboot), no unhealthy pods, both
+   CNPG clusters 3/3, etcd leader on all five, VIP answering, LAN DNS
+   resolving, ingress responding, audit clean.
 
-   ✅ **The premise of the whole per-node plan is now MEASURED, not inherited:**
-   a pod on lab5 with a Cilium address (`10.245.4.2`) pinged a pod still on
-   flannel (`10.42.0.131`) on another node — **0% loss, 0.47 ms**. Storage also
-   proved on the migrated node: `/dev/mapper/mpathq`, 16 MB written and read
-   back with matching md5.
+   ✅ **The premise of the plan was MEASURED before it was relied on:** at
+   stage 2 a pod on Cilium (`10.245.4.2`) pinged a pod still on flannel
+   (`10.42.0.131`) on another node — 0% loss, 0.47 ms. Storage proved on the
+   migrated node too (`/dev/mapper/mpathq`, 16 MB, md5 match).
 
-   Everything else stayed up: all five Ready, both CNPG clusters 3/3, VIP
-   answering, LAN DNS resolving, no unhealthy pods.
+   Stages 3–4 ran from `ansible/playbooks/35-cilium-migrate.yml`, so the
+   remaining four nodes took one `--ask-become-pass` prompt instead of four
+   interactive reboots.
 
-   ⚠️ **The rollback in the runbook was wrong until this run corrected it.**
-   `cni-exclusive: true` makes Cilium **rename** flannel's conflist to
-   `10-flannel.conflist.cilium_bak` rather than leave it. Deleting only
-   `05-cilium.conflist` — which is what the procedure said — would have left
-   the node with **no CNI configuration at all**. Caught before the reboot.
+   ⚠️ **The rollback material is intact and verified on all five nodes** —
+   each still holds `10-flannel.conflist.cilium_bak` beside
+   `05-cilium.conflist`. Per-node rollback stays possible until stage 5b.
 
-   **Next is lab4**, then lab3, lab2, and lab1 last. ≥24h on lab5 first.
+   ⚠️ **The documented rollback was WRONG until this work corrected it.**
+   `cni-exclusive: true` makes Cilium **rename** flannel's conflist rather than
+   leave it, so deleting only `05-cilium.conflist` — which is what the
+   procedure said — strands the node with **no CNI at all**.
+
+   **Next is stage 5 (cleanup), and it is the irreversible one.** Soak for a
+   week first. 5a flips `policyEnforcementMode` to `default`, which makes the 6
+   argocd NetworkPolicies enforceable for the first time ever; 5b sets
+   `flannel-backend: none` on all five at once, after which there is no quick
+   way back.
 
 ---
 
@@ -776,6 +786,45 @@ which EATS backslashes and quotes.** Two separate bugs in one day from this.
 "unrecognized identifier Available". Both looked like the cluster was broken
 when the query was. Use `ansible.builtin.shell` with the jsonpath quoted, or
 avoid characters the splitter consumes.
+
+**A YAML folded scalar (`>-`) keeps the newline on any MORE-indented line, so
+a "one-liner" shell command silently becomes several.** Folding joins lines
+with spaces only while they hold the *first* line's indentation. Written as
+
+```yaml
+shell: >-
+  POD=$(kubectl get pod -l k8s-app=cilium
+        --field-selector spec.nodeName=x        # <- indented further
+        -o jsonpath='{.items[0].metadata.name}');
+  kubectl exec $POD -c cilium-agent --
+    cilium-dbg status --brief                   # <- indented further
+```
+
+bash received four commands, not one, and said so:
+`--field-selector: command not found` · `-o: command not found` ·
+`error: you must specify at least one command for the container` ·
+`cilium-dbg: command not found`. Newlines separate commands inside `$( )` too.
+It then failed all 60 retries against a node that had migrated perfectly. Use a
+literal block `|` with explicit `\` continuations for anything multi-line. A
+sweep of the tree found every other instance is a `msg:` or a Jinja `set_fact`,
+where a stray newline is harmless whitespace — the bug only bites shell.
+
+**`set -o pipefail` turns any early-exiting pipe consumer into a task failure.**
+`kubectl … | awk '{print $1; exit}'` — awk exits on the first match, closes the
+pipe, kubectl takes SIGPIPE and dies **rc 141**, and pipefail reports the
+pipeline as failed *while stdout holds the correct answer*. Diagnosed from a
+failure whose own output was `"stdout": "10.42.0.131"`, which is exactly what
+the command was supposed to produce. Consume all input and latch instead
+(`… && !seen {print $1; seen=1}`). `| head -1` is the same trap.
+
+**The `difference` filter does not preserve order — it is a set operation.**
+`groups['k3s_servers'] | difference([inventory_hostname]) | first` therefore
+picks an arbitrary peer, not the first in inventory: on this 5-host inventory
+it returns `k8s-1, k8s-3, k8s-4, …`, and a run delegated k8s-5's commands to
+k8s-4 while the expression reads as k8s-1. Harmless, because any peer is a
+valid delegation target — but a delegate you cannot predict is one you cannot
+reason about mid-incident. Use `reject('equalto', …) | list | first`.
+`30-upgrade.yml` still has the `difference` form.
 
 **This workstation's kubeconfig context defaults to `namespace: kube-system`,
 and that silently redirects every un-namespaced `kubectl`.** Found the hard way
