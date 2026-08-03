@@ -23,12 +23,22 @@
 #   k8s-lab5  sda      WDC WD3200AAKX-0   sata   298.1G   (the only spindle)
 #             nvme0n1  BC501A SK hynix    nvme   119.2G
 #
-# Everything else on these nodes (sdb..sdi) is a QNAP iSCSI LUN. Whether
-# those show up in `smartctl --scan` is an OBSERVATION still to be made, not
-# an assumption -- so no device_include/device_exclude is set yet. It gets
-# added once the live /metrics says what actually enumerates. Guessing a
-# regex here risks the worst failure mode available: an include that matches
-# nothing, which is indistinguishable from a fleet of healthy disks.
+# Everything else on these nodes (sdb..sdi) is a QNAP iSCSI LUN, and MEASURED
+# from the live /metrics they DO enumerate: `smartctl_devices` reads 10 on
+# lab5 and 1 on lab1. They report `interface="scsi"`, `scsi_vendor="QNAP"`,
+# `smart_status 1`, `temperature 0`, and no SMART attributes at all.
+#
+# No device_include/device_exclude regardless, and that is deliberate.
+# The obvious filter is "only /dev/sda plus nvme", which is true today purely
+# because the kernel enumerates the local SATA disk at boot and iSCSI sessions
+# attach later. That ordering is a side effect, not a guarantee -- and if it
+# ever changed, the include would quietly monitor a LUN while the real disk
+# went unwatched. A filter that silently monitors the wrong thing is worse
+# than no filter.
+#
+# So every device is collected, and the ALERT RULES discriminate on the label
+# that actually means something (`scsi_vendor="QNAP"`), not on a device letter.
+# See manifests/alerts.prometheusrule.yaml.
 config: {}
 
 common:
@@ -63,6 +73,14 @@ serviceMonitor:
   # perfectly healthy, and is scraped by nobody.
   extraLabels:
     release: prometheus-operator
+  # Without this every SMART series is identified only by pod IP, so an alert
+  # reads "device sda on 10.245.1.227:9633" -- which is the one fact that goes
+  # stale fastest and the one you least want to translate at 3am. The endpoints
+  # role exposes the pod's node, so promote it to a real label.
+  relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+      action: replace
 
 # Deliberately OFF at first landing.
 #
