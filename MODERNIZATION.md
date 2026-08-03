@@ -7,7 +7,7 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-08-02
+Last updated: 2026-08-03
 
 ---
 
@@ -72,8 +72,9 @@ data; keep until you are satisfied, then remember `Retain` means
 Rollback, if redis ever needs it: `git revert` the `app.yaml` change. The old
 Bitnami release is gone but the parked data is still on those volumes.
 
-**Do NOT delete these until redis is proven on the new chart** — they are the
-rollback:
+**Still parked deliberately** — these are rollback material, not litter. Redis
+is proven on the new chart, so the first entry is now yours to clear whenever
+you want; the rest still stand:
 - `appendonlydir.rdb14-parked*` / `parked-appendonlydir*` on both redis PVCs
   (~63 MB each, one dated 2026-06-27 predating this session)
 - the old `pihole` PVC on local-path — one of the two benign OutOfSync apps
@@ -113,11 +114,26 @@ rollback:
    DaemonSet 5/5 ready, the old single Pod pruned, lease `plndr-cp-lock` held
    by k8s-lab1, API VIP answering, all five nodes Ready, **zero restarts**.
    Losing lab1 no longer takes the API VIP with it.
-5. **`30-upgrade.yml` — now unblocked, and the next big build.** Its gates
-   assert against a 5-node-healthy cluster, which as of 2026-08-02 is finally
-   true. Write it after the kube-vip cutover, so the gates can assume a VIP
-   that survives losing a node.
-6. Then Phase 2 below.
+5. ~~**`30-upgrade.yml`**~~ ✅ **built, run, and now REVIEWED 2026-08-03.**
+   Read deliberately end-to-end, as Phase 2 said to do before Phase 3 leans on
+   it. **Verdict: it is sound, and Phase 3 should copy its patterns rather
+   than invent new ones** — the `peer` indirection (never drain a node from
+   itself), CNPG-primary-move-before-drain, drain that respects every PDB with
+   `--force` explicitly rejected, uncordon only *after* every gate, addon
+   re-assert, and the VIP gate placed after the repair that fixes it.
+
+   Two things it does **not** yet cover, both real for Phase 3:
+   - **no Cilium-agent re-assert.** It re-asserts CoreDNS and kube-vip because
+     a k3s version change rewrites k3s-managed paths — and Cilium's CNI binary
+     will live in exactly such a path. Add it before the next hop.
+   - **its `desired == ready` DaemonSet gate will trip during a Cilium
+     migration**, when the cilium DaemonSet is legitimately part-ready. Do not
+     run a k3s hop and the CNI migration in the same window.
+6. **Phase 3 (Cilium) — planned and hardened 2026-08-03, NOT started.**
+   See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md). Stage 1 (helm install,
+   takes over no node) needs no sudo and is fully reversible. **Stage 2 is the
+   first step whose rollback requires sudo on a node**, so it must not begin
+   unattended.
 
 ---
 
@@ -455,33 +471,77 @@ ImagePullBackOff.
 destructive, unrehearsed. That is why the gates are strict.
 
 ### Phase 3 — Flannel → Cilium 1.20.0
-**The central correction: keep `flannel-backend: vxlan` for the entire
-migration.** In k3s flannel runs *inside the server process*, not as a
+
+📖 **The runbook and the per-stage rollback now live in
+[`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md).** Values are committed as
+`gitops/cilium-values-migration.yaml` and `gitops/cilium-values-production.yaml`.
+The rollback prerequisite this section used to carry is **satisfied**. Nothing
+has been executed.
+
+**The central correction still stands: keep `flannel-backend: vxlan` for the
+entire migration.** In k3s flannel runs *inside the server process*, not as a
 DaemonSet, so flipping it per node destroys the bridge the dual-overlay
 migration depends on and partitions the pod network. `flannel-backend: none` is
 a cleanup-phase, all-nodes-at-once change.
 
-- Pod CIDR **10.245.0.0/16**, tunnel port **8473** (flannel keeps 8472)
-- `cni.binPath: /var/lib/rancher/k3s/data/cni` — `/opt/cni/bin` does not exist
-- **`enableLBIPAM: false` and `defaultLBServiceIPAM: none`** — chart defaults
-  are `true`/`lbipam` and would fight MetalLB
-- **Leave `MTU: 0`.** Both overlays compute 1450; pinning 1500 is the classic
-  silent breakage (handshakes fine, large transfers hang)
-- Keep kube-proxy. Order: lab5 → lab4 → lab3 → lab2 → **lab1 last**
-- Install out-of-band via `helm`; adopt into ArgoCD only after cleanup
-  (`selfHeal` + `prune` would fight a half-migrated state and delete the
-  `CiliumNodeConfig`)
-- **Still needs a written rollback procedure before starting.**
-- ⚠️ **Six ArgoCD NetworkPolicies go live the moment Cilium can enforce them.**
-  ArgoCD chart 10.x flipped `global.networkPolicy.create` to `true`, so as of
-  2026-08-02 `kubectl -n argocd get netpol` returns 6 policies where it
-  previously returned 0. Flannel does not implement NetworkPolicy, so they are
-  **inert today and have never been exercised**. Cilium does implement it.
-  Verify ArgoCD still works — UI, repo-server fetching charts, controller
-  reaching the API — immediately after the *first* node moves to Cilium, not at
-  the end of the migration. If they turn out to be wrong, the escape is
-  `global.networkPolicy.create: false` in `gitops/argocd-values.yaml` plus
-  `ansible-playbook playbooks/15-argocd.yml`.
+✅ **The question the plan rested on is now answered rather than assumed.**
+Cross-CNI pod traffic **does** work during the migration — upstream: *"they
+have access to both Cilium and non-Cilium pods while the migration is taking
+place"*, because separate IP ranges let the Linux routing table separate the
+traffic. So one-node-at-a-time over days is a valid shape. It depends on
+exactly three values (the 10.245/16 pool, `tunnelPort: 8473`, and
+`bpf.hostLegacyRouting: true`); change any of them and the shape is no longer
+valid.
+
+Verified 2026-08-03 rather than inherited: Cilium 1.20.0 is the current
+release and supports k8s 1.33–1.36 (cluster is 1.35.6); the chart creates
+**no admission webhooks and no CRDs**, so it carries nothing like the Envoy
+Gateway one-way-door VAP; `kubeProxyReplacement: "false"` is already the chart
+default and there is no kube-proxy DaemonSet to remove.
+
+**Corrections to what this section used to say:**
+
+- ⚠️ **`cni.confPath` was missing and it matters as much as `binPath`.** Both
+  chart defaults (`/opt/cni/bin`, `/etc/cni/net.d`) **do not exist** on these
+  nodes — checked on k8s-lab5. The plan named only `binPath`. Left at its
+  default, Cilium writes its CNI config where nothing reads it, and the failure
+  is silent until a pod cannot be created.
+- ⚠️ **`/var/lib/rancher/k3s/data/cni` is versioned k3s-managed ground**, not a
+  stable directory: it is symlinks into `data/<hash>/bin/cni`, and its mtime on
+  lab5 matches the last k3s upgrade exactly. This is the same shape as the
+  finding that already cost an outage here — *a k3s VERSION change reverts
+  custom things in k3s-managed paths*. **`30-upgrade.yml` must gain a
+  Cilium-agent restart per hop**, alongside the CoreDNS and kube-vip
+  re-asserts; the agent's init container reinstalls the binary on start. That
+  step does not exist yet.
+- ⚠️ **`k8sServiceHost` must be `127.0.0.1:6444`, NOT the API VIP.** The plan
+  never specified it. The VIP is the tempting choice and it is a circular
+  dependency: the agent on the node holding the VIP would depend on the VIP
+  that node serves, and that node is the one being drained and rebooted during
+  its own migration step. k3s's loopback API proxy has no such coupling —
+  verified listening on both lab1 and lab5.
+- ✅ **The ArgoCD NetworkPolicy risk is real but much smaller than feared, and
+  it lands at CLEANUP, not at the first node.** `policyEnforcementMode: never`
+  is required for the whole migration window, so the policies stay inert until
+  stage 5a. And on analysis **all six are Ingress-only — there are no egress
+  policies at all**, so "repo-server fetching charts, controller reaching the
+  API" was never at risk; that is all egress. `argocd-server` is allow-all,
+  `applicationset-controller` is selected by no policy, and every selector was
+  checked against the running pods' labels. Full analysis in
+  `CILIUM-MIGRATION.md` stage 5a. The escape hatch is unchanged:
+  `global.networkPolicy.create: false` + `ansible-playbook playbooks/15-argocd.yml`.
+
+Unchanged and still true: pod CIDR **10.245.0.0/16**, tunnel port **8473**,
+`enableLBIPAM: false` + `defaultLBServiceIPAM: none` (chart defaults would
+fight MetalLB — confirmed, they are `true`/`lbipam`), leave **`MTU: 0`**, order
+lab5 → lab4 → lab3 → lab2 → **lab1 last**, install out-of-band via helm and
+adopt into ArgoCD only after cleanup.
+
+🔑 **One probe still needs sudo before stage 2:** confirm containerd's actual
+`bin_dir`/`conf_dir` in
+`/var/lib/rancher/k3s/agent/etc/containerd/config.toml` (0600, unreadable
+without it). The inference is strong but this repo's rule is *assert values,
+never presence*.
 
 ### Phase 4 — Headlamp + Alertmanager
 API-server OIDC via `kube-apiserver-arg` (Ansible owns config.yaml by then).

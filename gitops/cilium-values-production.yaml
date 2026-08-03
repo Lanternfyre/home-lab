@@ -1,0 +1,65 @@
+# Cilium 1.20.0 — END-STATE values, applied only at CLEANUP (stage 5).
+#
+# ⚠️ Do NOT apply this until every one of the five nodes is migrated and
+# validated. Each of the four changes below is a cluster-wide behaviour change,
+# and two of them are the riskiest moments in the whole of Phase 3.
+#
+#   helm upgrade cilium cilium/cilium --version 1.20.0 \
+#     -n kube-system -f gitops/cilium-values-production.yaml
+#
+# Diff against cilium-values-migration.yaml is the honest summary of what
+# cleanup actually does. See CILIUM-MIGRATION.md stage 5.
+
+cni:
+  # Cilium now owns CNI on every node unconditionally, rather than per-node
+  # via CiliumNodeConfig. The CiliumNodeConfig objects are deleted after this.
+  customConf: false
+  uninstall: false        # still never auto-remove on shutdown
+
+  # Unchanged from migration mode, and still not the chart defaults.
+  binPath: /var/lib/rancher/k3s/data/cni
+  confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
+
+operator:
+  unmanagedPodWatcher:
+    restart: true         # safe now: there are no flannel-managed pods left
+  replicas: 2
+
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList: ["10.245.0.0/16"]
+    clusterPoolIPv4MaskSize: 24
+
+routingMode: tunnel
+tunnelProtocol: vxlan
+# Port 8473 is KEPT even after flannel is gone. Changing it back to 8472 buys
+# nothing and would be a second cluster-wide network change during cleanup.
+tunnelPort: 8473
+MTU: 0
+
+bpf:
+  # ⚠️ Flipping this to false causes a brief connectivity interruption on every
+  # node, and it is a pure optimisation — legacy routing is correct, just
+  # slower. Left TRUE deliberately. Change it later as its own small deliberate
+  # op, not buried inside the cleanup that also enables policy.
+  hostLegacyRouting: true
+
+# ⚠️⚠️ THE RISKIEST LINE IN THIS FILE.
+# This is the moment the 6 argocd NetworkPolicies become enforceable for the
+# first time ever — flannel never implemented NetworkPolicy, so they have sat
+# inert since ArgoCD chart 10.x flipped global.networkPolicy.create to true.
+# They were analysed on 2026-08-03 and ArgoCD is expected to survive (all six
+# are Ingress-only; there are no egress policies at all) — but "expected to"
+# is not "observed to". Flip this LAST, on its own, watching ArgoCD.
+# Escape hatch: global.networkPolicy.create=false in gitops/argocd-values.yaml
+# then `ansible-playbook playbooks/15-argocd.yml`.
+policyEnforcementMode: "default"
+
+kubeProxyReplacement: "false"
+
+enableLBIPAM: false
+defaultLBServiceIPAM: none
+
+k8sServiceHost: "127.0.0.1"
+k8sServicePort: "6444"

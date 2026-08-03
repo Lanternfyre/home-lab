@@ -1,0 +1,101 @@
+# Cilium 1.20.0 — MIGRATION-MODE values for the home-lab k3s cluster.
+#
+# ⚠️ These are NOT the end-state values. They are deliberately crippled so that
+# installing Cilium changes NOTHING about how the cluster currently networks:
+# no node is taken over, no CNI conf is written, no policy is enforced.
+# The end state is gitops/cilium-values-production.yaml.
+#
+# Installed OUT-OF-BAND with helm, not via ArgoCD. ArgoCD's ApplicationSets
+# apply `prune: true` + `selfHeal: true`, which during a half-migrated cluster
+# would delete the CiliumNodeConfig objects that ARE the migration state.
+# Adopt into ArgoCD only after cleanup.
+#
+#   helm install cilium cilium/cilium --version 1.20.0 \
+#     -n kube-system -f gitops/cilium-values-migration.yaml
+#
+# See CILIUM-MIGRATION.md for the full runbook and the rollback per stage.
+
+# ── Coexist with the flannel that runs INSIDE the k3s server process ────────
+cni:
+  # Do NOT write a CNI conf file on install. Without this, Cilium takes over
+  # every node the moment the DaemonSet is ready — the opposite of a staged
+  # migration. Per-node opt-in is driven by CiliumNodeConfig instead.
+  customConf: true
+  # Never remove the old CNI's config on shutdown. This is what makes the
+  # rollback at stages 1–3 a simple `helm uninstall`.
+  uninstall: false
+
+  # ⚠️ BOTH paths are k3s-specific and BOTH differ from the chart defaults
+  # (/opt/cni/bin and /etc/cni/net.d). Verified on k8s-lab5 2026-08-03:
+  # NEITHER default path exists on these nodes. Leaving them at the default
+  # means Cilium writes its binary and config where nothing reads them, and
+  # the failure is silent until a pod cannot be created.
+  binPath: /var/lib/rancher/k3s/data/cni
+  confPath: /var/lib/rancher/k3s/agent/etc/cni/net.d
+
+operator:
+  # Do not restart pods that flannel still manages. The watcher's job is to
+  # restart "unmanaged" pods so Cilium adopts them — during a migration every
+  # pod on an unmigrated node looks unmanaged, so this would roll the whole
+  # cluster at once.
+  unmanagedPodWatcher:
+    restart: false
+  replicas: 2
+
+# ── A separate overlay, which is what keeps the two CNIs from colliding ─────
+# Upstream: "As long as Cilium and the existing CNI use a separate IP range,
+# the Linux routing table takes care of separating traffic." This is the whole
+# mechanism by which a migrated node and an unmigrated node still talk.
+ipam:
+  mode: cluster-pool
+  operator:
+    clusterPoolIPv4PodCIDRList: ["10.245.0.0/16"]   # flannel keeps 10.42.0.0/16
+    clusterPoolIPv4MaskSize: 24
+
+routingMode: tunnel
+tunnelProtocol: vxlan
+tunnelPort: 8473        # flannel keeps 8472; sharing the port breaks both
+
+# ⚠️ Leave MTU at 0 so Cilium computes it (1450, same as flannel). Pinning
+# 1500 is the classic silent breakage: handshakes succeed, large transfers
+# hang. Recorded here because "the NICs are 1500" is a tempting wrong edit.
+MTU: 0
+
+# ── Required for traffic to cross between the two overlays ──────────────────
+# Without this, a migrated node and a flannel node cannot route to each other.
+bpf:
+  hostLegacyRouting: true
+
+# ── Policy stays OFF for the entire migration ───────────────────────────────
+# Upstream is explicit that policy must be disabled during migration, because
+# "traffic from non-Cilium pods may be incorrectly dropped". This is also what
+# defers the argocd NetworkPolicy exposure to the cleanup stage rather than
+# the first node — see CILIUM-MIGRATION.md.
+policyEnforcementMode: "never"
+
+# ── k3s runs kube-proxy inside the server process ───────────────────────────
+# There is no kube-proxy DaemonSet to remove (verified: `get ds kube-proxy`
+# returns NotFound). "false" is already the chart default; it is stated
+# explicitly because kubeProxyReplacement=true is a deliberate later decision,
+# not a default to drift into. It is also a prerequisite we do NOT meet for
+# Cilium Gateway API — see Phase 6.
+kubeProxyReplacement: "false"
+
+# ── MetalLB owns every LoadBalancer IP here ─────────────────────────────────
+# Chart defaults are enableLBIPAM=true and defaultLBServiceIPAM=lbipam, which
+# would have Cilium hand out IPs for the same 8 LoadBalancer Services MetalLB
+# already serves from 192.168.32.10-250. Two allocators, one pool.
+enableLBIPAM: false
+defaultLBServiceIPAM: none
+
+# ── How the agent reaches the API before there is a CNI ─────────────────────
+# 127.0.0.1:6444 is k3s's local apiserver proxy — verified listening on both
+# k8s-lab1 and k8s-lab5 on 2026-08-03.
+#
+# ⚠️ Deliberately NOT the API VIP 192.168.32.2. Pointing Cilium at the VIP
+# creates a circular dependency: the agent on whichever node currently holds
+# the VIP would depend on the VIP that node itself serves, and that node is
+# exactly the one being drained and restarted during its own migration step.
+# The loopback proxy has no such coupling and no dependence on any peer.
+k8sServiceHost: "127.0.0.1"
+k8sServicePort: "6444"
