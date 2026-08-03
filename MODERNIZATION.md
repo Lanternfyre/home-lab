@@ -69,8 +69,16 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    - Verified 2026-08-03 that the `--oidc-*` flags still exist (upstream docs
      reference them as mutually exclusive with `--authentication-config`), but
      that is the flag existing, **not** the value being right.
-   - It also removes Headlamp's token-paste step; until then Headlamp uses
-     user-supplied tokens, which is deliberate — see its chart-values.
+   - ⚠️ **This is now the ONLY route back into Headlamp.** The hand-made
+     `kube-system/headlamp-admin` SA and its `cluster-admin` binding were
+     **deleted 2026-08-03** — they lived in no git file and so were invisible
+     to review. Headlamp's own SA (`headlamp/headlamp`) has *no* RoleBinding
+     or ClusterRoleBinding at all, deliberately, so with that SA gone the UI
+     has no authority to hand anyone. The app is still Synced/Healthy; it
+     simply cannot log you in. Recreate commands are in `MANUAL-STEPS.md` §9c
+     if you need it before OIDC lands. Deleting it was cheap because there was
+     no long-lived token Secret and minting one already required cluster-admin
+     kubectl access — it granted nothing its user did not already have.
 
 3. **Then Phase 6** (ingress-nginx → Envoy Gateway; needs the OIDC spike on a
    throwaway host first) and the rest of **Phase 7**.
