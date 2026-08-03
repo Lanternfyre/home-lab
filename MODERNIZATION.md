@@ -890,6 +890,24 @@ this without a recommender.
 Not fixed here: ArgoCD's resources live in `gitops/argocd-values.yaml` and are
 applied by `playbooks/15-argocd.yml`, so it is a deliberate op, not a drive-by.
 
+**Why k8s-lab5 carries 53 pods while every other node carries 11–15** — asked
+2026-08-03, measured rather than guessed, and it is the *same* finding wearing
+a different hat. lab5 is **20 CPUs / 47 GiB**; lab4 is 4 / 31 GiB and lab1–3
+are 4 / 15.5 GiB. Because 96 containers declare no requests at all, the
+scheduler's `NodeResourcesFit` scores nodes on free-versus-capacity and sees
+those pods as costing nothing — so the largest node wins nearly every
+placement. Giving workloads real requests would even the skew out as a side
+effect.
+
+Its ~12 GiB of memory is not a mystery either, and specifically is *not*
+unaccounted-for: `AnonPages` on lab5 is **8.09 GiB** against a pod working-set
+sum of **7.86 GiB**, so the workloads are essentially all of it. The remainder
+is kernel slab (0.83 GiB) plus **the k3s server process itself** — apiserver,
+controller-manager, scheduler and etcd all run in-process, so they are not
+pods and never show up in `kubectl top pod`. That is the same k3s quirk that
+forced the Phase 4 alert purge. The 10.26 GiB of `Cached` is reclaimable page
+cache and is already excluded from the used figure.
+
 ⚠️ **Do not act on any recommendation yet.** The recommender had ~5 minutes of
 history when these were read. VPA's `upperBound` is enormous with little data
 (13588m CPU for trident-operator), and several `target` values sit exactly on
