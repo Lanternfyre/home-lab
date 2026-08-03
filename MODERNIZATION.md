@@ -929,10 +929,26 @@ Descheduler → NFD → **kured last**, gated: all five nodes are etcd members,
 concurrency 1, blocking-pod-selector for CNPG primaries. Reloader is already
 installed.
 
-Read recommendations with:
-`kubectl -n goldilocks port-forward svc/goldilocks-dashboard 8080:80`
-(ClusterIP only, deliberately no Ingress — that would drag in an oauth2-proxy
-decision for no benefit).
+**Reading the recommendations.** The dashboard is at
+**https://goldilocks.lab.techyon.dev**, behind oauth2-proxy, and listed on
+homepage under *Infrastructure* (verified end to end: cert issued by Let's
+Encrypt, an unauthenticated request returns **302** to oauth2-proxy rather
+than 200, and homepage's `/api/services` lists `[Infrastructure] Goldilocks`).
+
+⚠️ **Its auth annotations are load-bearing.** Goldilocks has *no*
+authentication of its own and renders a complete inventory of every workload
+and its resource usage — a reconnaissance map. The annotations fail closed, so
+an oauth2-proxy outage returns 500 and locks you out rather than exposing the
+cluster. Worth knowing before debugging a 500 there.
+
+No DNS step was needed: `external-dns-cloudflare` runs
+`--source=ingress --domain-filter=techyon.dev`. Note its `--policy=upsert-only`
+means **deleting the Ingress will not remove the record**.
+
+The port-forward route still works and needs no auth infrastructure:
+`kubectl -n goldilocks port-forward svc/goldilocks-dashboard 8080:80`.
+The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
+`/namespaces`, and `/namespaces/<ns>` is *not* a valid URL and 404s.
 
 ---
 
