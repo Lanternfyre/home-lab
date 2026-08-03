@@ -7,7 +7,7 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-08-03 (end of session — see "Immediately next")
+Last updated: 2026-08-03 (SMART monitoring landed — see "Immediately next")
 
 ---
 
@@ -23,7 +23,8 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | Backups | **none at all** | 3 nightly jobs, restore-verified (pihole's retired — see below) |
 | Alerting | receiver `"null"`, 7 alerts into a black hole | **Pushover**, verified delivered; 3 permanent false positives purged |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
-| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 53 Synced / 2 OutOfSync / **0 Unknown** (both benign, both diagnosed) |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 58 Synced / 3 OutOfSync / **0 Unknown** (all three benign, all diagnosed) |
+| Disk health | **nothing watching any drive** | SMART on 6 local drives, 9 alerts, delivery proven |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
@@ -42,13 +43,19 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 **Session of 2026-08-03 ended here. Everything below is current and pushed;
 working tree clean, both repos level with origin.**
 
+**Resumed later the same day: Phase 7 item 1 (SMART) is now complete.** The
+next item is #2 below, and it is the one that needs a human at a keyboard.
+
 #### Do these, in this order
 
-1. **SMART disk monitoring (Phase 7).** Not started. Zero risk, no sudo, gitops
-   only. Highest-value remaining item: this cluster's top unmitigated risk is a
-   disk dying, the 57 GB Immich library still has **no second copy anywhere**,
-   and until today nothing would have told you. Alerting now works, so SMART
-   becomes actionable rather than decorative.
+1. ~~**SMART disk monitoring (Phase 7).**~~ ✅ **DONE 2026-08-03** — see
+   Phase 7. Six local drives monitored, nine alerts, delivery proven to the
+   phone by firing a real one. All six drives read 0 reallocated sectors, so
+   there is a known-clean baseline to detect a change against.
+
+   The risk it addresses is *unchanged*: the 57 GB Immich library still has
+   **no second copy anywhere**, and backups still sit on the same NAS as the
+   data. SMART buys warning, not a copy.
 
 2. **Headlamp + API-server OIDC (rest of Phase 4).** ⚠️ **The risky one — do it
    at a keyboard, with the sudo password to hand.** Adds `oidc-*` flags via
@@ -700,7 +707,76 @@ or the JWT filter cannot address the cookie. Google consent screen is already
 `orgInternalOnly: true`, which is layer one under the `hd` claim rule.
 
 ### Phase 7 — automation
-SMART exporter → unattended-upgrades (security only, never auto-reboot) →
+
+✅ **SMART disk monitoring DONE 2026-08-03.** `prometheus-smartctl-exporter`
+0.17.1 (exporter v0.14.0), a privileged DaemonSet 5/5, nine curated alerts and
+a ten-panel dashboard. This closes the cluster's top unmitigated risk being
+entirely unobserved: backups sit on the same NAS as the data, the 57 GB Immich
+library has no second copy anywhere, and until today nothing would have said a
+drive was failing.
+
+**The fleet, measured rather than assumed.** Six local drives; everything else
+on these nodes is a QNAP iSCSI LUN.
+
+| node | device | model | temp | power-on | realloc |
+|---|---|---|---|---|---|
+| k8s-lab1 | sda | SAMSUNG SSD SM871 256GB | *none reported* | 22645h | 0 |
+| k8s-lab2 | sda | SanDisk SD8TB8U-256G | 47°C | 29709h | 0 |
+| k8s-lab3 | sda | SanDisk SD8TB8U-256G | 47°C | 10180h | 0 |
+| k8s-lab4 | sda | Samsung SSD 840 Series | 40°C | 9666h | 0 |
+| k8s-lab5 | sda | WDC WD3200AAKX (the only spindle) | 45°C | 6241h | 0 |
+| k8s-lab5 | nvme0 | BC501A SK hynix 128GB | 64°C | — | — |
+
+⚠️ **The chart's own alert rules would have fired on contact.**
+`SmartCTLDDeviceTemperature` trips at 60°C and lab5's NVMe *idles* at 64–65°C,
+which is normal for an M.2 part with no heatsink. Enabling the chart's rules
+would have delivered a permanently-wrong alert on day one — the exact thing
+Phase 4 had to purge three of before pointing anything at a phone. So
+`prometheusRules.enabled: false` and the rules live in
+`manifests/alerts.prometheusrule.yaml`, with thresholds split by protocol
+(60°C SATA, 75°C NVMe).
+
+⚠️ **The device filter everyone reaches for is the wrong one.** iSCSI LUNs
+*do* enumerate — `smartctl_devices` reads 10 on lab5 and 1 on lab1, 18 total
+against 6 real drives. The obvious fix is a `/dev/sda`-plus-NVMe include, and
+it is true today only because the kernel enumerates the local SATA disk at
+boot while iSCSI attaches later. That is a side effect, not a guarantee, and
+if it ever changed the include would quietly monitor a LUN while the real disk
+went unwatched. **No exporter-side filter at all**; the alert rules and every
+dashboard panel discriminate on `scsi_vendor!="QNAP"` — a label that means
+something — via `and on (node, device)`.
+
+⚠️ **"The expression returns nothing" is not a passing test.** An expression
+that matches no series returns empty exactly like a healthy fleet does. Every
+rule was therefore run **inverted** as well: the QNAP join returns exactly the
+6 local drives and its complement exactly the 12 LUNs, the ATA thermal join
+returns 4, the NVMe join 1, the bad-sector selector 9 attribute series. Only
+then does quiet mean healthy.
+
+Delivery proven end to end, not inferred: `amtool config routes test` resolves
+every new alert at both severities to `pushover` (not `null`), and the
+threshold was then temporarily dropped to 30°C so `SmartSataTemperatureHigh`
+genuinely fired on four nodes — annotations rendering correctly
+(`k8s-lab4 sda at 40C`, so both `$labels.node` and `$value` work), four active
+alerts in Alertmanager, `alertmanager_notifications_total{integration=
+"pushover"}` incrementing with every `..._failed_total` reason at 0. Reverted
+in the next commit; all nine rules now `inactive/ok`.
+
+**Deliberately NOT alerted on:** `Command_Timeout` (attr 188) reads 2212 and
+2719 on the two SanDisk drives. It is a known-spurious counter on those parts;
+a rule of `> 0` would fire on two nodes immediately and forever. An *increase*
+would be meaningful — the standing value is not.
+
+**Known blind spot, unfixable here:** lab1's SM871 exposes no temperature
+attribute at all, so that drive has no thermal alert. Its self-assessment,
+sector counts and power-on hours all report normally.
+
+**Also learned:** the Grafana sidecar has no `FOLDER_ANNOTATION` env, so the
+`grafana_folder` annotation is inert and all 30+ dashboards sit in "General".
+Fixing it is a `prometheus` chart-values change affecting every dashboard, so
+it was left alone and recorded instead.
+
+Remaining: unattended-upgrades (security only, never auto-reboot) →
 Descheduler → Goldilocks/VPA (recommend only) → NFD → **kured last**, gated:
 all five nodes are etcd members, concurrency 1, blocking-pod-selector for CNPG
 primaries. Reloader is already installed.
@@ -729,6 +805,27 @@ and was wrong (missing `find_multipaths no`); the GHCR ExternalSecret reported
 `Ready=True` while delivering an expired token that froze five apps including
 the storage driver.
 
+**An alert expression that matches NOTHING returns exactly what a healthy
+cluster returns.** The fourth variant of "assert values, never presence", and
+the specific way monitoring work fails. Every SMART rule written on 2026-08-03
+returned an empty result set — which is both what "all six drives are fine"
+looks like and what "the label selector has a typo, the join key is wrong, or
+the metric is named something else" looks like. The two are indistinguishable
+from the query result alone, and the wrong one is silent forever.
+
+The discipline that separates them is to run each expression **inverted** and
+assert the *count* of series it selects: the QNAP-exclusion join must return
+exactly 6, its complement exactly 12, the ATA thermal join exactly 4, the NVMe
+join exactly 1. Only once the shape is pinned does "empty" carry information.
+Same reasoning applies one level up — `smartctl_devices == 0` is a rule whose
+entire job is to notice that the exporter is running, being scraped, and
+looking at nothing.
+
+*(A caught error of exactly this kind: the expected counts above were checked
+against a remembered total of 15 devices and two "failed". The real total is
+18, and the expressions were right — but the check is what surfaced the
+discrepancy at all, which is the point of writing the expected number down.)*
+
 **`pyroscope` OutOfSync is benign, permanent, and cannot be fixed by syncing.**
 Diagnosed 2026-08-02 by rendering the chart locally and diffing against the
 live object. The *entire* difference is one field:
@@ -746,6 +843,27 @@ Fix if the noise matters: an `ignoreDifferences` entry for that path. Note the
 ApplicationSet template is shared by all Helm apps and `app.yaml` is
 deliberately flat 5 keys, so this is a decision about a global rule, not a
 per-app tweak. Left alone for now.
+
+**`kyverno` OutOfSync is the SAME bug as `pyroscope`, on 11 CRDs.** Appeared
+the moment Phase 5 landed and diagnosed 2026-08-03 by the same method:
+rendering the chart locally and diffing against live. The chart emits
+`metadata.annotations: {}` and `metadata.labels: {}` on every
+`policies.kyverno.io` CRD; the API server drops both, and the live object has
+neither key. ArgoCD's differ sees desired `{}` against absent and reports
+drift that no sync can ever clear — `selfHeal` re-applies forever, harmlessly.
+Confirmed from `managedFields`: `argocd-controller` Apply lists
+`f:metadata: {f:annotations: {}, f:labels: {}}`, i.e. it applied empty maps
+that did not persist.
+
+Unlike pyroscope this one *is* fixable, and cheaply: the **manifests**
+ApplicationSet already carries
+`argocd.argoproj.io/compare-options: ServerSideDiff=true` with a comment
+explaining this exact failure class, while the **Helm** ApplicationSet
+(`home-appset.yaml`) does not. Adding it there would very likely clear both
+`kyverno` and `pihole`. Left alone deliberately: that annotation is on the
+shared template, so it changes diff behaviour for all 29 Helm apps at once —
+the same "global rule, not a per-app tweak" call recorded for pyroscope. It is
+a one-line change whenever the noise is worth a deliberate run.
 
 **`prometheus` drifts in and out of Sync on its own.** Observed flapping twice
 on 2026-08-02 — `Secret/prometheus-operator-grafana` plus the matching

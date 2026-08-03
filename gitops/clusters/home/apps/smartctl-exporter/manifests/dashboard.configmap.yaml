@@ -15,6 +15,13 @@ metadata:
   labels:
     grafana_dashboard: "1"
   annotations:
+    # INERT TODAY, kept for consistency with the other dashboards here.
+    # Verified 2026-08-03: the sidecar container has no FOLDER_ANNOTATION env,
+    # so it ignores this and files every dashboard under "General" -- all 30+
+    # of them, blackbox-exporter's included. Making it work is a change to the
+    # prometheus chart-values (sidecar.dashboards.folderAnnotation +
+    # provider.foldersFromFilesStructure), which affects every dashboard in
+    # the cluster and is not this app's call to make.
     grafana_folder: "Infrastructure"
 data:
   smartctl-disk-health.json: |
