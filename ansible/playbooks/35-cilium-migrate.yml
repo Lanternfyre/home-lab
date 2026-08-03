@@ -324,134 +324,161 @@
             post_reboot_delay: 20
           when: not ansible_check_mode
 
-        # ── Gates. Every one before the next node. ──────────────────────────
-        - name: "{{ node_name }} | Ready again"
-          ansible.builtin.shell: >-
-            set -o pipefail;
-            /usr/local/bin/k3s kubectl get node {{ node_name }}
-            -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}'
-          args:
-            executable: /bin/bash
-          register: g_ready
-          changed_when: false
-          delegate_to: "{{ peer }}"
-          until: g_ready.stdout | trim == 'True'
-          retries: 60
-          delay: 10
-          when: not ansible_check_mode
+    # ── Verification runs for EVERY node, including ones a previous run
+    # already migrated. ─────────────────────────────────────────────────────
+    #
+    # These deliberately sit OUTSIDE the `when: not already_migrated` block.
+    # When the first live run died here (a folded-scalar bug, see below), it
+    # left k8s-lab4 migrated-but-CORDONED. Had the gates stayed inside the
+    # block, the resumed run would have seen "already migrated", skipped
+    # everything, and left that node cordoned forever with no gate ever having
+    # passed on it — 30-upgrade.yml learned this exact lesson the hard way.
+    #
+    # So a resume RE-VERIFIES rather than assumes: gates, network proof, then
+    # uncordon. Slower on a re-run, and that is the correct trade — the whole
+    # point of a resume is that something went wrong last time.
+    # ── Gates. Every one before the next node. ──────────────────────────
+    - name: "{{ node_name }} | Ready again"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get node {{ node_name }}
+        -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}'
+      args:
+        executable: /bin/bash
+      register: g_ready
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      until: g_ready.stdout | trim == 'True'
+      retries: 60
+      delay: 10
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | the Cilium agent reports OK"
-          ansible.builtin.shell: >-
-            set -o pipefail;
-            POD=$(/usr/local/bin/k3s kubectl -n kube-system get pod -l k8s-app=cilium
-                  --field-selector spec.nodeName={{ node_name }}
-                  -o jsonpath='{.items[0].metadata.name}');
-            /usr/local/bin/k3s kubectl -n kube-system exec $POD -c cilium-agent --
-              cilium-dbg status --brief
-          args:
-            executable: /bin/bash
-          register: g_cil
-          changed_when: false
-          delegate_to: "{{ peer }}"
-          until: "'OK' in g_cil.stdout"
-          retries: 60
-          delay: 10
-          when: not ansible_check_mode
+    # ⚠️ LITERAL block (|), NOT folded (>-). A folded scalar joins lines with
+    # spaces ONLY while they keep the first line's indentation — a MORE-indented
+    # continuation KEEPS its newline. Written folded with indented continuations,
+    # this silently became four commands instead of one:
+    #   /bin/bash: line 4: --field-selector: command not found
+    #   /bin/bash: line 5: -o: command not found
+    #   error: you must specify at least one command for the container
+    #   /bin/bash: line 5: cilium-dbg: command not found
+    # (newlines separate commands inside $( ) too, so even the POD lookup broke).
+    # It then failed all 60 retries against k8s-lab4, a node that had in fact
+    # migrated perfectly. Exactly the family of the command/shlex bug already in
+    # MODERNIZATION.md: the YAML was valid, it just did not mean what it looked
+    # like. Use | with explicit backslash continuations for anything multi-line.
+    - name: "{{ node_name }} | the Cilium agent reports OK"
+      ansible.builtin.shell: |
+        set -o pipefail
+        POD=$(/usr/local/bin/k3s kubectl -n kube-system get pod -l k8s-app=cilium \
+              --field-selector spec.nodeName={{ node_name }} \
+              -o jsonpath='{.items[0].metadata.name}')
+        test -n "$POD" || { echo "no cilium pod found on {{ node_name }}"; exit 1; }
+        /usr/local/bin/k3s kubectl -n kube-system exec "$POD" -c cilium-agent -- \
+          cilium-dbg status --brief
+      args:
+        executable: /bin/bash
+      register: g_cil
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      until: "'OK' in g_cil.stdout"
+      retries: 60
+      delay: 10
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | etcd has a leader on ALL FIVE"
-          ansible.builtin.uri:
-            url: "http://127.0.0.1:2381/metrics"
-            return_content: true
-          register: g_etcd
-          delegate_to: "{{ item }}"
-          loop: "{{ groups['k3s_servers'] }}"
-          until:
-            - "'etcd_server_has_leader 1' in g_etcd.content"
-            - "'etcd_server_health_failures 0' in g_etcd.content"
-          retries: 30
-          delay: 10
-          when: not ansible_check_mode
+    - name: "{{ node_name }} | etcd has a leader on ALL FIVE"
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:2381/metrics"
+        return_content: true
+      register: g_etcd
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] }}"
+      until:
+        - "'etcd_server_has_leader 1' in g_etcd.content"
+        - "'etcd_server_health_failures 0' in g_etcd.content"
+      retries: 30
+      delay: 10
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | every DaemonSet has desired == ready"
-          ansible.builtin.shell: >-
-            set -o pipefail;
-            /usr/local/bin/k3s kubectl get ds -A
-            -o jsonpath='{range .items[*]}{.status.desiredNumberScheduled}{" "}{.status.numberReady}{"\n"}{end}'
-            | awk '$1 != $2' | wc -l
-          args:
-            executable: /bin/bash
-          register: g_ds
-          changed_when: false
-          delegate_to: "{{ peer }}"
-          until: (g_ds.stdout | trim | int) == 0
-          retries: 30
-          delay: 10
-          when: not ansible_check_mode
+    - name: "{{ node_name }} | every DaemonSet has desired == ready"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get ds -A
+        -o jsonpath='{range .items[*]}{.status.desiredNumberScheduled}{" "}{.status.numberReady}{"\n"}{end}'
+        | awk '$1 != $2' | wc -l
+      args:
+        executable: /bin/bash
+      register: g_ds
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      until: (g_ds.stdout | trim | int) == 0
+      retries: 30
+      delay: 10
+      when: not ansible_check_mode
 
-        # Registration is NOT the same as being able to serve a volume — that
-        # is what the storage proof below is for — but an empty csinode means
-        # the node cannot mount anything at all, and k8s-lab4 once sat Ready
-        # and schedulable in exactly that state.
-        - name: "{{ node_name }} | csinode is non-empty"
-          ansible.builtin.command: >-
-            /usr/local/bin/k3s kubectl get csinode {{ node_name }}
-            -o jsonpath={.spec.drivers[*].name}
-          register: g_csi
-          changed_when: false
-          delegate_to: "{{ peer }}"
-          until: (g_csi.stdout | trim | length) > 0
-          retries: 30
-          delay: 10
-          when: not ansible_check_mode
+    # Registration is NOT the same as being able to serve a volume — that
+    # is what the storage proof below is for — but an empty csinode means
+    # the node cannot mount anything at all, and k8s-lab4 once sat Ready
+    # and schedulable in exactly that state.
+    - name: "{{ node_name }} | csinode is non-empty"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl get csinode {{ node_name }}
+        -o jsonpath={.spec.drivers[*].name}
+      register: g_csi
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      until: (g_csi.stdout | trim | length) > 0
+      retries: 30
+      delay: 10
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | the API VIP still answers"
-          ansible.builtin.uri:
-            url: "https://{{ k3s_api_vip }}:6443/readyz"
-            validate_certs: false
-            status_code: [200, 401, 403]
-          delegate_to: localhost
-          become: false
-          register: g_vip
-          failed_when: false
-          until: g_vip.status | default(-1) in [200, 401, 403]
-          retries: 30
-          delay: 10
-          when: not ansible_check_mode
+    - name: "{{ node_name }} | the API VIP still answers"
+      ansible.builtin.uri:
+        url: "https://{{ k3s_api_vip }}:6443/readyz"
+        validate_certs: false
+        status_code: [200, 401, 403]
+      delegate_to: localhost
+      become: false
+      register: g_vip
+      failed_when: false
+      until: g_vip.status | default(-1) in [200, 401, 403]
+      retries: 30
+      delay: 10
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | assert the VIP came back"
-          ansible.builtin.assert:
-            that: "g_vip.status | default(-1) in [200, 401, 403]"
-            fail_msg: >-
-              The API VIP {{ k3s_api_vip }} is not answering after migrating
-              {{ node_name }}. Every other gate can pass while this is broken.
-          when: not ansible_check_mode
+    - name: "{{ node_name }} | assert the VIP came back"
+      ansible.builtin.assert:
+        that: "g_vip.status | default(-1) in [200, 401, 403]"
+        fail_msg: >-
+          The API VIP {{ k3s_api_vip }} is not answering after migrating
+          {{ node_name }}. Every other gate can pass while this is broken.
+      when: not ansible_check_mode
 
-        # ── The network proof. This is the storage-proof equivalent for a CNI
-        # change: Ready with a registered agent is NOT the same as a pod that
-        # can get an address and reach the rest of the cluster.
-        - name: "{{ node_name }} | network proof — Cilium address + cross-node reachability"
-          ansible.builtin.include_tasks: tasks/cilium-network-proof.yml
-          vars:
-            proof_node_name: "{{ node_name }}"
-            netproof_name: "cilium-netproof-{{ node_name }}"
-          when: not ansible_check_mode
+    # ── The network proof. This is the storage-proof equivalent for a CNI
+    # change: Ready with a registered agent is NOT the same as a pod that
+    # can get an address and reach the rest of the cluster.
+    - name: "{{ node_name }} | network proof — Cilium address + cross-node reachability"
+      ansible.builtin.include_tasks: tasks/cilium-network-proof.yml
+      vars:
+        proof_node_name: "{{ node_name }}"
+        netproof_name: "cilium-netproof-{{ node_name }}"
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | back into service"
-          ansible.builtin.command: "/usr/local/bin/k3s kubectl uncordon {{ node_name }}"
-          delegate_to: "{{ peer }}"
-          when: not ansible_check_mode
-          changed_when: true
+    - name: "{{ node_name }} | back into service"
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl uncordon {{ node_name }}"
+      delegate_to: "{{ peer }}"
+      when: not ansible_check_mode
+      changed_when: true
 
-        - name: "{{ node_name }} | settle before the next node"
-          ansible.builtin.wait_for:
-            timeout: "{{ cilium_settle_seconds | default(45) }}"
-          when: not ansible_check_mode
+    - name: "{{ node_name }} | settle before the next node"
+      ansible.builtin.wait_for:
+        timeout: "{{ cilium_settle_seconds | default(45) }}"
+      when: not ansible_check_mode
 
-        - name: "{{ node_name }} | done"
-          ansible.builtin.debug:
-            msg: >-
-              {{ node_name }} is on Cilium, Ready, uncordoned, CSI registered,
-              etcd healthy on all five, VIP answering. Moving on.
+    - name: "{{ node_name }} | done"
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }} is on Cilium, Ready, uncordoned, CSI registered,
+          etcd healthy on all five, VIP answering. Moving on.
 
 # The storage proof runs from the workstation because it needs a kubeconfig
 # that is not the node's 0600 one, and it is deliberately a SEPARATE play so a
