@@ -20,6 +20,49 @@ spec:
       name: "{{ .path.basename }}"
       finalizers:
         - resources-finalizer.argocd.argoproj.io
+      annotations:
+        # ServerSideDiff computes the diff via a server-side apply DRY RUN
+        # instead of a client-side three-way merge, so the desired side goes
+        # through the same defaulting and pruning the API server applies to a
+        # real write. Without it, a chart that emits an EMPTY map produces
+        # permanent, unfixable drift: the server drops the key, the differ
+        # sees desired `{}` against absent, and no sync can ever converge it.
+        #
+        # That was two of this cluster's three standing OutOfSync apps --
+        # `pyroscope` (empty annotations on a StatefulSet's
+        # volumeClaimTemplates) and `kyverno` (empty annotations AND labels on
+        # all 11 policies.kyverno.io CRDs).
+        #
+        # MEASURED before switching this on, not reasoned about. For both, a
+        # real `kubectl apply --server-side --dry-run=server` returns an object
+        # byte-identical to live -- the empty maps are gone from the prediction
+        # exactly as they are gone from the cluster. The pyroscope dry-run
+        # SUCCEEDING is also the answer to the obvious worry, since
+        # volumeClaimTemplates is immutable on a StatefulSet: nothing is
+        # actually changing, so immutability is never engaged.
+        #
+        # This is the same annotation the -manifests ApplicationSet has
+        # carried all along, where 30/30 apps run it and are Synced. The
+        # asymmetry between the two ApplicationSets was the bug.
+        #
+        # ⚠️ It is a GLOBAL rule: this template is shared by every Helm app,
+        # so it lands on all 29 at once, storage and networking included.
+        # Reverting is deleting these two lines.
+        #
+        # Failure mode to watch for: the dry-run invokes admission webhooks on
+        # every diff cycle, so a webhook being down flips apps to Unknown
+        # rather than OutOfSync. Checked first -- every webhook here is scoped
+        # to its own API group (cert-manager.io, postgresql.cnpg.io,
+        # external-secrets.io, ingresses, and Kyverno's own policy CRs), so no
+        # webhook sees the bulk of these resources at all. Kyverno in
+        # particular no longer has a broad webhook: Phase 5 moved volume
+        # protection to a native VAP.
+        #
+        # Deliberately NOT adding IncludeMutationWebhook=true: gitops-engine
+        # already reverts non-Argo-managed fields from live on both sides, so
+        # plain ServerSideDiff covers the webhook case, and that flag would
+        # disable the reversion.
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
 
     spec:
       project: default
