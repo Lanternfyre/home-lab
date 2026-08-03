@@ -759,8 +759,17 @@ threshold was then temporarily dropped to 30°C so `SmartSataTemperatureHigh`
 genuinely fired on four nodes — annotations rendering correctly
 (`k8s-lab4 sda at 40C`, so both `$labels.node` and `$value` work), four active
 alerts in Alertmanager, `alertmanager_notifications_total{integration=
-"pushover"}` incrementing with every `..._failed_total` reason at 0. Reverted
-in the next commit; all nine rules now `inactive/ok`.
+"pushover"}` incrementing with every `..._failed_total` reason at 0 — and
+finally **the operator confirmed both the firing and the resolution
+notifications arrived on their phone**, which is the only part of the chain no
+in-cluster metric can attest to. Reverted in the next commit; all nine rules
+now `inactive/ok`.
+
+Worth noting for the next alert added anywhere: the **resolved** notification
+arriving is a stronger signal than the firing one. It proves Alertmanager
+tracked the alert through its whole lifecycle rather than just accepting one
+POST, so a rule that fires and then silently never clears would have been
+visible here.
 
 **Deliberately NOT alerted on:** `Command_Timeout` (attr 188) reads 2212 and
 2719 on the two SanDisk drives. It is a known-spurious counter on those parts;
