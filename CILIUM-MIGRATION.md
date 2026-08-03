@@ -97,6 +97,30 @@ exactly as it already re-asserts CoreDNS and kube-vip. That step does not exist
 yet — **add it to `30-upgrade.yml` before the next k3s hop**, not before this
 migration. Tracked in MODERNIZATION.md Phase 3.
 
+### ✅ Checked: Cilium does NOT clobber k3s's CNI plugins
+
+The obvious way stage 1 could be a cluster-wide outage rather than a no-op:
+Cilium writes into the same directory that holds k3s's `flannel`, `bridge`,
+`host-local` and `loopback` symlinks, so if it cleared that directory, **every
+unmigrated node would lose its CNI plugin at once**. Read
+`plugins/cilium-cni/install-plugin.sh` at the v1.20.0 tag rather than assuming:
+
+- `CNI_DIR=${HOST_PREFIX}/opt/cni` → it writes to `/host/opt/cni/bin`, which is
+  the container mount point for our `/var/lib/rancher/k3s/data/cni`. So the
+  binary does land in the right place.
+- It only ever `cp`+`mv`s **`cilium-cni`**, plus `loopback` guarded by
+  `[ "${OVERWRITE_LOOPBACK:-false}" = "true" ] || [ ! -f ... ]`. **The default
+  is false and k3s's `loopback` already exists, so it is not touched.**
+- There is no `rm -rf`, no wipe, no clear. `mkdir -p` is the only other write.
+- `OVERWRITE_CILIUM` defaults to **true**, which is what makes the
+  restart-after-a-k3s-hop mitigation above work.
+
+Two other init containers (`mount-cgroup`, `apply-sysctl-overwrites`) use that
+same directory as scratch — `cp` a helper in, `nsenter` it, `rm` it. Also
+non-destructive, and it only ever adds and removes its own filenames. The only
+residue if one is killed mid-flight is a stray `cilium-mount` binary, which is
+inert because CNI only loads plugins named in the conflist.
+
 ---
 
 ## Order
@@ -181,15 +205,39 @@ spec:
     cni-exclusive: "true"
 EOF
 
-# 2. drain from a DIFFERENT node, respecting every PDB
+# 2a. move any CNPG primary OFF this node FIRST.
+#     The <cluster>-primary PDB allows ZERO disruptions by design, so draining
+#     a node that holds a primary blocks until the primary moves. Lifted from
+#     30-upgrade.yml:266-292 -- do not retype it from memory at 1am.
+kubectl get pods -A -l cnpg.io/instanceRole=primary \
+  -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.spec.nodeName}{"\n"}{end}' \
+  | grep '/k8s-lab5$' || echo "none on lab5"
+
+#     For each one found: deleting the primary pod makes CNPG promote a
+#     replica. That is a FAILOVER, not a graceful switchover -- a few seconds
+#     of write unavailability. Only do it when the cluster has >=2 ready
+#     instances (both do: immich-db and postgres-ha are 3/3), and VERIFY the
+#     primary landed elsewhere before draining.
+# kubectl -n <ns> delete pod <primary>
+# kubectl get pods -A -l cnpg.io/instanceRole=primary -o wide   # confirm it moved
+
+# 2b. cordon + drain, respecting every PDB.
 kubectl cordon k8s-lab5
 kubectl drain k8s-lab5 --ignore-daemonsets --delete-emptydir-data --timeout=600s
 ```
 
 **Never `--force`, never `--disable-eviction`** — both bypass the PDBs that
-protect the CNPG primaries. If the drain stalls, that is the safety working.
-Check for a CNPG primary on lab5 first and move it, the same way
-`30-upgrade.yml` does.
+protect the CNPG primaries. If the drain stalls, that is the safety working:
+find out what could not be moved rather than overruling it.
+
+> **On issuing these from the workstation.** `30-upgrade.yml` delegates every
+> kubectl to a `peer` node, and that rule is about never asking a node to evict
+> its own pods while its own API server is restarting. Running kubectl from the
+> workstation does not have that problem — it is never the node being drained —
+> so it is acceptable here, with one caveat: the workstation's kubeconfig points
+> at the VIP `192.168.32.2`. **At stage 4 that VIP is served by the node being
+> rebooted**, so commands can blip mid-drain. For stage 4 specifically, either
+> point kubeconfig at a surviving node's IP or run kubectl on lab2.
 
 ```bash
 # 3. opt the node in, restart its agent, reboot it
