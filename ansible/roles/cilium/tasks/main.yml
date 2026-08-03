@@ -190,6 +190,36 @@
       or cilium_force_upgrade | bool
   changed_when: "'has been upgraded' in cil_helm_run.stdout or 'has been installed' in cil_helm_run.stdout"
 
+# ⚠️ THE AGENTS DO NOT RELOAD enable-policy ON THEIR OWN.
+# helm rewrites the cilium-config ConfigMap, but the agent reads policy
+# enforcement at STARTUP. Without this restart the ConfigMap says `default`
+# while every running agent is still in `never` — config changed, behaviour
+# unchanged, and every verification that reads the ConfigMap passes.
+#
+# Caught live on 2026-08-03 doing exactly that: stage 5a reported success with
+# `enable-policy: default` in the ConfigMap and `PolicyEnforcement: never` in
+# all five agents. This repo's oldest lesson, again: a correct config file is
+# not a loaded config file.
+#
+# The restart is safe. Cilium's datapath lives in eBPF programs that stay
+# attached while the agent process is down, so existing traffic keeps flowing;
+# only policy/identity updates pause for the few seconds each pod takes.
+- name: "install | roll the agents so they actually LOAD the new config"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout restart daemonset/cilium
+  when:
+    - not ansible_check_mode
+    - cil_helm_run is defined and cil_helm_run.changed | default(false)
+  changed_when: true
+
+- name: "install | wait for the rolled agents"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout status ds/cilium --timeout=600s
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - cil_helm_run is defined and cil_helm_run.changed | default(false)
+
 - name: "install | already at the target, nothing to do"
   ansible.builtin.debug:
     msg: >-
@@ -288,6 +318,153 @@
       {{ cil_status.stdout | regex_search('(Routing|IPAM|KubeProxyReplacement).*') | default('nothing matching') }}
     success_msg: "vxlan, {{ cilium_pod_cidr_prefix }}x IPAM, kube-proxy retained — as configured."
   when: not ansible_check_mode
+
+# ⚠️ Reads the RUNNING agent, never the ConfigMap. The ConfigMap is what helm
+# wrote; this is what the datapath is actually doing, and on 2026-08-03 those
+# two disagreed for a full stage-5a run that reported success.
+- name: "verify | policy enforcement as the RUNNING agent reports it"
+  ansible.builtin.shell: |
+    set -o pipefail
+    POD=$(kubectl -n {{ cilium_namespace }} get pod -l k8s-app=cilium \
+          -o jsonpath='{.items[0].metadata.name}')
+    kubectl -n {{ cilium_namespace }} exec "$POD" -c cilium-agent -- \
+      cilium-dbg config | grep '^PolicyEnforcement' | awk '{print $3}'
+  args:
+    executable: /bin/bash
+  register: cil_polmode
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | assert the agent's policy mode matches the stage"
+  ansible.builtin.assert:
+    that: (cil_polmode.stdout | trim) == (cilium_policy_mode_expected[cilium_stage])
+    fail_msg: >-
+      cilium_stage={{ cilium_stage }} expects the agent to report
+      PolicyEnforcement={{ cilium_policy_mode_expected[cilium_stage] }}, but it
+      reports '{{ cil_polmode.stdout | trim }}'. The ConfigMap can say one
+      thing while the agents run another — they read this at STARTUP, so a
+      helm-only change leaves them stale. Roll them:
+      kubectl -n {{ cilium_namespace }} rollout restart ds/cilium
+    success_msg: >-
+      Agent reports PolicyEnforcement={{ cil_polmode.stdout | trim }},
+      matching stage {{ cilium_stage }}.
+  when: not ansible_check_mode
+
+# With policy enforced, the argocd endpoints selected by the 6 NetworkPolicies
+# must show ingress enforcement. "enable-policy: default" with every endpoint
+# still at policy-enabled: none means the policies are inert — which is what a
+# half-applied stage 5a looks like from the outside.
+# ⚠️ EVERY agent, not `.items[0]`.
+# A cilium agent only knows about endpoints on ITS OWN node, so sampling one
+# agent asks "are there enforcing pods on this arbitrary node" — not "is policy
+# working". The first version of this check sampled one, landed on a node with
+# no policy-selected pods, and declared the cluster's NetworkPolicies inert
+# while they were in fact being enforced on three other nodes. A check that
+# fails on a healthy cluster is worse than no check: it teaches you to ignore it.
+- name: "verify | count endpoints realizing policy, across ALL agents"
+  ansible.builtin.shell: |
+    set -o pipefail
+    total=0
+    for pod in $(kubectl -n {{ cilium_namespace }} get pods -l k8s-app=cilium \
+                 -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+      n=$(kubectl -n {{ cilium_namespace }} exec "$pod" -c cilium-agent -- \
+            cilium-dbg endpoint list -o json 2>/dev/null \
+          | python3 -c "import json,sys; e=json.load(sys.stdin); print(sum(1 for x in e if x.get('status',{}).get('policy',{}).get('realized',{}).get('policy-enabled','none') != 'none'))")
+      total=$((total + n))
+    done
+    echo "$total"
+  args:
+    executable: /bin/bash
+  register: cil_enforcing
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
+
+- name: "verify | count the NetworkPolicies that ought to be doing something"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get netpol -A --no-headers 2>/dev/null | wc -l
+  args:
+    executable: /bin/bash
+  register: cil_netpols
+  changed_when: false
+  check_mode: false
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
+
+# Conditional on policies EXISTING. With zero NetworkPolicies in the cluster,
+# zero enforcing endpoints is the correct answer, not a failure —
+# policyEnforcementMode: default only enforces on pods a policy selects. The
+# assertion is "if policies exist, they are doing something", which is the
+# thing that was silently untrue when the ConfigMap said default and every
+# agent was still running never.
+- name: "verify | assert existing policies are actually being enforced"
+  ansible.builtin.assert:
+    that: (cil_netpols.stdout | trim | int) == 0 or (cil_enforcing.stdout | trim | int) > 0
+    fail_msg: >-
+      PolicyEnforcement is {{ cil_polmode.stdout | trim }} and there are
+      {{ cil_netpols.stdout | trim }} NetworkPolicies, but ZERO endpoints
+      cluster-wide report realized policy. They are inert — enabling
+      enforcement changed nothing. Either the agents are stale (roll them) or
+      every policy selects nothing (check the podSelector labels against the
+      running pods).
+    success_msg: >-
+      {{ cil_netpols.stdout | trim }} NetworkPolicies,
+      {{ cil_enforcing.stdout | trim }} endpoints enforcing.
+      {{ 'None to enforce — enforcement is armed for future policies.'
+         if (cil_netpols.stdout | trim | int) == 0
+         else 'Live, not inert.' }}
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
+
+# ⚠️ Whatever policies exist must ADMIT THE NODE, or they kill the pods they
+# select. Learned on 2026-08-03: the argo-cd chart's own NetworkPolicies point
+# liveness/readiness at the port named `metrics` and then admit that port only
+# from `namespaceSelector: {}` — which selects PODS. A kubelet probe comes from
+# the NODE, so the probes were denied, repo-server CrashLooped on its own
+# liveness check and application-controller never became Ready. Cilium's
+# documented implicit host-allow did NOT save it in this configuration.
+#
+# So: after enabling enforcement, prove the selected pods are still passing
+# their probes rather than assuming policy is transparent.
+- name: "verify | pods are still passing their probes under enforcement"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get pods -A -o json
+    | python3 -c "import json,sys; p=json.load(sys.stdin)['items']; print(sum(1 for x in p if x['status'].get('phase')=='Running' and any(not c.get('ready') for c in x['status'].get('containerStatuses') or [])))"
+  args:
+    executable: /bin/bash
+  register: cil_notready
+  changed_when: false
+  check_mode: false
+  until: (cil_notready.stdout | trim | int) == 0
+  retries: 24
+  delay: 10
+  failed_when: false
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
+
+- name: "verify | assert enforcement did not break any readiness probe"
+  ansible.builtin.assert:
+    that: (cil_notready.stdout | trim | int) == 0
+    fail_msg: >-
+      {{ cil_notready.stdout | trim }} Running pods have containers that are
+      NOT Ready after enabling policy enforcement. Check their probes: a
+      NetworkPolicy that selects a pod without admitting the node blocks
+      kubelet's liveness/readiness checks, and the pod is then killed by its
+      own health check. Roll back with
+      `ansible-playbook playbooks/34-cilium.yml -e cilium_stage=migration
+      -e cilium_force_upgrade=true`.
+    success_msg: "No Running pod has an unready container — probes survived enforcement."
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
 
 - name: "verify | how many pods are still on flannel now"
   ansible.builtin.shell: >-

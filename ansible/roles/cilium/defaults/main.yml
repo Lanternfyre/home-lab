@@ -54,3 +54,11 @@ cilium_force_upgrade: false
 # deliberate operator can override it; defaults off because the gate is
 # protecting the one irreversible-ish step in the phase.
 cilium_allow_partial_production: false
+
+# What the RUNNING agent must report for each stage. Asserted against
+# `cilium-dbg config`, never against the ConfigMap — helm rewrites the
+# ConfigMap, but agents read this at startup, so the two can disagree
+# indefinitely. They did, for a whole stage-5a run, on 2026-08-03.
+cilium_policy_mode_expected:
+  migration: never
+  production: default

@@ -1,4 +1,43 @@
 # argocd-values.yaml
+
+# ⚠️ The chart's own NetworkPolicies BLOCK THE CHART'S OWN HEALTH PROBES.
+# Disabled deliberately on 2026-08-03, after they were exercised for the first
+# time ever and immediately broke ArgoCD.
+#
+# argo-cd chart 10.x flipped this default to `true`, so 6 NetworkPolicies
+# appeared in the argocd namespace. They sat inert for months because flannel
+# does not implement NetworkPolicy at all. The moment Cilium enforced them
+# (Phase 3 stage 5a), argocd-repo-server went into a liveness CrashLoop and
+# argocd-application-controller never became Ready.
+#
+# The defect is in the policies, not in Cilium. Both components point their
+# liveness/readiness probes at the port NAMED `metrics`:
+#   argocd-repo-server            metrics=8084   liveness AND readiness
+#   argocd-application-controller metrics=8082   readiness
+# and the only rule admitting that port is
+#   from: [{namespaceSelector: {}}]  ports: [{port: metrics}]
+# `namespaceSelector: {}` selects PODS IN NAMESPACES. A kubelet probe does not
+# come from a pod — it comes from the node. So the probes are denied by the
+# chart's own policy, and the pods are killed by their own liveness check.
+#
+# Observed, not theorised:
+#   Liveness probe failed: Get "http://10.245.0.44:8084/healthz?full=true":
+#   context deadline exceeded
+#
+# These policies were never designed for this cluster — they arrived as a chart
+# default — and they never protected anything, since argocd-server's rule is a
+# bare `{}` (allow from anywhere) and argocd-applicationset-controller is
+# selected by no policy at all. Turning them off loses no protection that ever
+# existed.
+#
+# Cilium policy enforcement itself stays ON: with no policies selecting these
+# pods there is nothing to enforce, and the cluster is ready for INTENTIONAL
+# policies later. When those are written (Phase 5), remember this: a policy
+# that selects a pod must also admit the node, or it kills the pod's probes.
+global:
+  networkPolicy:
+    create: false
+
 configs:
   cm:
     # lets Argo CD discover Applications in other namespaces
