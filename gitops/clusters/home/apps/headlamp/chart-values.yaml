@@ -19,10 +19,33 @@ config:
   # for that reason.
   #
   # Left false means Headlamp authenticates each user with a token THEY supply,
-  # so the API server does the authorisation, not the ingress. The cost is
-  # pasting a token per session; that goes away once Phase 4's API-server OIDC
-  # lands and Headlamp can use Google directly with real per-user RBAC.
+  # so the API server does the authorisation, not the ingress. As of the OIDC
+  # block below, "the token they supply" is obtained by signing in with Google
+  # rather than pasted by hand.
   unsafeUseServiceAccountToken: false
+
+  # ── Google sign-in (Phase 4) ───────────────────────────────────────────────
+  #
+  # ⚠️ This only WORKS once the API server itself trusts the same issuer and
+  # client — `k3s_oidc_*` in ansible/inventory/group_vars/all.yml, applied by
+  # playbooks/20-config-converge.yml. Until then Headlamp will happily complete
+  # the Google flow and hand the API server an ID token it rejects, which
+  # presents as a login that succeeds and then shows nothing but 401s. That is
+  # a confusing failure, so do not judge this block until the apiserver rollout
+  # has landed.
+  #
+  # Credentials come from manifests/oidc.external-secret.yaml, which pulls the
+  # SAME 1Password item oauth2-proxy uses. Nothing secret is in git or in the
+  # rendered Helm release — `externalSecret` makes the chart read them via
+  # `envFrom` instead of templating them into a Secret it creates itself.
+  oidc:
+    externalSecret:
+      enabled: true
+      name: headlamp-oidc
+    # Must stay empty: any value here would be rendered into the chart's own
+    # Secret and end up in git. The externalSecret above supplies all of them.
+    secret:
+      create: false
 
 # ⚠️ The chart DEFAULTS this to true with clusterRoleName: cluster-admin.
 # Disabled because nothing here uses Headlamp's own ServiceAccount for API
