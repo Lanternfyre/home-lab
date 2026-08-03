@@ -88,3 +88,40 @@ node_packages:
 # property (a standing credential on every control-plane node) for unattended
 # runs. Off by default.
 configure_nopasswd_sudo: false
+
+# ── API-server OIDC (Phase 4) ────────────────────────────────────────────────
+#
+# Defining k3s_oidc_issuer_url is what makes roles/k3s_config render the
+# `kube-apiserver-arg` block. Removing these three lines and re-running
+# 20-config-converge.yml is the rollback.
+#
+# ⚠️ k3s refuses to start on an UNKNOWN apiserver flag, which is what makes
+# this the riskiest routine change in the repo. The flag NAMES were therefore
+# verified against the binary that actually runs them, not against docs:
+#
+#   grep -ac oidc-issuer-url /var/lib/rancher/k3s/data/current/bin/k3s   -> 3
+#   grep -ac oidc-client-id  ...                                        -> 2
+#   grep -ac oidc-username-claim ...                                    -> 1
+#
+# ⚠️ Grep the 217 MB binary under data/current/bin, NOT /usr/local/bin/k3s.
+# The installed 79 MB binary is a wrapper that extracts the real runtime, and
+# it contains NONE of the apiserver's flags -- `anonymous-auth` returns 0
+# there, which is the control that proves the point. Searching the wrong file
+# yields a confident false negative.
+#
+# A wrong VALUE behaves differently from a wrong flag name: the apiserver still
+# starts, so the node stays Ready and etcd keeps quorum, and OIDC simply
+# authenticates nobody. The health gates in 20-config-converge.yml CANNOT see
+# that. The only real acceptance test is a login that yields an identity.
+#
+# Reuses the Google OAuth client that oauth2-proxy already uses, so there is
+# one consent screen and one client to revoke. The client ID is not a secret.
+k3s_oidc_issuer_url: "https://accounts.google.com"
+k3s_oidc_client_id: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+
+# `email` is deliberate and load-bearing for RBAC. Kubernetes prefixes the
+# username with the issuer URL for EVERY claim except `email`, which is exempt,
+# so usernames stay bare addresses and the ClusterRoleBinding in
+# gitops/.../headlamp/manifests/oidc-admin.clusterrolebinding.yaml matches.
+# Changing this claim silently breaks that binding.
+k3s_oidc_username_claim: "email"

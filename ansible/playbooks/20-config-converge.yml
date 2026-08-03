@@ -45,6 +45,18 @@
 - name: Converge config and restart k3s, one node at a time
   hosts: k3s_servers
   serial: 1
+  # k8s-1 LAST, matching 30-upgrade.yml and the note in the inventory itself
+  # ("Upgrade and migration orders still put it last"). This playbook was the
+  # outlier: without it, k8s-1 is restarted FIRST -- and k8s-1 is also the
+  # `delegate_to` target for both health gates below, so the very first node
+  # put at risk was simultaneously the node being asked whether the cluster is
+  # healthy.
+  #
+  # It matters most for a change that can stop k3s, such as adding
+  # `kube-apiserver-arg`. Reversed, an unstartable config costs k8s-5 -- whose
+  # only local disk beyond root is an unmounted spare -- and `any_errors_fatal`
+  # halts the run before it reaches anything else.
+  order: reverse_inventory
   any_errors_fatal: true
   gather_facts: false
 
