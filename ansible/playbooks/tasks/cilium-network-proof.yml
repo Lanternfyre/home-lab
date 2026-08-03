@@ -32,12 +32,19 @@
     # than specifically a flannel one: during the last hops there may be no
     # flannel pods left at all, and a proof that silently stops running when
     # its precondition disappears is worse than no proof.
+    # ⚠️ `!seen` instead of the obvious `{print $1; exit}`.
+    # awk exiting early closes the pipe, kubectl upstream takes SIGPIPE and
+    # dies with rc 141, and `set -o pipefail` dutifully reports the whole
+    # pipeline as failed — while stdout holds the perfectly correct answer.
+    # That is exactly how this failed on the first resumed run: stdout was
+    # "10.42.0.131" and the task went fatal anyway. Consume all input and
+    # latch the first match instead; the same trap applies to `| head -1`.
     - name: "net proof | find a pod on a different node to reach"
       ansible.builtin.shell: >-
         set -o pipefail;
         /usr/local/bin/k3s kubectl get pods -A
         -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.spec.nodeName}{" "}{.spec.hostNetwork}{"\n"}{end}'
-        | awk '$2 != "{{ proof_node_name }}" && $3 != "true" && $1 ~ /^10\./ {print $1; exit}'
+        | awk '$2 != "{{ proof_node_name }}" && $3 != "true" && $1 ~ /^10\./ && !seen {print $1; seen=1}'
       args:
         executable: /bin/bash
       register: np_target

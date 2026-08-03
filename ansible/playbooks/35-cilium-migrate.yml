@@ -159,8 +159,18 @@
   vars:
     # Never issue a drain from the node being drained: its API server is about
     # to go away. Same reasoning as 30-upgrade.yml.
+    #
+    # ⚠️ `reject`, NOT `difference`. The `difference` filter is a SET operation
+    # and does not preserve order, so the "first" remaining host is arbitrary —
+    # proven here: difference on this 5-host inventory returned k8s-1, k8s-3,
+    # k8s-4, ... and the first live run delegated k8s-5's commands to k8s-4
+    # rather than the k8s-1 the expression reads as. Any peer is correct, so
+    # this was never a failure, but a delegation target you cannot predict is
+    # one you cannot reason about during an incident.
+    # NOTE: 30-upgrade.yml still uses `difference` here and has the same
+    # non-determinism. Harmless for the same reason; worth aligning some time.
     peer: >-
-      {{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) }}
+      {{ (groups['k3s_servers'] | reject('equalto', inventory_hostname) | list | first) }}
     node_name: "{{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}"
     cni_dir: /var/lib/rancher/k3s/agent/etc/cni/net.d
 
