@@ -22,6 +22,45 @@ tridentOperator:
   imagePullPolicy: IfNotPresent
   logLevel: debug
 
+  # ── Operator resources, set EXPLICITLY rather than inherited ───────────────
+  # The chart (0.1.3+) ships these same numbers as defaults, so this is not a
+  # divergence — it is this cluster stating its own resource policy where the
+  # policy applies. Worth the duplication for two reasons:
+  #   1. A chart knob nothing exercises is a knob nothing has VERIFIED. This
+  #      key was added on 2026-08-03; if the only consumer relied on defaults,
+  #      a template change that silently stopped honouring it would go unseen.
+  #      Standing rule in this repo: assert values, never presence.
+  #   2. A chart-default bump would otherwise change this cluster's resource
+  #      policy invisibly, inside an upgrade nobody read as a policy change.
+  #
+  # All MEASURED here, not guessed. These used to be HARDCODED in the chart at
+  # `limits.cpu: 20m`, and `CPUThrottlingHigh` fired at **70.2% throttling** the
+  # moment real alerting was wired up — on the component that reconciles the
+  # storage driver.
+  #
+  # ⚠️ The instructive part: peak CPU over 24h was **7.7–11.4m**, so it never
+  # approached 20m ON AVERAGE and was throttled anyway. CFS enforces quota **per
+  # 100ms period**, not as an average — 20m grants 2ms per slice, so a reconcile
+  # burst is chopped across many periods while the 2-minute average still reads
+  # 2m. **Size a CPU limit for instantaneous burst, not average usage.** 500m
+  # allows a 50ms burst per period and still bounds a runaway loop to half a
+  # core.
+  #
+  # Memory: peak working set was **79.4 MiB against the old 80Mi limit** — a
+  # rounding error from OOM-kill, unreported because there was no alerting.
+  # Requests 64Mi because steady state is ~26Mi but it demonstrably climbs, and
+  # 40Mi under-reported the pod to the scheduler.
+  #
+  # ⚠️ To remove these entirely use `resources: null`, NOT `resources: {}` —
+  # Helm MERGES maps rather than replacing them, so `{}` silently does nothing.
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 192Mi
+
 tridentOrchestrator:
   image: qnapsystem/qnap-csi:v1.6.2
   debug: true
