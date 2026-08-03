@@ -1,0 +1,59 @@
+# Goldilocks dashboard behind oauth2-proxy, matching headlamp/pihole/prometheus.
+#
+# ⚠️ THE TWO auth ANNOTATIONS ARE LOAD-BEARING SECURITY, not convenience.
+# Goldilocks has NO authentication of its own — none, not even a password — and
+# it renders a complete inventory of every workload in the cluster along with
+# its resource usage. That is a reconnaissance map. Without these annotations it
+# is readable by anything on the LAN.
+#
+# They fail CLOSED: if oauth2-proxy is down, nginx's auth_request gets no 2xx
+# and returns 500 rather than passing the request through. An outage locks you
+# out rather than opening the cluster up, which is the correct direction and
+# worth knowing before debugging a 500 here.
+#
+# The DNS record needs no separate step: external-dns-cloudflare runs with
+# `--source=ingress --domain-filter=techyon.dev`, so creating this Ingress
+# creates goldilocks.lab.techyon.dev. `--policy=upsert-only` means deleting the
+# Ingress will NOT remove the record — that is a manual cleanup if this ever
+# goes away.
+#
+# The port-forward route still works and needs no auth infrastructure:
+#   kubectl -n goldilocks port-forward svc/goldilocks-dashboard 8080:80
+# Note the dashboard's real path is /dashboard/<namespace>; `/` 301-redirects
+# to /namespaces, and /namespaces/<ns> is NOT a valid URL (it 404s).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: goldilocks
+  namespace: goldilocks
+  annotations:
+    kubernetes.io/ingress.class: nginx
+    cert-manager.io/cluster-issuer: cloudflare-ca
+    nginx.ingress.kubernetes.io/auth-url: "https://oauth.lab.techyon.dev/oauth2/auth"
+    nginx.ingress.kubernetes.io/auth-signin: "https://oauth.lab.techyon.dev/oauth2/start?rd=https://$host$escaped_request_uri"
+    # homepage discovers apps from these annotations via the Kubernetes
+    # service-discovery it already has RBAC for — no homepage config edit needed.
+    gethomepage.dev/description: Resource request recommendations (VPA)
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Infrastructure
+    # dashboard-icons ships no goldilocks icon; kubernetes.png is the safe
+    # proven fallback in this repo. Swap it if one ever appears upstream.
+    gethomepage.dev/icon: kubernetes.png
+    gethomepage.dev/name: Goldilocks
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - goldilocks.lab.techyon.dev
+      secretName: goldilocks-tls
+  rules:
+    - host: goldilocks.lab.techyon.dev
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: goldilocks-dashboard
+                port:
+                  number: 80
