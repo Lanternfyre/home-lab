@@ -1,0 +1,212 @@
+# SMART disk alerts.
+#
+# Written here rather than enabled from the chart (`prometheusRules.enabled`
+# stays false in chart-values.yaml) for two reasons. The chart's six rules
+# cannot express the QNAP-LUN exclusion or a per-protocol temperature
+# threshold, and one of them -- SmartCTLDDeviceTemperature at > 60C -- would
+# have fired the moment it was enabled, because k8s-lab5's NVMe idles at 64C.
+# Phase 4 had to purge three permanently-firing alerts before pointing
+# anything at a phone; shipping a fourth on day one would undo that.
+#
+# EVERY expression below was run against live Prometheus before this file was
+# committed, and every one returned an empty result set.
+#
+# On its own that proves nothing -- an expression matching no series returns
+# empty too, and a monitoring system looking at nothing is indistinguishable
+# from a fleet of healthy disks. So each was ALSO run inverted, to check that
+# the shape selects the series it is supposed to: the QNAP join returns
+# exactly the 6 local drives (and its complement exactly the 12 LUNs), the
+# ATA temperature join returns 4 (lab1 reports no temperature), the NVMe join
+# returns 1, and the bad-sector selector returns 9 attribute series. Only
+# then does "quiet" mean healthy. Delivery to Pushover was proven separately
+# by inverting one rule until it actually fired.
+#
+# Measured baseline, 2026-08-03:
+#
+#   node       device   model                     temp   POH      realloc
+#   k8s-lab1   sda      SAMSUNG SSD SM871 256GB   n/a    22645h   0
+#   k8s-lab2   sda      SanDisk SD8TB8U-256G      47C    29709h   0
+#   k8s-lab3   sda      SanDisk SD8TB8U-256G      47C    10180h   0
+#   k8s-lab4   sda      Samsung SSD 840 Series    40C     9666h   0
+#   k8s-lab5   sda      WDC WD3200AAKX (spindle)  45C     6241h   0
+#   k8s-lab5   nvme0    BC501A SK hynix 128GB     64C    n/a      n/a
+#
+# Two blind spots worth knowing about rather than pretending away:
+#   - lab1's SM871 reports no temperature at all, so it has no thermal alert.
+#     Nothing here can fix that; the drive does not expose the attribute.
+#   - lab2 and lab3 report Command_Timeout (attr 188) at 2212 and 2719. That
+#     is a known-spurious counter on these SanDisk parts and it is NOT alerted
+#     on -- a rule of `188 > 0` would fire on two nodes immediately and
+#     forever. An increase over time would be meaningful; the standing value
+#     is not.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: smartctl-disk-health
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack's Prometheus selects PrometheusRules with this
+    # label (verified against the live Prometheus CR's ruleSelector). Without
+    # it the object exists, looks correct, and is loaded by nobody.
+    release: prometheus-operator
+spec:
+  groups:
+    - name: smartctl-disk-health
+      rules:
+        # --- the flagship -----------------------------------------------
+        # SMART's own overall-health self-assessment. This is the one signal
+        # a drive raises about itself.
+        #
+        # The `and on (node, device)` join excludes QNAP iSCSI LUNs. They are
+        # collected (see chart-values.yaml on why no exporter-side filter) and
+        # they DO report smart_status 1 today, so the join is not what keeps
+        # this quiet -- it is what stops a NAS or storage-network blip from
+        # being reported as a dying disk. The discriminator is the vendor
+        # label on the info metric, not a device letter, so it survives iSCSI
+        # LUNs being attached, detached or renumbered.
+        - alert: SmartDeviceFailing
+          expr: |
+            smartctl_device_smart_status != 1
+              and on (node, device) smartctl_device{scsi_vendor!="QNAP"}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "SMART self-assessment FAILED on {{ $labels.node }} {{ $labels.device }}"
+            description: >-
+              The drive reports its own overall health as failing. Back up
+              anything unique on this node now. Every PV here is Retain and
+              backups live on the same NAS as the data, so a lost drive is
+              only recoverable to the extent something else already holds a
+              copy -- and the 57 GB Immich library holds no second copy.
+
+        # --- the predictor ----------------------------------------------
+        # Reallocated (5), Current_Pending (197) and Offline_Uncorrectable
+        # (198) sectors. These go non-zero well before smart_status flips, so
+        # this is the rule that buys time rather than reporting a fait
+        # accompli. Any non-zero value is worth knowing; a rising one is a
+        # drive to replace.
+        #
+        # No QNAP join needed: the LUNs expose no SMART attributes at all, so
+        # the series simply do not exist for them.
+        - alert: SmartDeviceBadSectors
+          expr: |
+            smartctl_device_attribute{attribute_value_type="raw", attribute_id=~"5|197|198"} > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.node }} {{ $labels.device }}: {{ $labels.attribute_name }} = {{ $value }}"
+            description: >-
+              Reallocated, pending or offline-uncorrectable sectors are
+              non-zero. All six drives read 0 as of 2026-08-03, so this is a
+              change from a known-clean baseline, not a threshold guess.
+              Plan a replacement; do not wait for the self-assessment to fail.
+
+        # --- NVMe-specific ----------------------------------------------
+        # Only k8s-lab5 has an NVMe today. These series exist for NVMe alone,
+        # so the rules are self-scoping.
+        - alert: SmartNvmeMediaErrors
+          expr: smartctl_device_media_errors > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NVMe media errors on {{ $labels.node }} {{ $labels.device }} ({{ $value }})"
+            description: >-
+              The controller reports unrecovered data integrity errors. This
+              is the NVMe equivalent of a reallocated sector count going
+              non-zero.
+
+        - alert: SmartNvmeCriticalWarning
+          expr: smartctl_device_critical_warning > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "NVMe critical warning on {{ $labels.node }} {{ $labels.device }}"
+            description: >-
+              The controller's critical warning register is set -- a bitfield
+              covering spare below threshold, temperature above threshold,
+              degraded reliability, read-only media and failed volatile memory
+              backup. Read `smartctl -a` on the node for which bit.
+
+        - alert: SmartNvmeSpareBelowThreshold
+          expr: smartctl_device_available_spare < smartctl_device_available_spare_threshold
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "NVMe spare blocks below threshold on {{ $labels.node }} {{ $labels.device }}"
+            description: >-
+              Available spare is {{ $value }}%, under the drive's own declared
+              threshold. Currently 100% against a threshold of 50%, so this
+              firing means real wear rather than a tight margin.
+
+        # --- thermal ----------------------------------------------------
+        # Split by protocol because one threshold cannot serve both. The
+        # SATA drives idle at 40-47C; the NVMe idles at 64C, which is normal
+        # for an M.2 part with no heatsink and would trip any SATA-appropriate
+        # limit permanently. 75C leaves headroom below the BC501A's own
+        # warning point while still giving notice before thermal throttling.
+        - alert: SmartSataTemperatureHigh
+          expr: |
+            smartctl_device_temperature{temperature_type="current"} > 60
+              and on (node, device) smartctl_device{protocol="ATA"}
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.node }} {{ $labels.device }} at {{ $value }}C"
+            description: >-
+              SATA drive above 60C for half an hour. Baseline is 40-47C, so
+              this is airflow or ambient, not a drive fault -- but sustained
+              heat is what turns a healthy drive into a failing one.
+
+        - alert: SmartNvmeTemperatureHigh
+          expr: |
+            smartctl_device_temperature{temperature_type="current"} > 75
+              and on (node, device) smartctl_device{protocol="NVMe"}
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.node }} {{ $labels.device }} at {{ $value }}C"
+            description: >-
+              NVMe above 75C for half an hour. Idle baseline is 64C, so this
+              is roughly 11C of unexplained rise and close to the point where
+              the controller throttles itself.
+
+        # --- is the monitoring itself telling the truth -------------------
+        # The failure mode this whole app exists to avoid is a monitoring
+        # system that reports "all healthy" because it is looking at nothing.
+        # `up` is already covered by kube-prometheus-stack's TargetDown; what
+        # it cannot see is an exporter that is up, scraped, and enumerating
+        # zero disks. Every node reports at least one device today (lab1=1,
+        # lab2=2, lab3=3, lab4=2, lab5=10), so zero means the scan broke.
+        - alert: SmartExporterFoundNoDevices
+          expr: smartctl_devices == 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "smartctl-exporter enumerates no disks on {{ $labels.node }}"
+            description: >-
+              The exporter is running and being scraped but found no devices,
+              so this node's disks are silently unmonitored. Check whether the
+              pod still has privileged access to /dev.
+
+        # smartctl's own exit status, a bitmask. 0 on all eighteen devices
+        # today (6 local + 12 QNAP LUNs). Non-zero means SMART reads are
+        # failing for a device, which
+        # is the same blind spot as above but per-drive rather than per-node.
+        - alert: SmartCtlReadFailing
+          expr: smartctl_device_smartctl_exit_status != 0
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "smartctl returns {{ $value }} for {{ $labels.device }} on {{ $labels.node }}"
+            description: >-
+              SMART data could not be read cleanly for this device, so its
+              health alerts above are not evaluating against real data.
