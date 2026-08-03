@@ -1,0 +1,86 @@
+# https://github.com/prometheus-community/helm-charts/blob/main/charts/prometheus-smartctl-exporter/values.yaml
+#
+# SMART disk monitoring. Phase 7.
+#
+# Why this exists: the top unmitigated risk in this cluster is a disk dying.
+# The 57 GB Immich library has no second copy anywhere, backups live on the
+# same NAS as the data, and until this landed nothing would have told you a
+# drive was failing. Alerting (Phase 4, Pushover) works now, so SMART is
+# actionable rather than decorative.
+#
+# The exporter is a privileged DaemonSet with hostPath /dev. That is inherent
+# to reading SMART and is why the chart hardcodes `privileged: true` and
+# `runAsUser: 0` in its template -- neither is overridable from values.
+# The `monitoring` namespace carries no pod-security enforce label and the
+# Kyverno policy set here only guards volume deletion, so nothing blocks it.
+#
+# Local disks, measured 2026-08-03 with `lsblk -d -o NAME,ROTA,MODEL,TRAN`:
+#
+#   k8s-lab1  sda      SAMSUNG SSD SM87   sata   238.5G
+#   k8s-lab2  sda      SanDisk SD8TB8U-   sata   238.5G
+#   k8s-lab3  sda      SanDisk SD8TB8U-   sata   238.5G
+#   k8s-lab4  sda      Samsung SSD 840    sata   232.9G
+#   k8s-lab5  sda      WDC WD3200AAKX-0   sata   298.1G   (the only spindle)
+#             nvme0n1  BC501A SK hynix    nvme   119.2G
+#
+# Everything else on these nodes (sdb..sdi) is a QNAP iSCSI LUN. Whether
+# those show up in `smartctl --scan` is an OBSERVATION still to be made, not
+# an assumption -- so no device_include/device_exclude is set yet. It gets
+# added once the live /metrics says what actually enumerates. Guessing a
+# regex here risks the worst failure mode available: an include that matches
+# nothing, which is indistinguishable from a fleet of healthy disks.
+config: {}
+
+common:
+  config:
+    bind_to: "0.0.0.0:9633"
+    url_path: "/metrics"
+    smartctl_location: /usr/sbin/smartctl
+    # One SMART read per device per interval. Long enough not to poke disks
+    # constantly, short enough that a scrape is never serving stale data
+    # relative to the 60s ServiceMonitor interval.
+    collect_not_more_than_period: 120s
+
+# No CPU limit, deliberately. CFS enforces quota per 100ms period, not as an
+# average, so a small limit throttles a bursty process that never approaches
+# the cap on average -- that is exactly what bit trident-operator (70.2%
+# throttled at 20m while measured peak was 11.4m). Memory is bounded, which
+# is the limit that actually prevents a node-level problem.
+resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+serviceMonitor:
+  enabled: true
+  interval: 60s
+  scrapeTimeout: 30s
+  # kube-prometheus-stack's Prometheus selects ServiceMonitors with
+  # `release: prometheus-operator` (verified live against the Prometheus CR's
+  # serviceMonitorSelector). Without this label the exporter runs, looks
+  # perfectly healthy, and is scraped by nobody.
+  extraLabels:
+    release: prometheus-operator
+
+# Deliberately OFF at first landing.
+#
+# The chart ships six rules and three of them can be permanently true on
+# healthy hardware -- SmartCTLDInterfaceSlow in particular fires whenever a
+# SATA device negotiates below its maximum link speed, which is a normal
+# steady state, not a fault. Phase 4 had to purge three such alerts before
+# routing anything to a phone, because permanently-wrong alerts are how
+# alerting gets muted.
+#
+# So: land the exporter, read what the metrics actually say on these six
+# disks, then enable the subset whose expression is verified quiet today.
+prometheusRules:
+  enabled: false
+
+# All five nodes are control-plane and currently untainted, but the chart's
+# blanket NoSchedule toleration is kept: a future taint must not silently
+# drop SMART coverage on the node that acquires it.
+tolerations:
+  - effect: NoSchedule
+    operator: Exists

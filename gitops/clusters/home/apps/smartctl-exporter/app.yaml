@@ -1,0 +1,5 @@
+repoURL: "oci://ghcr.io/prometheus-community/charts/prometheus-smartctl-exporter"
+chart: "prometheus-smartctl-exporter"
+targetRevision: "0.17.1"
+releaseName: "smartctl-exporter"
+namespace: "monitoring"
