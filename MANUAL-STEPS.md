@@ -315,6 +315,41 @@ Two ways to make it green, both understood, neither started:
 Do not "tidy" this away without deciding which one you want — it holds the only
 copy of the pre-migration Pi-hole data.
 
+### 9c. Headlamp login — the `headlamp-admin` SA was DELETED 2026-08-03
+
+**Headlamp cannot be logged into right now, and that is expected.** Removed on
+purpose: it was a hand-made `cluster-admin` binding that existed in no git file
+and was therefore invisible to both review and
+`scripts/audit-protected-volumes.py`.
+
+⚠️ **Headlamp's own ServiceAccount (`headlamp/headlamp`) has NO RoleBinding or
+ClusterRoleBinding whatsoever** — verified, and deliberate: the chart's default
+cluster-admin binding was removed when it was deployed. So Headlamp has no
+authority of its own and every bit of access came from pasting a token minted
+from `headlamp-admin`. Deleting that SA is therefore the whole login path, not
+a piece of it.
+
+The real fix is **API-server OIDC** (Phase 4 remainder), which removes the
+token-paste step entirely. Until then, recreate it in this order when you
+actually need Headlamp:
+
+```bash
+kubectl -n kube-system create serviceaccount headlamp-admin
+kubectl create clusterrolebinding headlamp-admin \
+  --serviceaccount=kube-system:headlamp-admin --clusterrole=cluster-admin
+kubectl -n kube-system create token headlamp-admin      # paste this into Headlamp
+```
+
+Two things worth knowing before worrying about it having existed. There was
+**no long-lived token Secret** — checked — so this was never a credential
+sitting around waiting to leak; k8s ≥1.24 does not auto-create them, and
+`create token` issues one that expires in an hour by default. And minting one
+requires `kubectl` access that is already cluster-admin, so the SA granted
+nothing its user did not already have. It was untidy rather than dangerous,
+which is why deleting it was cheap.
+
+**Delete it again after OIDC lands** if you recreate it in the meantime.
+
 ---
 
 ## 🟢 Whenever
