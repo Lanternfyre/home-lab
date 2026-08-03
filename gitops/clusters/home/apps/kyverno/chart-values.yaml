@@ -1,0 +1,32 @@
+# Kyverno 3.8.2 (app v1.18.2) — policy ENGINE only. Policies live in
+# manifests/, so the engine and the rules it enforces can be rolled back
+# independently. A bad policy is far more likely than a bad engine, and
+# reverting one should not mean reinstalling the other.
+#
+# ── The point of this install: policies compile to NATIVE VAPs ───────────────
+# `features.generateValidatingAdmissionPolicy` makes Kyverno translate an
+# enforcing ValidatingPolicy into a Kubernetes ValidatingAdmissionPolicy,
+# evaluated by the API server IN-PROCESS. So Kyverno being down cannot block
+# pod creation — the policies keep working without it.
+#
+# ⚠️ MODERNIZATION.md called this `autogen.validatingAdmissionPolicy.enabled`.
+# That key does not exist. The real one is below, and it is already TRUE by
+# default in this chart — stated explicitly anyway, because it is the entire
+# reason Kyverno was chosen over admission webhooks and a silent default flip
+# would remove the property without anyone noticing.
+features:
+  generateValidatingAdmissionPolicy:
+    enabled: true
+  # Reports are how you SEE what policies would do before they deny anything.
+  policyReports:
+    enabled: true
+  validatingAdmissionPolicyReports:
+    enabled: true
+  # ⚠️ Mutation stays OFF, deliberately. Every app here syncs with
+  # ServerSideApply + selfHeal; a mutating policy rewrites objects after ArgoCD
+  # applies them, ArgoCD sees drift, re-applies, and the two fight forever. The
+  # plan calls for zero mutation for exactly this reason.
+  generateMutatingAdmissionPolicy:
+    enabled: false
+  mutatingAdmissionPolicyReports:
+    enabled: false
