@@ -34,6 +34,18 @@ kind: ValidatingPolicy
 metadata:
   name: protect-labelled-volumes
 spec:
+  # ⚠️ PER-POLICY OPT-IN. The chart-level
+  # features.generateValidatingAdmissionPolicy only permits generation; each
+  # policy must still ask for it. Without this the status reads
+  #   "skip generating ValidatingAdmissionPolicy: not enabled."
+  # and enforcement silently falls back to the Kyverno WEBHOOK — which works,
+  # but dies with Kyverno, losing the exact property this phase exists for.
+  # (MODERNIZATION.md always said `autogen.validatingAdmissionPolicy.enabled`;
+  # it was misread as a Helm value during the install and is a policy field.)
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+
   validationActions:
     - Deny
   matchConstraints:

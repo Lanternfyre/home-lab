@@ -1,0 +1,27 @@
+# Kyverno cannot see PersistentVolumes without this, and says so:
+#   "Policy is not ready for reporting, missing permissions:
+#    get /v1, Resource=persistentvolumes; list ...; watch ..."
+#
+# Its default ClusterRoles cover namespaced resources plus a curated set of
+# cluster-scoped ones; PersistentVolume is not among them. ENFORCEMENT works
+# regardless — admission review hands Kyverno the object — but background scans
+# and PolicyReports need to LIST them, so without this the protect policy can
+# block a delete while being unable to tell you what it is protecting.
+#
+# Kyverno composes its permissions from AGGREGATED ClusterRoles, so the correct
+# extension point is a new role carrying the aggregation labels rather than
+# editing Kyverno's own roles (which the chart would overwrite on upgrade).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kyverno:persistentvolumes-view
+  labels:
+    rbac.kyverno.io/aggregate-to-admission-controller: "true"
+    rbac.kyverno.io/aggregate-to-background-controller: "true"
+    rbac.kyverno.io/aggregate-to-reports-controller: "true"
+rules:
+  # Read-only, deliberately. Kyverno needs to SEE PersistentVolumes to report on
+  # them; it must never need to modify or delete one.
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch"]
