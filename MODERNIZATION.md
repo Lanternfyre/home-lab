@@ -266,7 +266,26 @@ Remaining:
       `IP Address:192.168.32.2` plus every node IP. So the VIP can move
       anywhere without breaking TLS.
 
-- [ ] **Normalise lab1's systemd unit — it is the only node that differs.**
+- [x] ~~**Normalise lab1's systemd unit**~~ **DECIDED AGAINST — do not do this.**
+      Left in full below because the *reasoning* still matters, but the action
+      is cancelled and the underlying risk is already closed by other means.
+
+      **Why cancelled:** k3s **ignores** `--cluster-init` / `--server` once an
+      etcd datastore exists on disk (see "Hard-won findings"), so the flags
+      lab1 differs by are inert on every restart. Rewriting `ExecStart` via a
+      drop-in carries real risk — a bad unit stops k3s — for **zero** runtime
+      benefit.
+
+      **The genuine exposure was the REBUILD path, and that is already fixed
+      separately:** `k3s_cluster_init` is now an explicit bootstrap-time
+      argument rather than a static host var, and `k3s_config` refuses to
+      render `cluster-init` on a node with no datastore while other servers
+      exist. ⚠️ What is NOT fixed is the prose runbook `gitops/argo-install.md`,
+      which still says `--cluster-init` — **that** is the thing to correct, and
+      it is a doc edit, not a deliberate op on a live node.
+
+      <details><summary>original analysis, kept for the reasoning</summary>
+
       ```
       k8s-1:    --cluster-init --token … --tls-san 192.168.32.2
       k8s-2..5: --server https://192.168.32.2:6443 --token …
@@ -287,8 +306,16 @@ Remaining:
       knowledge. Must be a **systemd drop-in** — CLI args in `ExecStart` beat
       `config.yaml`, so the Ansible k3s_config role does not reach this.
       Deliberate op, one node at a time, verifying etcd keeps its leader.
-- [ ] CoreDNS 1 → 3 replicas + PDB. **Built (`roles/coredns_ha`, wired into
-      `site.yml`), not yet applied — needs one sudo run.**
+
+      </details>
+- [x] CoreDNS 1 → 3 replicas + PDB — ✅ **DONE 2026-08-02.** Re-verified live
+      2026-08-03: **3/3 ready, PDB allowing 1 disruption.**
+      *(This entry read "built, not yet applied — needs one sudo run" for a
+      day after the work had in fact been applied, while a duplicate `[x]`
+      entry for the same work sat further down the same list. Corrected rather
+      than left to send someone off to redo it.)*
+      Built as `roles/coredns_ha`, wired into `site.yml`. The reasoning below
+      is what stops someone "fixing" this again.
 
       **Correction to what this file used to say.** It claimed `kubectl scale`
       "is reverted by upgrades". Two things turned out to be wrong:
