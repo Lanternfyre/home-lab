@@ -20,7 +20,8 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 | | at session start | now |
 |---|---|---|
-| Backups | **none at all** | 4 nightly jobs, restore-verified |
+| Backups | **none at all** | 3 nightly jobs, restore-verified (pihole's retired — see below) |
+| Alerting | receiver `"null"`, 7 alerts into a black hole | **Pushover**, verified delivered; 3 permanent false positives purged |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
 | ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 53 Synced / 2 OutOfSync / **0 Unknown** (both benign, both diagnosed) |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
@@ -38,9 +39,12 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-**🔴 NEW 2026-08-03: the Pi-hole backup CronJob has been silently broken since
-the storage migration.** Found incidentally while verifying Cilium stage 1 —
-it is NOT related to Cilium.
+**✅ RESOLVED 2026-08-03: the Pi-hole backup CronJob was silently broken, and
+is now retired.** Found incidentally while verifying Cilium stage 1 — it was
+NOT related to Cilium. The CronJob is pruned; `pihole-data` is now registered
+in `protected-volumes.yaml` and has **no backup at all**, which is a deliberate,
+recorded trade (recovery is a rebuild from `apps/pihole/chart-values.yaml`).
+History of the failure:
 
 `pihole-backup-29762025` has sat **Pending for 4h**, and the last successful
 run was **28h ago**. The cause is the Phase 0.D storage migration:
@@ -601,9 +605,46 @@ without it). The inference is strong but this repo's rule is *assert values,
 never presence*.
 
 ### Phase 4 — Headlamp + Alertmanager
-API-server OIDC via `kube-apiserver-arg` (Ansible owns config.yaml by then).
-⚠️ k3s refuses to start on an invalid apiserver flag — a typo bricks a server.
-Roll `serial: 1`. Alertmanager currently has **no receivers at all**.
+
+✅ **ALERTING IS DONE 2026-08-03 — and confirmed on a real phone.**
+Alertmanager's only receiver was `name: "null"`; every alert the cluster
+produced went into a black hole. Now routed to **Pushover**, credentials from
+1Password via ExternalSecret and mounted as FILES (`user_key_file` /
+`token_file`), so nothing secret is in git or in the rendered Helm release.
+
+Proven rather than assumed, in this order:
+`amtool check-config` inside the running v0.30.1 container → SUCCESS ·
+ExternalSecret `SecretSynced`, both values 30 bytes with no trailing newline
+(exactly Pushover's format) · `alertmanager_notifications_total{integration=
+"pushover"} 2` with **every** `..._failed_total` reason at 0 · and finally the
+notifications arriving on the operator's phone.
+
+⚠️ **The false-positive purge was a PREREQUISITE, not tidying.**
+`KubeSchedulerDown`, `KubeControllerManagerDown` and `KubeProxyDown` had been
+firing since the stack was installed and can never resolve — kube-prometheus-
+stack expects those as separate pods, and k3s runs all three inside the server
+process. Pointing a receiver at a phone without fixing that delivers three
+permanently-wrong alerts first, which is how alerting gets muted. Alerts went
+**7 → 3**. Note that disabling only the components makes it WORSE: the rules
+are `absent(up{job=...})`, so removing the ServiceMonitor makes `absent()`
+match harder. The `defaultRules.rules.*` toggles are what actually stop them.
+
+Routing decisions: `Watchdog` and `InfoInhibitor` → `null` (Watchdog fires
+constantly by design as a dead-man's switch — sent to a phone it is a
+notification every few minutes forever); `repeat_interval: 12h`; priority 1 for
+critical and 0 otherwise, deliberately **not** 2/emergency, which retries until
+acknowledged.
+
+Two GENUINE signals surfaced immediately and are worth investigating:
+`KubeHpaMaxedOut` and `CPUThrottlingHigh`. Also: `Watchdog` did not reappear
+after the Alertmanager restart, which is mildly odd for an always-firing alert
+— it changes nothing operationally (it routes to `null`) but it is the canary
+for "is the pipeline alive", so worth a glance.
+
+**Still to do in this phase: Headlamp + API-server OIDC.** That is the part
+with teeth — OIDC goes in via `kube-apiserver-arg`, and ⚠️ **k3s refuses to
+start on an invalid apiserver flag, so a typo bricks a server.** Roll
+`serial: 1` with full gates, at a keyboard.
 
 ### Phase 5 — Kyverno
 Use `ValidatingPolicy` (`policies.kyverno.io/v1`), **not** the deprecated
