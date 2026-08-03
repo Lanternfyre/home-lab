@@ -1,0 +1,173 @@
+# Phase 6 spike. Applied by hand, deleted afterwards. See README.md.
+---
+# OIDC client secret, in the namespace the SecurityPolicy lives in.
+# Same 1Password item and Google client as oauth2-proxy and Headlamp.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: spike-oidc
+  namespace: gateway-envoy
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: one-password
+  target:
+    name: spike-oidc
+    creationPolicy: Owner
+    deletionPolicy: Delete
+    template:
+      engineVersion: v2
+      mergePolicy: Replace
+      data:
+        # Envoy Gateway reads the secret from this fixed key name.
+        client-secret: '{{ .rawClientSecret | trim }}'
+  data:
+    - secretKey: rawClientSecret
+      remoteRef:
+        key: GoogleOauthClient
+        property: GoogleOauthSecretId.txt
+---
+# Narrow, single-host certificate. Deliberately NOT a wildcard: the endgame
+# will likely use `*.lab.techyon.dev` (cloudflare-ca solves DNS01, so wildcards
+# are possible and would turn 15 Certificates into 1), but a spike should not
+# mint a cert covering every hostname in the zone.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: spike-tls
+  namespace: gateway-envoy
+spec:
+  secretName: spike-tls
+  issuerRef:
+    name: cloudflare-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - spike.lab.techyon.dev
+---
+# The Gateway. Envoy Gateway provisions a Deployment + LoadBalancer Service for
+# it, so MetalLB assigns a NEW IP -- ingress-nginx keeps 192.168.32.13 and all
+# 15 existing Ingresses are untouched throughout this spike.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: spike
+  namespace: gateway-envoy
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: spike.lab.techyon.dev
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: spike-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+# A Service with NO selector and NO endpoints. Envoy routes to an empty cluster
+# and returns 503, which is the "got all the way through" signal. Nothing is
+# served, so a SecurityPolicy that fails to attach exposes nothing.
+apiVersion: v1
+kind: Service
+metadata:
+  name: spike-sink
+  namespace: gateway-envoy
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+      protocol: TCP
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: spike
+  namespace: gateway-envoy
+spec:
+  parentRefs:
+    - name: spike
+  hostnames:
+    - spike.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: spike-sink
+          port: 80
+---
+# The whole point of the spike: all three filters on one policy.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: spike
+  namespace: gateway-envoy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: spike
+
+  # 1) Get the user signed in with Google.
+  oidc:
+    provider:
+      issuer: "https://accounts.google.com"
+    clientID: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+    clientSecret:
+      name: spike-oidc
+    redirectURL: "https://spike.lab.techyon.dev/oauth2/callback"
+    logoutPath: "/logout"
+    # `email` is required for the claim to exist at all; `hd` rides along with
+    # a Workspace account. Without these the authorization rule below has
+    # nothing to match and everything is denied.
+    scopes:
+      - openid
+      - email
+      - profile
+    # ⚠️ LOAD-BEARING. The JWT filter below reads the ID token out of a COOKIE,
+    # and it can only do that if it knows the cookie's name. Left unset, Envoy
+    # Gateway appends a random suffix per policy and the jwt provider cannot
+    # address it -- the token is present, unreadable, and every request 403s
+    # for a reason nothing reports.
+    cookieNames:
+      idToken: "IdToken"
+      accessToken: "AccessToken"
+
+  # 2) Actually VALIDATE that token.
+  # ⚠️ `oidc` alone does NOT verify the ID token signature (envoy gateway
+  # #5414, still open). Without this block the cookie is trusted on its face,
+  # so this is the only thing making the claim below meaningful rather than
+  # decorative.
+  jwt:
+    providers:
+      - name: google
+        issuer: "https://accounts.google.com"
+        audiences:
+          - "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+        remoteJWKS:
+          uri: "https://www.googleapis.com/oauth2/v3/certs"
+        extractFrom:
+          cookies:
+            - "IdToken"
+
+  # 3) Only this Workspace. `hd` is the Google Workspace domain claim.
+  authorization:
+    # Anything not explicitly allowed is denied -- so a typo in the rule fails
+    # CLOSED (403) rather than open.
+    defaultAction: Deny
+    rules:
+      - name: workspace-only
+        action: Allow
+        principal:
+          jwt:
+            provider: google
+            claims:
+              - name: hd
+                valueType: String
+                values:
+                  # STEP 2 OF THE TEST: change this to nonexistent.example,
+                  # re-apply, clear cookies, sign in again, expect 403.
+                  - techyon.dev
