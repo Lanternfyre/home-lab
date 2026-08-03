@@ -58,9 +58,16 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    **no second copy anywhere**, and backups still sit on the same NAS as the
    data. SMART buys warning, not a copy.
 
-2. **API-server OIDC — ✅ ROLLED OUT 2026-08-03, one browser login left to
-   confirm.** The playbook completed clean: `failed=0 unreachable=0`,
-   `changed=3` per node, k8s-1 last.
+2. ~~**API-server OIDC**~~ ✅ **DONE 2026-08-03 — login confirmed working.**
+   The playbook completed clean: `failed=0 unreachable=0`, `changed=3` per
+   node, k8s-1 last. Phase 4 is complete.
+
+   🔵 **Optional follow-up, not required:** `kubectl` OIDC is installed
+   (`playbooks/16-kubectl-oidc.yml`, context `homelab-oidc`) but needs
+   `http://localhost:8000` registered on the Google client — `MANUAL-STEPS.md`
+   §9d — before `kubectl --context homelab-oidc auth can-i list nodes` will
+   work. The certificate context still works regardless, so nothing is blocked
+   on this.
 
    **Verified after the roll, including the things the gates cannot see:**
    - all five nodes' apiservers are *actually running* with the three
@@ -99,10 +106,10 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    - `k3s_oidc_*` vars set, and `20-config-converge.yml` gained
      `order: reverse_inventory` so **k8s-1 rolls LAST** rather than first.
 
-   **🔴 Blocked on one manual step:** register
-   `https://headlamp.lab.techyon.dev/oidc-callback` in Google Console —
-   `MANUAL-STEPS.md` §9a. Without it the login dies with
-   `redirect_uri_mismatch` before the cluster is involved.
+   ✅ The Google Console redirect URI (`MANUAL-STEPS.md` §9a) was registered
+   and **the browser login is confirmed working** — which is the acceptance
+   test, since it is the only thing that exercises the token → username
+   mapping.
 
    **The command that was run:**
    ```
@@ -769,10 +776,37 @@ after the Alertmanager restart, which is mildly odd for an always-firing alert
 — it changes nothing operationally (it routes to `null`) but it is the canary
 for "is the pipeline alive", so worth a glance.
 
-**Still to do in this phase: Headlamp + API-server OIDC.** That is the part
-with teeth — OIDC goes in via `kube-apiserver-arg`, and ⚠️ **k3s refuses to
-start on an invalid apiserver flag, so a typo bricks a server.** Roll
-`serial: 1` with full gates, at a keyboard.
+✅ **API-SERVER OIDC DONE 2026-08-03 — and the login is confirmed working.**
+Headlamp now signs in with Google and gets real per-user RBAC; the token-paste
+step is gone. Full detail in "Immediately next" item 2. The part with teeth
+(`kube-apiserver-arg`) rolled `serial: 1` with k8s-1 last and completed clean.
+
+**Phase 4 is therefore complete: alerting, Headlamp, and OIDC.**
+
+**Follow-on, same day: `kubectl` can use Google too.**
+`ansible-playbook playbooks/16-kubectl-oidc.yml` installs kubelogin to
+`~/.local/bin` (no sudo, checksum-pinned) and adds a `homelab-oidc` context.
+
+⚠️ **The certificate context is renamed, NOT removed.** The existing
+kubeconfig is `O=system:masters, CN=system:admin` valid to Jan 2027, and
+`system:masters` is the built-in superuser group the API server
+**short-circuits authorization for** — bound by no ClusterRoleBinding, not
+scopeable, not attributable to a person, revocable only by rotating the k3s
+client CA. That is precisely why OIDC is worth having *and* why the cert stays:
+it is the break-glass path when Google is unreachable or an apiserver flag is
+wrong. It is now called `homelab-breakglass` so its role is obvious.
+
+⚠️ **OIDC is deliberately NOT the default context.** `15-argocd.yml` runs helm
+against the current context and `scripts/audit-protected-volumes.py` uses
+kubectl; making OIDC default swaps their credential from a cert that always
+works to one that opens a **browser** when its ~1h token expires. Flip it with
+`-e kubectl_oidc_set_default=true` once you know what depends on the default.
+
+⚠️ **The client secret lands in `~/.kube/config` in plaintext** (0600, and read
+from the live cluster at run time so it never enters git). Note it is the
+client that also gates oauth2-proxy and therefore every app on the LAN. A
+dedicated Google **Desktop-app** client would be the cleaner choice — a desktop
+client's secret is not considered confidential.
 
 ### Phase 5 — Kyverno ✅ **DONE 2026-08-03**
 
