@@ -11,20 +11,22 @@
     mode: "0755"
 
 # ── Detect ───────────────────────────────────────────────────────────────────
-- name: Check whether kubelogin is already installed, and at which version
-  ansible.builtin.command: "{{ kubelogin_install_dir }}/{{ kubelogin_binary_name }} --version"
-  register: kubelogin_current
-  changed_when: false
-  failed_when: false
+- name: Hash the installed binary, if there is one
+  ansible.builtin.stat:
+    path: "{{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}"
+    checksum_algorithm: sha256
+  register: kubelogin_installed
   check_mode: false
 
 - name: Decide whether an install is needed
   ansible.builtin.set_fact:
-    # `--version` prints e.g. "kubelogin version v1.36.3 ...". Matching the
-    # exact version string means a partial or wrong-version binary is treated
-    # as needing reinstall, rather than being accepted because a file exists.
+    # Content, not presence, and not `--version`: kubelogin stamps the git
+    # commit rather than the tag, so no version string can identify a release.
+    # See the note in defaults/main.yml -- getting this wrong made the role
+    # both fail its own gate and reinstall on every run.
     kubelogin_needs_install: >-
-      {{ kubelogin_current.rc != 0 or (kubelogin_version not in (kubelogin_current.stdout | default(''))) }}
+      {{ (not kubelogin_installed.stat.exists)
+         or (kubelogin_installed.stat.checksum != kubelogin_binary_sha256) }}
 
 - name: Report what was detected
   ansible.builtin.debug:
@@ -106,13 +108,18 @@
   ansible.builtin.assert:
     that:
       - kubelogin_via_kubectl.rc == 0
-      - kubelogin_version in kubelogin_via_kubectl.stdout
+      # Asserts only that the plugin RESOLVES and RUNS. Which build it is was
+      # already settled by two checksums -- the release zip before extraction
+      # and the extracted binary in the detect step -- and those are far
+      # stronger than a version string that reports a commit hash anyway.
+      - "'kubelogin version' in kubelogin_via_kubectl.stdout"
     fail_msg: >-
-      kubelogin is installed at {{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}
-      but `kubectl oidc-login --version` did not report {{ kubelogin_version }}
-      (rc={{ kubelogin_via_kubectl.rc }}). kubectl finds plugins by filename on
-      PATH -- check that {{ kubelogin_install_dir }} is on YOUR interactive PATH,
-      not just this playbook's.
+      The binary is at {{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}
+      but `kubectl oidc-login --version` did not run it
+      (rc={{ kubelogin_via_kubectl.rc }}, stdout={{ kubelogin_via_kubectl.stdout | default('') | trim }}).
+      kubectl finds plugins by filename on PATH -- check that
+      {{ kubelogin_install_dir }} is on YOUR interactive PATH, not just this
+      playbook's.
     success_msg: "kubectl resolves the plugin: {{ kubelogin_via_kubectl.stdout | trim }}"
   when: not ansible_check_mode
 

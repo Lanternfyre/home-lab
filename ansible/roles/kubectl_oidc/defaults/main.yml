@@ -12,6 +12,22 @@ kubelogin_version: "v1.36.3"
 # admin path bypasses RBAC, so an unverified download is not acceptable.
 kubelogin_sha256: "54428b2be68ce297c5c743feed65a2fa2ed2a671881ff70fb6560e560bb18eaf"
 
+# sha256 of the EXTRACTED binary, which is how "is the right version already
+# installed?" is answered.
+#
+# ⚠️ Do NOT use `--version` for this. kubelogin's release binaries print the
+# git commit, not the tag:
+#     $ kubectl oidc-login --version
+#     kubelogin version fb427a8063fe42aef7a092bdcfc7724c22d1594d
+# A first attempt asserted the tag appeared in that output. It never can, so
+# the check failed on a perfectly good install AND the detect step would have
+# reinstalled on every single run. Hashing the file is both correct and
+# strictly stronger: it also catches a corrupted or swapped binary, which a
+# version string cannot.
+#
+# Re-record with: sha256sum ~/.local/bin/kubectl-oidc_login
+kubelogin_binary_sha256: "246ce54a3bc8bafbbe4a5590b1a85f111b3803076c600a1ac69508d8523bfcce"
+
 # User-local install. Deliberately NOT /usr/local/bin: this keeps the whole
 # playbook sudo-free, matching 15-argocd.yml, which is the only other thing
 # here that runs on the workstation.
