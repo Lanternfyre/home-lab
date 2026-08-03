@@ -58,9 +58,32 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    **no second copy anywhere**, and backups still sit on the same NAS as the
    data. SMART buys warning, not a copy.
 
-2. **API-server OIDC — ⏸ EVERYTHING PREPARED, ONE COMMAND LEFT.**
-   Steps 1–3 are committed and applied; only the node rollout remains, and it
-   is the part needing sudo.
+2. **API-server OIDC — ✅ ROLLED OUT 2026-08-03, one browser login left to
+   confirm.** The playbook completed clean: `failed=0 unreachable=0`,
+   `changed=3` per node, k8s-1 last.
+
+   **Verified after the roll, including the things the gates cannot see:**
+   - all five nodes' apiservers are *actually running* with the three
+     `--oidc-*` flags — read back from `journalctl -u k3s` →
+     `Running kube-apiserver …`, not inferred from the config file;
+   - **zero** OIDC errors in the k3s journal on any node (a bad issuer would
+     surface as a discovery-fetch failure here);
+   - 5/5 Ready, `[+]etcd ok`, ArgoCD unchanged at 62 Synced / 1 OutOfSync;
+   - RBAC proven **independently of the token path** by impersonation:
+     `kubectl auth can-i … --as=adrian.jutrowski@techyon.dev` returns *yes*
+     for nodes/pods/secrets/clusterrolebindings, and the near-miss
+     `…@gmail.com` returns **no** — so the binding is specific rather than a
+     blanket allow.
+
+   ⚠️ **Still unproven: the token → username mapping**, which is the one link
+   no in-cluster check can exercise. It needs a real browser sign-in at
+   https://headlamp.lab.techyon.dev. Interpreting the result:
+   - *works* → done;
+   - `redirect_uri_mismatch` from Google → `MANUAL-STEPS.md` §9a was not done;
+   - *login succeeds, then only 401s* → the token is fine but the username did
+     not match the binding, i.e. the `email` claim is not what we think.
+
+   <details><summary>how it was staged, and the rollback</summary>
 
    **Done already (all zero-risk, deliberately ordered before the dangerous
    step so nothing is left to configure afterwards):**
@@ -81,10 +104,9 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    `MANUAL-STEPS.md` §9a. Without it the login dies with
    `redirect_uri_mismatch` before the cluster is involved.
 
-   **Then run, at a keyboard:**
+   **The command that was run:**
    ```
    cd ansible
-   ansible-playbook playbooks/20-config-converge.yml --ask-become-pass --check --diff
    ansible-playbook playbooks/20-config-converge.yml --ask-become-pass
    ```
 
@@ -112,6 +134,8 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    `sudo vi /etc/rancher/k3s/config.yaml` (remove the `kube-apiserver-arg`
    block) then `sudo systemctl restart k3s`. Being at a keyboard is what makes
    this acceptable.
+
+   </details>
 
    <details><summary>original risk notes, still accurate</summary>
 
