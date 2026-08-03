@@ -24,7 +24,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | Alerting | receiver `"null"`, 7 alerts into a black hole | **Pushover**, verified delivered; 3 permanent false positives purged |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
 | ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 58 Synced / 3 OutOfSync / **0 Unknown** (all three benign, all diagnosed) |
-| Disk health | **nothing watching any drive** | SMART on 6 local drives, 9 alerts, delivery proven |
+| Disk health | **nothing watching any drive** | SMART on 6 local drives, 10 alerts, delivery proven |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
@@ -49,7 +49,7 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
 #### Do these, in this order
 
 1. ~~**SMART disk monitoring (Phase 7).**~~ ✅ **DONE 2026-08-03** — see
-   Phase 7. Six local drives monitored, nine alerts, delivery proven to the
+   Phase 7. Six local drives monitored, ten alerts, delivery proven to the
    phone by firing a real one. All six drives read 0 reallocated sectors, so
    there is a known-clean baseline to detect a change against.
 
@@ -709,7 +709,7 @@ or the JWT filter cannot address the cookie. Google consent screen is already
 ### Phase 7 — automation
 
 ✅ **SMART disk monitoring DONE 2026-08-03.** `prometheus-smartctl-exporter`
-0.17.1 (exporter v0.14.0), a privileged DaemonSet 5/5, nine curated alerts and
+0.17.1 (exporter v0.14.0), a privileged DaemonSet 5/5, ten curated alerts and
 a ten-panel dashboard. This closes the cluster's top unmitigated risk being
 entirely unobserved: backups sit on the same NAS as the data, the 57 GB Immich
 library has no second copy anywhere, and until today nothing would have said a
@@ -762,7 +762,7 @@ alerts in Alertmanager, `alertmanager_notifications_total{integration=
 "pushover"}` incrementing with every `..._failed_total` reason at 0 — and
 finally **the operator confirmed both the firing and the resolution
 notifications arrived on their phone**, which is the only part of the chain no
-in-cluster metric can attest to. Reverted in the next commit; all nine rules
+in-cluster metric can attest to. Reverted in the next commit; all rules
 now `inactive/ok`.
 
 Worth noting for the next alert added anywhere: the **resolved** notification
@@ -775,6 +775,38 @@ visible here.
 2719 on the two SanDisk drives. It is a known-spurious counter on those parts;
 a rule of `> 0` would fire on two nodes immediately and forever. An *increase*
 would be meaningful — the standing value is not.
+
+⚠️ **The nastiest blind spot is a drive VANISHING, and nine of the ten rules
+were structurally incapable of seeing it.** Every health rule evaluates over
+series that *exist*; when a device drops out of `smartctl --scan` its series
+simply stop and all of its alerts go quiet — which reads exactly like a
+healthy drive. `smartctl_devices == 0` is a per-node total and cannot see the
+fleet going 6 → 5. So `SmartDeviceStoppedReporting` asks which `(node,device)`
+pairs were present in the last 6h and are absent now, and **names the drive**
+rather than reporting a count.
+
+It is self-baselining rather than hardcoded at 6 for a concrete reason:
+**k8s-lab5's WDC spindle is an unmounted spare** — `sda1`/`sda2` have no
+mountpoint and root is on the NVMe — and the exporter runs with
+`--smartctl.powermode-check=standby`, its default. That is the correct choice
+(the alternative wakes an idle disk every 120s), but it means a spun-down disk
+silently leaves the scan. A `count < 6` rule would report a mystery number
+where this one says `k8s-lab5 sda stopped reporting`.
+
+⚠️ **A self-baselining rule can be poisoned by its own history.** The first
+version reported two permanently-missing phantom drives. Cause: the 6h
+lookback reached back past the point where the node-name relabeling was added,
+and those older series carry no `node` label at all. `node!=""` is therefore
+load-bearing, and the same trap will recur on **any** future relabeling of a
+metric a lookback rule depends on. Found by testing the expression, not by
+reasoning about it.
+
+**Corrected a claim made from memory:** this rule file originally asserted
+"`up` is already covered by TargetDown". True — but unverified when written,
+and Phase 4 switched several `defaultRules.rules.*` groups off, so it could
+plausibly have gone with them. Now checked: `TargetDown` is loaded,
+`health=ok`, expression `> 10%` of a job's targets down — one node in five is
+20%, so a single dead exporter does page.
 
 **Known blind spot, unfixable here:** lab1's SM871 exposes no temperature
 attribute at all, so that drive has no thermal alert. Its self-assessment,
