@@ -1,0 +1,43 @@
+# Per-user cluster-admin, granted to a Google identity rather than a
+# ServiceAccount. This replaces the hand-made `kube-system/headlamp-admin` SA
+# + binding that was deleted on 2026-08-03 for living in no git file.
+#
+# ⚠️ THIS OBJECT IS COMPLETELY INERT UNTIL API-SERVER OIDC IS ENABLED.
+# Nothing can currently authenticate as this name, so applying it grants
+# nobody anything. That is deliberate ordering: it is created FIRST, so that
+# the moment the risky `kube-apiserver-arg` rollout lands, access works. Doing
+# it the other way round risks spending the dangerous step and still having no
+# way in.
+#
+# The subject string is GROUND TRUTH, not a guess. The API server will set the
+# username from the `email` claim (`oidc-username-claim=email`), and
+# oauth2-proxy's logs show Google has issued exactly
+# `adrian.jutrowski@techyon.dev` 1242 times for this Workspace. RBAC subject
+# matching is exact and case-sensitive, so a near-miss here fails closed and
+# looks identical to OIDC not working at all.
+#
+# ⚠️ No `oidc-username-prefix` is set, and that is load-bearing: Kubernetes
+# prefixes usernames with the issuer URL for every claim EXCEPT `email`, which
+# is exempt. So the username really is the bare address, with no
+# `https://accounts.google.com#` prefix. If the username claim is ever changed
+# away from `email`, this binding silently stops matching.
+#
+# ⚠️ Google does NOT emit a groups claim, so there is no group to bind and
+# every future user needs an explicit subject here. Do not plan around groups.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oidc-cluster-admins
+  annotations:
+    homelab.techyon.dev/why: >-
+      Grants cluster-admin to named Google identities via API-server OIDC.
+      Inert until kube-apiserver-arg oidc-* flags are live.
+subjects:
+  - kind: User
+    # Must match the `email` claim character for character.
+    name: adrian.jutrowski@techyon.dev
+    apiGroup: rbac.authorization.k8s.io
+roleRef:
+  kind: ClusterRole
+  name: cluster-admin
+  apiGroup: rbac.authorization.k8s.io
