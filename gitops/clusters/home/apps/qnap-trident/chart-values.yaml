@@ -28,17 +28,28 @@ tridentOrchestrator:
 
 forceInstallRancherClusterRoles: false
 # ── Operator resources ───────────────────────────────────────────────────────
-# Deliberately NOT overridden here: chart 0.1.2 made these configurable and its
-# defaults are already what this cluster wants (requests 10m/40Mi, memory limit
-# 128Mi, and NO CPU limit). Left to the chart so there is one source of truth
-# rather than two values that drift.
+# Deliberately NOT overridden here: chart 0.1.3 made these configurable and its
+# defaults are already what this cluster wants (requests 10m/64Mi, limits
+# 500m/192Mi). Left to the chart so there is one source of truth rather than
+# two values that drift.
 #
 # Why it changed: the operator's resources used to be HARDCODED in the chart's
 # bundle.yaml with `limits.cpu: 20m`. The operator idles at ~2m but bursts while
 # reconciling, so the cap was hit constantly -- `CPUThrottlingHigh` fired at
 # **70.2% throttling** the moment real alerting was wired up on 2026-08-03, on
-# the component that reconciles the storage driver. CPU is compressible, so the
-# request already guarantees a share and the limit only ever throttled.
+# the component that reconciles the storage driver.
+#
+# ⚠️ The instructive part, measured: peak CPU over 24h was 7.7-11.4m, so the
+# operator never approached 20m ON AVERAGE and was throttled anyway. CFS
+# enforces quota per 100ms period, not as an average -- 20m grants 2ms per
+# 100ms slice, so a reconcile burst gets chopped across many periods while the
+# 2-minute average still reads 2m. A CPU limit must be sized for INSTANTANEOUS
+# BURST, not average usage. 500m allows a 50ms burst per period and still
+# bounds a runaway loop to half a core.
+#
+# Memory went 80Mi -> 192Mi for a separate measured reason: peak working set
+# was 79.4 MiB against the old 80Mi limit -- a rounding error away from being
+# OOM-killed.
 #
 # To override anyway, set tridentOperator.resources here. ⚠️ Use
 # `resources: null` to remove them entirely -- `resources: {}` silently does
