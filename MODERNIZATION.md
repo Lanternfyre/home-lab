@@ -7,7 +7,7 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-08-03
+Last updated: 2026-08-03 (end of session — see "Immediately next")
 
 ---
 
@@ -39,164 +39,105 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-**✅ RESOLVED 2026-08-03: the Pi-hole backup CronJob was silently broken, and
-is now retired.** Found incidentally while verifying Cilium stage 1 — it was
-NOT related to Cilium. The CronJob is pruned; `pihole-data` is now registered
-in `protected-volumes.yaml` and has **no backup at all**, which is a deliberate,
-recorded trade (recovery is a rebuild from `apps/pihole/chart-values.yaml`).
-History of the failure:
+**Session of 2026-08-03 ended here. Everything below is current and pushed;
+working tree clean, both repos level with origin.**
 
-`pihole-backup-29762025` has sat **Pending for 4h**, and the last successful
-run was **28h ago**. The cause is the Phase 0.D storage migration:
+#### Do these, in this order
 
-- the CronJob mounts PVC **`pihole`** — the OLD `local-path` claim, pinned by
-  node affinity to **k8s-lab3**
-- it also carries a `requiredDuringScheduling` **podAffinity** onto the running
-  Pi-hole pod
-- Pi-hole now uses `pihole-data` (`qnap-iscsi`) and runs on **k8s-lab5**
+1. **SMART disk monitoring (Phase 7).** Not started. Zero risk, no sudo, gitops
+   only. Highest-value remaining item: this cluster's top unmitigated risk is a
+   disk dying, the 57 GB Immich library still has **no second copy anywhere**,
+   and until today nothing would have told you. Alerting now works, so SMART
+   becomes actionable rather than decorative.
 
-So the two constraints are unsatisfiable — `0/5 nodes are available: 1 node(s)
-didn't match pod affinity rules, 4 node(s) didn't match PersistentVolume's node
-affinity`. It can never schedule.
+2. **Headlamp + API-server OIDC (rest of Phase 4).** ⚠️ **The risky one — do it
+   at a keyboard, with the sudo password to hand.** Adds `oidc-*` flags via
+   `kube-apiserver-arg`; **k3s refuses to start on an invalid apiserver flag, so
+   a bad value costs a node** until repaired by hand.
+   - Plumbing already exists: `roles/k3s_config` renders the block when
+     `k3s_oidc_issuer_url` is defined. No vars are set yet.
+   - Roll with `playbooks/20-config-converge.yml` — already `serial: 1`,
+     `any_errors_fatal: true`, with a 5-minute node-Ready gate and an etcd
+     quorum check, so a bad flag stops at **one** node, not five.
+   - Verified 2026-08-03 that the `--oidc-*` flags still exist (upstream docs
+     reference them as mutually exclusive with `--authentication-config`), but
+     that is the flag existing, **not** the value being right.
+   - It also removes Headlamp's token-paste step; until then Headlamp uses
+     user-supplied tokens, which is deliberate — see its chart-values.
 
-Two problems, not one: the job cannot run **and** it was pointed at the stale
-volume, so even its last "successful" runs backed up data Pi-hole had already
-stopped using. Fix is to point the `config` volume at `pihole-data`.
+3. **Then Phase 6** (ingress-nginx → Envoy Gateway; needs the OIDC spike on a
+   throwaway host first) and the rest of **Phase 7**.
 
-⚠️ **This is the exact failure shape this repo keeps rediscovering** — the
-CronJob exists, the PVC exists, `MODERNIZATION.md` counts "4 nightly jobs" as a
-win, and nothing alerted. Same family as the GHCR token that reported
-`Ready=True` while delivering an expired credential. **Assert values and
-behaviour, never presence.** Worth asking what else the Pi-hole migration left
-pointing at the old claim.
+4. **LAST of everything: remove flannel (Phase 3 stage 5b).** Deliberately
+   deferred; it is inert dead weight. See `CILIUM-MIGRATION.md` — and re-read it
+   rather than following the old all-at-once instruction, because that
+   requirement has **expired** and it can now roll `serial: 1`.
 
-**0. ~~The wedged `redis` ArgoCD operation~~ ✅ RESOLVED — it cleared itself.**
+#### Two live signals worth a look
 
-Verified 2026-08-03: the operation reached `phase=Succeeded` at
-**2026-08-03T00:02:28Z** ("successfully synced (all tasks run)"), `.operation`
-is gone from the spec, and the app reads **Synced / Healthy**. None of the
-escalations in the old note were needed — no `terminate-op`, no finalizer
-surgery. Nothing was pending a push either; `master` is level with `origin`.
+Both surfaced the day alerting started working, and both were real:
+`KubeHpaMaxedOut` (ingress HPA, **fixed**) and `CPUThrottlingHigh`
+(trident-operator, **fixed** via chart 0.1.3). Nothing is firing now except
+`Watchdog` and `InfoInhibitor`, which route to `null` by design.
 
-**The redis migration is complete and verified**, on all four checks the old
-note asked for:
-1. `redis-master-0` 1/1 on `redis:8.10.0-alpine` — official image, Bitnami gone
-2. no PDB in the `redis` namespace (the chart refuses one at a single instance)
-3. `immich-server` Running, unchanged — the Service is still `redis-master`
-4. drain-safety is still the *outstanding* proof: the next node drain must not
-   stall. Phase 3 supplies that drain.
+⚠️ `Watchdog` briefly vanished after an Alertmanager restart and came back on
+its own. It is the canary for "is the pipeline alive" — if it disappears again
+and stays gone, that is worth chasing.
 
-⚠️ **The lesson is about the diagnosis, not the fix.** The old note recorded
-three escalations that "did NOT work" and reached for an authenticated CLI. The
-operation was in fact *progressing* — an ArgoCD operation that keeps retrying a
-genuinely-Forbidden write looks identical, at a glance, to one that is wedged.
-`.status.operationState.startedAt` had not moved, which is what "wedged" was
-inferred from; but that field records when the operation *started*, not when it
-last did work. **Before declaring an ArgoCD operation stuck, re-read it once
-more after a real interval** — this one needed ~3 hours, and the patch commands
-that "failed" would have been unnecessary damage had they succeeded.
+#### Traps found on 2026-08-03 that will bite again
 
-Still deliberately orphaned by the migration: `redis-data-redis-master-0` and
-`redis-data-redis-replicas-0` (both still Bound, `qnap-iscsi`, 8Gi). Nothing
-mounts them — the new chart has no persistence. They hold the parked rollback
-data; keep until you are satisfied, then remember `Retain` means
-`tridentctl delete volume` too, or the backend volume leaks.
+- **An ArgoCD hard refresh does NOT re-pull an OCI chart.** It reported `Synced`
+  against a stale render while the live Deployment still had old values, with
+  every status field agreeing. **Only the live object tells the truth**; the fix
+  is an explicit sync, not a refresh.
+- **Helm MERGES maps rather than replacing them.** Deleting a key falls back to
+  the *chart default*, which may be stricter than what you removed. `{}` does
+  not clear a map; only `null` does. Cost two separate near-misses.
+- **A duplicate YAML key silently wins.** Appending a second `tridentOperator:`
+  block nearly reverted the CSI driver to a version with a known
+  data-destruction bug. Parse and assert the key set; never eyeball the diff.
+- **This workstation's kubeconfig context defaults to `kube-system`.** A bare
+  `kubectl get pod X` looks there, so `NotFound` is an answer about a namespace,
+  not about existence.
 
-Rollback, if redis ever needs it: `git revert` the `app.yaml` change. The old
-Bitnami release is gone but the parked data is still on those volumes.
+#### Still parked deliberately — rollback material, not litter
 
-**Still parked deliberately** — these are rollback material, not litter. Redis
-is proven on the new chart, so the first entry is now yours to clear whenever
-you want; the rest still stand:
 - `appendonlydir.rdb14-parked*` / `parked-appendonlydir*` on both redis PVCs
-  (~63 MB each, one dated 2026-06-27 predating this session)
-- the old `pihole` PVC on local-path — one of the two benign OutOfSync apps
+  (~63 MB each). Redis is proven on the new chart, so these are yours to clear.
+- `redis-data-redis-master-0` and `redis-data-redis-replicas-0` — Bound, unused,
+  `qnap-iscsi`. Nothing mounts them. `Retain`, so clearing them needs
+  `tridentctl delete volume` too or the backend LUN leaks.
+- the old `pihole` PVC on `local-path` (Phase 0.D rollback point) — one of the
+  benign OutOfSync apps.
 - stray `coredns-pdb.yaml` copies on lab2–5 from a delegation bug; identical
-  content so they do not flap, untidy rather than harmful
+  content so they do not flap. Untidy rather than harmful.
 
+⚠️ All four are now covered by the Kyverno protect policy where labelled, so
+deleting one requires removing the label first — a deliberate second step.
 
-1. ~~**lab5**~~ ✅ **DONE 2026-08-02.** The forced multipathd restart landed
-   (daemon now newer than its config), and the storage proof **passed**: the
-   pod mounted `/dev/mapper/mpathb`, wrote and read back 16 MB. The multipath
-   device it could never create before now exists. Test PV reclaimed, no leak.
-   **lab5 uncordoned.** All five nodes are now Ready, schedulable, and
-   registering `csi.trident.qnap.io` — the drain targets Phase 2 needs.
+<details><summary>historical: items completed 2026-08-02 → 2026-08-03</summary>
 
-   <details><summary>historical: the command that fixed it</summary>
-   `cd ansible && ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-5.home -e multipath_force_restart=true`
-   Its `multipath.conf` is correct on disk but multipathd never reloaded it —
-   **re-proven behaviourally on 2026-08-02**, not inferred: a 1Gi `qnap-iscsi`
-   PVC with a pod pinned to lab5 via `nodeName` still fails with
-   `failed to stage volume: multipath device not found when it is expected`.
-   Timestamps agree (conf written 08:39:24 today, multipathd last started
-   2026-07-31 06:53). The role defers that restart when it sees live LUNs, and
-   lab5 carries stale sessions. Then re-run the storage proof and uncordon.
-   *(lab4 is done — its multipathd restarted in the same second the conf was
-   written, and it is already uncordoned.)*
-   </details>
-2. ~~**Push**~~ ✅ done 2026-08-02. cert-manager rolled v1.14.5 → **v1.20.3**,
-   Healthy — the first hard Phase 2 prerequisite is met. `prometheus` came back
-   into sync on its own; `pyroscope` is diagnosed benign (see findings).
-3. ~~**Envoy Gateway bump**~~ ✅ **DONE 2026-08-02.** v1.6.1 → **v1.8.3**
-   rolled cleanly: deployment Running, 0 restarts, app **Synced/Healthy**, and
-   the Gateway API CRDs moved **v1.4.1 → v1.5.1**. Both hard Phase 2
-   prerequisites are now met. ⚠️ The `safe-upgrades.gateway.networking.k8s.io`
-   VAP + binding are now **live** — the rollback order in Phase 2 is no longer
-   hypothetical.
-4. ~~**kube-vip Pod → DaemonSet**~~ ✅ **DONE 2026-08-02.** Cut over cleanly:
-   DaemonSet 5/5 ready, the old single Pod pruned, lease `plndr-cp-lock` held
-   by k8s-lab1, API VIP answering, all five nodes Ready, **zero restarts**.
-   Losing lab1 no longer takes the API VIP with it.
-5. ~~**`30-upgrade.yml`**~~ ✅ **built, run, and now REVIEWED 2026-08-03.**
-   Read deliberately end-to-end, as Phase 2 said to do before Phase 3 leans on
-   it. **Verdict: it is sound, and Phase 3 should copy its patterns rather
-   than invent new ones** — the `peer` indirection (never drain a node from
-   itself), CNPG-primary-move-before-drain, drain that respects every PDB with
-   `--force` explicitly rejected, uncordon only *after* every gate, addon
-   re-assert, and the VIP gate placed after the repair that fixes it.
+- **lab5 multipath** repaired, storage-proven, uncordoned.
+- **cert-manager** v1.14.5 → v1.20.3; **Envoy Gateway** v1.6.1 → v1.8.3
+  (⚠️ its `safe-upgrades` VAP is live, so the Phase 2 rollback order is real).
+- **kube-vip** bare Pod → 5/5 leader-elected DaemonSet.
+- **`30-upgrade.yml`** built, run for three k3s hops, and reviewed. Now also
+  re-asserts the Cilium agent per hop.
+- **redis** migrated off Bitnami; the "wedged" ArgoCD operation cleared itself
+  (it was retrying, not stuck — `startedAt` records when an operation began,
+  not when it last progressed).
+- **Pi-hole backup CronJob** retired: unschedulable since Phase 0.D and backing
+  up a stale volume. `pihole-data` now has **no backup at all** — a deliberate,
+  recorded trade; recovery is a rebuild from `apps/pihole/chart-values.yaml`.
+- **protected-volumes registry** gaps closed (`pihole-data`, `immich-db-4`).
+- **Phase 3 stages 1–4**: all five nodes on Cilium, 63/63 pods, 5/5 reachable.
+- **Phase 4 alerting**: Pushover, delivery confirmed on a real phone.
+- **Phase 5 Kyverno**: `protect` label enforced via native VAP; acceptance test
+  passed with Kyverno at 0 replicas.
+- **Headlamp**: deployed behind oauth2-proxy, without the chart's default
+  cluster-admin binding.
 
-   Two things it does **not** yet cover, both real for Phase 3:
-   - ~~no Cilium-agent re-assert~~ ✅ **added 2026-08-03.** It now bounces the
-     Cilium agent per node after each hop, alongside CoreDNS and kube-vip,
-     because a k3s version change rewrites `data/cni/` where Cilium's binary
-     lives. No-ops on a cluster without Cilium.
-   - **its `desired == ready` DaemonSet gate will trip during a Cilium
-     migration**, when the cilium DaemonSet is legitimately part-ready. Do not
-     run a k3s hop and the CNI migration in the same window.
-6. **Phase 3 (Cilium) — ✅ STAGES 1–4 DONE 2026-08-03. Only cleanup remains.**
-   See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md).
-
-   **All five nodes are on Cilium.** 63 pods on `10.245.x.x`, **zero on
-   flannel**, and `Cluster health: 5/5 reachable` where it read `0/0` before.
-   Every agent 1/1 with a single restart (its reboot), no unhealthy pods, both
-   CNPG clusters 3/3, etcd leader on all five, VIP answering, LAN DNS
-   resolving, ingress responding, audit clean.
-
-   ✅ **The premise of the plan was MEASURED before it was relied on:** at
-   stage 2 a pod on Cilium (`10.245.4.2`) pinged a pod still on flannel
-   (`10.42.0.131`) on another node — 0% loss, 0.47 ms. Storage proved on the
-   migrated node too (`/dev/mapper/mpathq`, 16 MB, md5 match).
-
-   Stages 3–4 ran from `ansible/playbooks/35-cilium-migrate.yml`, so the
-   remaining four nodes took one `--ask-become-pass` prompt instead of four
-   interactive reboots.
-
-   ⚠️ **The rollback material is intact and verified on all five nodes** —
-   each still holds `10-flannel.conflist.cilium_bak` beside
-   `05-cilium.conflist`. Per-node rollback stays possible until stage 5b.
-
-   ⚠️ **The documented rollback was WRONG until this work corrected it.**
-   `cni-exclusive: true` makes Cilium **rename** flannel's conflist rather than
-   leave it, so deleting only `05-cilium.conflist` — which is what the
-   procedure said — strands the node with **no CNI at all**.
-
-   **Next is stage 5 (cleanup), and it is the irreversible one.** Soak for a
-   week first. 5a flips `policyEnforcementMode` to `default`, which makes the 6
-   argocd NetworkPolicies enforceable for the first time ever; 5b sets
-   `flannel-backend: none` on all five at once, after which there is no quick
-   way back.
-
----
+</details>
 
 ## Phases
 
