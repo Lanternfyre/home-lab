@@ -1,0 +1,480 @@
+---
+# Migrate the remaining nodes from flannel to Cilium, one at a time.
+#
+#   # see what it would do, change nothing
+#   ansible-playbook playbooks/35-cilium-migrate.yml --check --ask-become-pass
+#
+#   # roll it
+#   ansible-playbook playbooks/35-cilium-migrate.yml --ask-become-pass
+#
+#   # one node only
+#   ansible-playbook playbooks/35-cilium-migrate.yml --ask-become-pass --limit k8s-4.home
+#
+# Prerequisite: stages 1 and 2 of CILIUM-MIGRATION.md are DONE — Cilium is
+# installed cluster-wide in migration mode and k8s-lab5 is already migrated.
+# This playbook is stages 3 and 4. It does NOT do stage 5 (cleanup): policy
+# enforcement and `flannel-backend: none` stay untouched here, deliberately.
+#
+# ── Idempotent by design ─────────────────────────────────────────────────────
+# A node that already carries the migration label AND has Cilium's conflist on
+# disk is skipped, so re-running after an interruption resumes rather than
+# repeating. k8s-lab5 is skipped on every run for that reason.
+#
+# ⚠️ Its own first run IS its test, exactly as 30-upgrade.yml's was — and that
+# one was patched five times while live. Watch it. The gates are strict so that
+# a failure stops the roll with four nodes still good rather than continuing.
+#
+# ── Order: lab1 LAST ─────────────────────────────────────────────────────────
+# `order: reverse_inventory` gives lab5 (skipped), lab4, lab3, lab2, lab1.
+# lab1 is the original cluster-init node and the usual kube-vip lease holder.
+#
+# ⚠️ ROLLBACK for a single node needs sudo and is TWO commands, not one.
+# cni-exclusive makes Cilium RENAME flannel's config rather than sit beside it,
+# so restoring flannel means putting that file back:
+#   rm  /var/lib/rancher/k3s/agent/etc/cni/net.d/05-cilium.conflist
+#   mv  /var/lib/rancher/k3s/agent/etc/cni/net.d/10-flannel.conflist.cilium_bak \
+#       /var/lib/rancher/k3s/agent/etc/cni/net.d/10-flannel.conflist
+#   reboot
+# Deleting only the first leaves the node with NO CNI at all.
+
+- name: Pre-flight -- refuse to start unless stage 1 is healthy
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+  run_once: true
+  become: true
+
+  tasks:
+    - name: "preflight | the cilium DaemonSet covers every node"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl -n kube-system get ds cilium
+        -o jsonpath='{.status.desiredNumberScheduled}{" "}{.status.numberReady}'
+      args:
+        executable: /bin/bash
+      register: pf_ds
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | assert cilium is fully rolled out"
+      ansible.builtin.assert:
+        that:
+          - (pf_ds.stdout.split()[0] | int) == (groups['k3s_servers'] | length)
+          - (pf_ds.stdout.split()[0] | int) == (pf_ds.stdout.split()[1] | int)
+        fail_msg: >-
+          cilium DaemonSet is {{ pf_ds.stdout }} (desired ready), expected
+          {{ groups['k3s_servers'] | length }} of each. Stage 1 is not healthy;
+          migrating a node now would take it off flannel with nothing to
+          replace it.
+        success_msg: "cilium DaemonSet {{ pf_ds.stdout }} — stage 1 healthy."
+
+    - name: "preflight | the CiliumNodeConfig exists"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n kube-system get ciliumnodeconfig cilium-default
+      register: pf_cnc
+      changed_when: false
+      failed_when: pf_cnc.rc != 0
+      check_mode: false
+
+    - name: "preflight | policy enforcement must still be OFF"
+      # Upstream is explicit that policy stays disabled for the whole migration
+      # window, because traffic from non-Cilium pods may otherwise be dropped.
+      # This also keeps the 6 argocd NetworkPolicies inert until stage 5.
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl -n kube-system get cm cilium-config
+        -o jsonpath='{.data.enable-policy}'
+      args:
+        executable: /bin/bash
+      register: pf_policy
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | assert policy is never"
+      ansible.builtin.assert:
+        that: pf_policy.stdout | trim == 'never'
+        fail_msg: >-
+          cilium enable-policy is '{{ pf_policy.stdout | trim }}', expected
+          'never'. Migrating nodes with policy live risks dropping traffic
+          between migrated and unmigrated pods.
+
+    - name: "preflight | every node Ready"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}{"="}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}'
+        | grep -c '=True' || true
+      args:
+        executable: /bin/bash
+      register: pf_ready
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | assert all Ready"
+      ansible.builtin.assert:
+        that: (pf_ready.stdout | trim | int) == (groups['k3s_servers'] | length)
+        fail_msg: >-
+          Only {{ pf_ready.stdout | trim }} of
+          {{ groups['k3s_servers'] | length }} nodes are Ready. Fix that first —
+          this playbook drains one node at a time and needs somewhere to put
+          the pods.
+
+    - name: "preflight | which workloads are pinned by local-path?"
+      # A local-path PV carries nodeAffinity, so draining its node strands the
+      # pod. Exactly one such claim existed cluster-wide (dns/pihole) and it is
+      # now a stale rollback point — but re-check rather than trust that.
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pvc -A
+        -o jsonpath='{range .items[?(@.spec.storageClassName=="local-path")]}{.metadata.namespace}{"/"}{.metadata.name}{"\n"}{end}'
+        | grep -v '^$' || true
+      args:
+        executable: /bin/bash
+      register: pf_localpath
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | WARN about node-pinned claims"
+      ansible.builtin.debug:
+        msg: >-
+          local-path claims (each pins any MOUNTING pod to one node):
+          {{ pf_localpath.stdout_lines | default([]) | join(', ') | default('none', true) }}.
+          A drain of that node leaves such a pod Pending until it returns.
+
+    - name: "preflight | summary"
+      ansible.builtin.debug:
+        msg: >-
+          Stage 1 healthy. Migrating in order
+          {{ groups['k3s_servers'] | reverse | join(' -> ') }}; already-migrated
+          nodes are skipped. Policy stays OFF; flannel stays installed.
+
+- name: Migrate each node, one at a time, lab1 last
+  hosts: k3s_servers
+  gather_facts: false
+  serial: 1
+  order: reverse_inventory
+  any_errors_fatal: true
+  become: true
+
+  vars:
+    # Never issue a drain from the node being drained: its API server is about
+    # to go away. Same reasoning as 30-upgrade.yml.
+    peer: >-
+      {{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) }}
+    node_name: "{{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}"
+    cni_dir: /var/lib/rancher/k3s/agent/etc/cni/net.d
+
+  tasks:
+    # ── Is this node already done? ──────────────────────────────────────────
+    # Two conditions, not one. The label alone is set BEFORE the reboot, so a
+    # run interrupted between labelling and rebooting would look complete.
+    - name: "{{ node_name }} | already carrying the migration label?"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get node {{ node_name }}
+        -o jsonpath='{.metadata.labels.io\.cilium\.migration/cilium-default}'
+      args:
+        executable: /bin/bash
+      register: mig_label
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "{{ node_name }} | is Cilium's conflist on disk?"
+      ansible.builtin.stat:
+        path: "{{ cni_dir }}/05-cilium.conflist"
+      register: mig_conf
+      check_mode: false
+
+    - name: "{{ node_name }} | set the skip flag"
+      ansible.builtin.set_fact:
+        already_migrated: "{{ (mig_label.stdout | trim == 'true') and mig_conf.stat.exists }}"
+
+    - name: "{{ node_name }} | already migrated"
+      ansible.builtin.debug:
+        msg: "{{ node_name }} is already on Cilium; nothing to do."
+      when: already_migrated
+
+    - name: Migrate this node
+      when: not already_migrated
+      block:
+
+        # ── CNPG primaries move BEFORE the drain ────────────────────────────
+        # The <cluster>-primary PDBs allow ZERO disruptions by design, so a
+        # drain of the node holding one blocks until it moves. Not theoretical:
+        # k8s-lab5 held BOTH primaries when it was migrated by hand.
+        - name: "{{ node_name }} | which CNPG primaries live here?"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get pods -A
+            -l cnpg.io/instanceRole=primary
+            -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.spec.nodeName}{"\n"}{end}'
+            | grep "/{{ node_name }}$" || true
+          args:
+            executable: /bin/bash
+          register: cnpg_here
+          changed_when: false
+          check_mode: false
+          delegate_to: "{{ peer }}"
+
+        - name: "{{ node_name }} | move each primary off this node"
+          ansible.builtin.include_tasks: tasks/cnpg-move-primary.yml
+          loop: "{{ cnpg_here.stdout_lines | default([]) }}"
+          loop_control:
+            loop_var: primary_ref
+          when:
+            - cnpg_here.stdout | trim | length > 0
+            - not ansible_check_mode
+
+        # ── Cordon and drain ────────────────────────────────────────────────
+        - name: "{{ node_name }} | cordon"
+          ansible.builtin.command: "/usr/local/bin/k3s kubectl cordon {{ node_name }}"
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        # NEVER --force, NEVER --disable-eviction. Both bypass PodDisruption
+        # Budgets, and those budgets protect database primaries. A drain that
+        # times out is the safety working — find out what could not move.
+        - name: "{{ node_name }} | drain (respecting every PDB)"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl drain {{ node_name }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout={{ k3s_drain_timeout | default('900s') }}
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        # ── Hand the node to Cilium ─────────────────────────────────────────
+        - name: "{{ node_name }} | label it for the CiliumNodeConfig"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl label node {{ node_name }}
+            --overwrite io.cilium.migration/cilium-default=true
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        - name: "{{ node_name }} | restart the Cilium agent so it writes the CNI conf"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl -n kube-system delete pod
+            -l k8s-app=cilium --field-selector spec.nodeName={{ node_name }}
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        - name: "{{ node_name }} | wait for the agent to be Ready again"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl -n kube-system get pod
+            -l k8s-app=cilium --field-selector spec.nodeName={{ node_name }}
+            -o jsonpath='{.items[0].status.containerStatuses[0].ready}'
+          args:
+            executable: /bin/bash
+          register: g_agent
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: g_agent.stdout | trim == 'true'
+          retries: 60
+          delay: 5
+          when: not ansible_check_mode
+
+        # ⚠️ THE gate that must pass BEFORE the reboot. If Cilium has not
+        # written its conflist and flannel's has already been renamed away, the
+        # node reboots with NO CNI configuration at all. Checking after the
+        # reboot would be checking too late to avoid it.
+        - name: "{{ node_name }} | Cilium's conflist is on disk"
+          ansible.builtin.stat:
+            path: "{{ cni_dir }}/05-cilium.conflist"
+          register: post_conf
+          until: post_conf.stat.exists
+          retries: 30
+          delay: 5
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | assert the conflist exists before rebooting"
+          ansible.builtin.assert:
+            that: post_conf.stat.exists
+            fail_msg: >-
+              {{ cni_dir }}/05-cilium.conflist was never written on
+              {{ node_name }}. DO NOT REBOOT — cni-exclusive has very likely
+              already renamed flannel's config to 10-flannel.conflist.cilium_bak,
+              so this node would come back with no CNI at all. Recover by
+              renaming that file back, then investigate the agent's logs.
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | note flannel's config was renamed aside"
+          ansible.builtin.stat:
+            path: "{{ cni_dir }}/10-flannel.conflist.cilium_bak"
+          register: flannel_bak
+          check_mode: false
+
+        - name: "{{ node_name }} | rollback breadcrumb"
+          ansible.builtin.debug:
+            msg: >-
+              flannel backup present: {{ flannel_bak.stat.exists }}. To roll
+              this node back, restore {{ cni_dir }}/10-flannel.conflist from
+              the .cilium_bak file and reboot — deleting only the cilium
+              conflist is NOT enough.
+
+        # ── Reboot ──────────────────────────────────────────────────────────
+        - name: "{{ node_name }} | reboot onto Cilium"
+          ansible.builtin.reboot:
+            reboot_timeout: 900
+            post_reboot_delay: 20
+          when: not ansible_check_mode
+
+        # ── Gates. Every one before the next node. ──────────────────────────
+        - name: "{{ node_name }} | Ready again"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get node {{ node_name }}
+            -o jsonpath='{range .status.conditions[?(@.type=="Ready")]}{.status}{end}'
+          args:
+            executable: /bin/bash
+          register: g_ready
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: g_ready.stdout | trim == 'True'
+          retries: 60
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | the Cilium agent reports OK"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            POD=$(/usr/local/bin/k3s kubectl -n kube-system get pod -l k8s-app=cilium
+                  --field-selector spec.nodeName={{ node_name }}
+                  -o jsonpath='{.items[0].metadata.name}');
+            /usr/local/bin/k3s kubectl -n kube-system exec $POD -c cilium-agent --
+              cilium-dbg status --brief
+          args:
+            executable: /bin/bash
+          register: g_cil
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: "'OK' in g_cil.stdout"
+          retries: 60
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | etcd has a leader on ALL FIVE"
+          ansible.builtin.uri:
+            url: "http://127.0.0.1:2381/metrics"
+            return_content: true
+          register: g_etcd
+          delegate_to: "{{ item }}"
+          loop: "{{ groups['k3s_servers'] }}"
+          until:
+            - "'etcd_server_has_leader 1' in g_etcd.content"
+            - "'etcd_server_health_failures 0' in g_etcd.content"
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | every DaemonSet has desired == ready"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get ds -A
+            -o jsonpath='{range .items[*]}{.status.desiredNumberScheduled}{" "}{.status.numberReady}{"\n"}{end}'
+            | awk '$1 != $2' | wc -l
+          args:
+            executable: /bin/bash
+          register: g_ds
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: (g_ds.stdout | trim | int) == 0
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        # Registration is NOT the same as being able to serve a volume — that
+        # is what the storage proof below is for — but an empty csinode means
+        # the node cannot mount anything at all, and k8s-lab4 once sat Ready
+        # and schedulable in exactly that state.
+        - name: "{{ node_name }} | csinode is non-empty"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl get csinode {{ node_name }}
+            -o jsonpath={.spec.drivers[*].name}
+          register: g_csi
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: (g_csi.stdout | trim | length) > 0
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | the API VIP still answers"
+          ansible.builtin.uri:
+            url: "https://{{ k3s_api_vip }}:6443/readyz"
+            validate_certs: false
+            status_code: [200, 401, 403]
+          delegate_to: localhost
+          become: false
+          register: g_vip
+          failed_when: false
+          until: g_vip.status | default(-1) in [200, 401, 403]
+          retries: 30
+          delay: 10
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | assert the VIP came back"
+          ansible.builtin.assert:
+            that: "g_vip.status | default(-1) in [200, 401, 403]"
+            fail_msg: >-
+              The API VIP {{ k3s_api_vip }} is not answering after migrating
+              {{ node_name }}. Every other gate can pass while this is broken.
+          when: not ansible_check_mode
+
+        # ── The network proof. This is the storage-proof equivalent for a CNI
+        # change: Ready with a registered agent is NOT the same as a pod that
+        # can get an address and reach the rest of the cluster.
+        - name: "{{ node_name }} | network proof — Cilium address + cross-node reachability"
+          ansible.builtin.include_tasks: tasks/cilium-network-proof.yml
+          vars:
+            proof_node_name: "{{ node_name }}"
+            netproof_name: "cilium-netproof-{{ node_name }}"
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | back into service"
+          ansible.builtin.command: "/usr/local/bin/k3s kubectl uncordon {{ node_name }}"
+          delegate_to: "{{ peer }}"
+          when: not ansible_check_mode
+          changed_when: true
+
+        - name: "{{ node_name }} | settle before the next node"
+          ansible.builtin.wait_for:
+            timeout: "{{ cilium_settle_seconds | default(45) }}"
+          when: not ansible_check_mode
+
+        - name: "{{ node_name }} | done"
+          ansible.builtin.debug:
+            msg: >-
+              {{ node_name }} is on Cilium, Ready, uncordoned, CSI registered,
+              etcd healthy on all five, VIP answering. Moving on.
+
+# The storage proof runs from the workstation because it needs a kubeconfig
+# that is not the node's 0600 one, and it is deliberately a SEPARATE play so a
+# storage failure is attributed to storage rather than to the node loop.
+- name: Prove storage still works on every migrated node
+  hosts: localhost
+  gather_facts: false
+  any_errors_fatal: true
+  become: false
+
+  tasks:
+    - name: "storage proof | per migrated node"
+      ansible.builtin.include_tasks: tasks/storage-proof.yml
+      vars:
+        proof_name: "cilium-proof-{{ item | replace('.', '-') }}"
+        proof_node: "{{ item }}"
+      loop: "{{ cilium_proof_nodes | default([]) }}"
+      when: (cilium_proof_nodes | default([]) | length) > 0
+
+    - name: "storage proof | how to run it"
+      ansible.builtin.debug:
+        msg: >-
+          Pass -e '{"cilium_proof_nodes":["k8s-lab4","k8s-lab3"]}' to prove
+          storage on specific nodes. Skipped when unset so the roll is not
+          delayed by a NAS round-trip per node.
+      when: (cilium_proof_nodes | default([]) | length) == 0

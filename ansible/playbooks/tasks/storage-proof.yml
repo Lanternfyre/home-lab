@@ -52,6 +52,14 @@
             namespace: default
           spec:
             restartPolicy: Never
+          {% if proof_node is defined and proof_node %}
+            # Pinned so the proof tests THIS node's storage path rather than
+            # wherever the scheduler happens to place it. Set by the Cilium
+            # migration, where the whole question is whether the node that just
+            # changed CNI can still mount a LUN. nodeName also bypasses the
+            # scheduler, so it works while the node is still cordoned.
+            nodeName: {{ proof_node }}
+          {% endif %}
             tolerations:
               - operator: Exists
             containers:

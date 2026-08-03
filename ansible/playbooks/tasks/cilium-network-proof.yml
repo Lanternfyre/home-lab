@@ -1,0 +1,129 @@
+---
+# Prove a freshly-migrated node can actually NETWORK, not just report Ready.
+#
+# ── Why this is not redundant with the agent gate ────────────────────────────
+# `cilium-dbg status --brief` returning OK proves the agent is running and
+# healthy. It does not prove that a POD on this node gets an address from the
+# Cilium pool, resolves DNS, or reaches anything on another node — and those
+# are separate paths through IPAM, the vxlan tunnel and the routing table.
+#
+# This is the direct analogue of the storage proof, and the same lesson: on
+# this cluster, "Ready with the driver registered" was true of a node that
+# could not mount a single volume.
+#
+# ⚠️ EXPLICIT `-n default` ON EVERY COMMAND. The workstation kubeconfig's
+# context sets namespace: kube-system, so a bare `kubectl run` puts the probe
+# somewhere unexpected and a bare `kubectl get pod` then reports NotFound for a
+# pod that exists and is running. That cost real time on 2026-08-03.
+#
+# Cleanup runs in `always` — the probe uses no PVC, so nothing leaks, but a
+# leftover pod would block the next node's proof on the same name.
+
+- name: "net proof | clear any previous attempt"
+  ansible.builtin.command: >-
+    /usr/local/bin/k3s kubectl -n default delete pod {{ netproof_name }}
+    --ignore-not-found --wait=true
+  delegate_to: "{{ peer }}"
+  changed_when: false
+
+- name: Run the probe
+  block:
+    # A pod on some OTHER node, to ping. Deliberately ANY other node rather
+    # than specifically a flannel one: during the last hops there may be no
+    # flannel pods left at all, and a proof that silently stops running when
+    # its precondition disappears is worse than no proof.
+    - name: "net proof | find a pod on a different node to reach"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pods -A
+        -o jsonpath='{range .items[*]}{.status.podIP}{" "}{.spec.nodeName}{" "}{.spec.hostNetwork}{"\n"}{end}'
+        | awk '$2 != "{{ proof_node_name }}" && $3 != "true" && $1 ~ /^10\./ {print $1; exit}'
+      args:
+        executable: /bin/bash
+      register: np_target
+      changed_when: false
+      delegate_to: "{{ peer }}"
+
+    - name: "net proof | refuse to pass vacuously"
+      ansible.builtin.fail:
+        msg: >-
+          Could not find any pod on a node other than {{ proof_node_name }} to
+          test reachability against. Refusing to report a pass on a test that
+          did not run.
+      when: (np_target.stdout | trim | length) == 0
+
+    - name: "net proof | launch a probe pinned to {{ proof_node_name }}"
+      # nodeName bypasses the scheduler, which matters because the node is
+      # still cordoned at this point — and it must be, until this passes.
+      ansible.builtin.shell: "/usr/local/bin/k3s kubectl apply -f -"
+      args:
+        executable: /bin/bash
+        stdin: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: {{ netproof_name }}
+            namespace: default
+          spec:
+            nodeName: {{ proof_node_name }}
+            restartPolicy: Never
+            tolerations:
+              - operator: Exists
+            containers:
+              - name: probe
+                image: busybox:1.37
+                command: [/bin/sh, -c]
+                args:
+                  - |
+                    set -e
+                    echo "podIP=$(hostname -i)"
+                    nslookup kubernetes.default.svc.cluster.local >/dev/null
+                    echo "DNS OK"
+                    ping -c 3 -W 2 {{ np_target.stdout | trim }} >/dev/null
+                    echo "CROSS-NODE OK"
+                    echo "NETWORK PROOF PASSED"
+      delegate_to: "{{ peer }}"
+      changed_when: true
+
+    - name: "net proof | wait for it to finish"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n default get pod {{ netproof_name }}
+        -o jsonpath={.status.phase}
+      register: np_phase
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      until: np_phase.stdout | trim in ['Succeeded', 'Failed']
+      retries: 40
+      delay: 5
+
+    - name: "net proof | read the verdict"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n default logs {{ netproof_name }}
+      register: np_log
+      changed_when: false
+      delegate_to: "{{ peer }}"
+      failed_when: "'NETWORK PROOF PASSED' not in np_log.stdout"
+
+    # The address is the part that proves the CNI actually CHANGED. A node
+    # still on flannel would pass DNS and the ping happily.
+    - name: "net proof | assert the address came from Cilium's pool"
+      ansible.builtin.assert:
+        that: "'podIP=10.245.' in (np_log.stdout | replace(' ', ''))"
+        fail_msg: >-
+          The probe on {{ proof_node_name }} came up with
+          '{{ np_log.stdout_lines | select('search', 'podIP') | first | default('no address') }}'
+          — not an address from the Cilium pool 10.245.0.0/16. The node is
+          Ready and its agent is healthy, but pods there are still being
+          addressed by flannel, so the migration did NOT take effect.
+        success_msg: >-
+          {{ proof_node_name }}: {{ np_log.stdout_lines | join(' | ') }}
+          (reached {{ np_target.stdout | trim }} on another node)
+
+  always:
+    - name: "net proof | remove the probe"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n default delete pod {{ netproof_name }}
+        --ignore-not-found --wait=true
+      delegate_to: "{{ peer }}"
+      changed_when: true
+      failed_when: false
