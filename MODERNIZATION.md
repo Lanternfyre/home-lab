@@ -974,6 +974,48 @@ and was wrong (missing `find_multipaths no`); the GHCR ExternalSecret reported
 `Ready=True` while delivering an expired token that froze five apps including
 the storage driver.
 
+**Querying a new hostname too early poisons Pi-hole for 30 minutes, and it
+looks exactly like a broken Ingress.** Hit on 2026-08-03 within minutes of
+adding `goldilocks.lab.techyon.dev`. `nslookup` against Pi-hole returned
+**NXDOMAIN** while the Ingress, the certificate and the Cloudflare record were
+all perfectly correct.
+
+Cause: something resolved the name in the gap between the Ingress being
+created and `external-dns-cloudflare` publishing the record — here, a
+`getent hosts` check run to *verify* the record, which is the irony. Pi-hole
+cached that miss for the zone's SOA minimum, **1800s**, and served it to
+everything on the LAN afterwards.
+
+The diagnosis is a controlled comparison, and it is worth copying:
+
+- the record answered correctly at the **origin** (`dante.ns.cloudflare.com`)
+  *and* at both of Pi-hole's real upstreams — so the problem was purely local
+  cache;
+- ⚠️ **check Pi-hole's ACTUAL upstreams, which are `8.8.8.8`/`8.8.4.4`, not
+  `1.1.1.1`.** A first check against 1.1.1.1 proved nothing about what Pi-hole
+  would be told, and would have been a false confirmation;
+- `headlamp` and `grafana` resolve to the *same private* `192.168.32.13`
+  through Pi-hole, which rules out DNS-rebind protection — the other obvious
+  suspect when a public zone returns an RFC1918 address.
+
+Remaining negative TTL is readable directly: the SOA in the NXDOMAIN's
+AUTHORITY section counts down from 1800.
+
+```
+dig <name> @192.168.32.53 | awk '/^techyon.dev/ && /SOA/ {print $2}'
+```
+
+Fix, if waiting out the TTL is not acceptable:
+`kubectl -n dns exec deploy/pihole -- pihole reloaddns` — its own help says
+*"flush the cache without restarting the DNS server"*, i.e. SIGHUP, so there
+is **no LAN DNS outage**. Verified: goldilocks resolved within seconds,
+`headlamp`/`grafana` kept working, the `.home` names Ansible's inventory
+depends on kept working, and the Pi-hole pod's restart count stayed **0**.
+`pihole restartdns` is the heavier hammer and is not needed for this.
+
+**Moral: do not resolve a new name until external-dns has published it** —
+the "verification" is what breaks it.
+
 **An alert expression that matches NOTHING returns exactly what a healthy
 cluster returns.** The fourth variant of "assert values, never presence", and
 the specific way monitoring work fails. Every SMART rule written on 2026-08-03
