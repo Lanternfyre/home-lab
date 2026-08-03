@@ -912,6 +912,27 @@ different namespace for the next. And when a resource "vanishes", check *where
 you looked* before concluding *what happened to it* — `NotFound` is an answer
 about a namespace, not about existence.
 
+**An ArgoCD "hard refresh" does NOT re-pull an OCI Helm chart — it can report
+`Synced` against a stale cached render.** Hit on 2026-08-03 bumping
+`qnap-trident` 0.1.1 → 0.1.2. Everything looked right and was not: the
+Application's `spec.sources[0].targetRevision` read **0.1.2**,
+`status.sync.comparedTo` also read **0.1.2**, `status.sync.revisions` listed
+`['0.1.2', <git sha>]`, health was Healthy and `Deployment/trident-operator`
+was individually reported **Synced** — while the live Deployment still carried
+the old hardcoded `limits.cpu: 20m` and its pod was four hours old.
+
+The published chart was genuinely correct (verified independently: the
+`qnap-trident-v0.1.2` git tag points at the right commit and contains the
+templated resources). ArgoCD had simply compared against a cached render.
+**The fix is an explicit sync, not a refresh** — patching an `operation` onto
+the Application applied it immediately and the Deployment rolled.
+
+Why this is nasty: every field you would check to confirm the bump landed says
+it landed. The only reliable check is the LIVE OBJECT — here,
+`kubectl -n storage get deploy trident-operator -o jsonpath='{...resources}'`.
+Same family as everything else in this section: the status was accurate about
+what ArgoCD had done, and wrong about what was running.
+
 **A stale ArgoCD operation blocks everything.** Seen three times (qnap-trident,
 ingress twice): a sync stuck "waiting for healthy state" on something that
 cannot become healthy never re-reads git. Clear it with
