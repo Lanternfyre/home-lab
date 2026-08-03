@@ -180,9 +180,15 @@ spec:
         # --- is the monitoring itself telling the truth -------------------
         # The failure mode this whole app exists to avoid is a monitoring
         # system that reports "all healthy" because it is looking at nothing.
-        # `up` is already covered by kube-prometheus-stack's TargetDown; what
-        # it cannot see is an exporter that is up, scraped, and enumerating
-        # zero disks. Every node reports at least one device today (lab1=1,
+        # A dead exporter is covered by kube-prometheus-stack's TargetDown --
+        # VERIFIED loaded and health=ok on 2026-08-03 rather than assumed,
+        # which mattered because Phase 4 switched several `defaultRules.rules.*`
+        # groups off and this could easily have gone with them. Its expression
+        # is `> 10%` of a job's targets down, and one node out of five is 20%,
+        # so a single dead exporter does page.
+        #
+        # What TargetDown cannot see is an exporter that is up, scraped, and
+        # enumerating zero disks. Every node reports at least one device today (lab1=1,
         # lab2=2, lab3=3, lab4=2, lab5=10), so zero means the scan broke.
         - alert: SmartExporterFoundNoDevices
           expr: smartctl_devices == 0
@@ -195,6 +201,51 @@ spec:
               The exporter is running and being scraped but found no devices,
               so this node's disks are silently unmonitored. Check whether the
               pod still has privileged access to /dev.
+
+        # A drive that vanishes from the scan is the nastiest blind spot of
+        # the lot, and none of the rules above can see it: every one of them
+        # evaluates over series that EXIST, so when a device drops out its
+        # series simply stop and all of its health alerts go quiet. That is
+        # indistinguishable from the drive being fine.
+        #
+        # `smartctl_devices == 0` above is a per-node total and cannot see
+        # lab5 going 10 -> 9, or the fleet going 6 -> 5. This rule can, and it
+        # names the drive rather than reporting a count: it asks which
+        # (node, device) pairs were present at some point in the last 6 hours
+        # but are absent now.
+        #
+        # Self-baselining on purpose, rather than hardcoding "6". k8s-lab5's
+        # WDC spindle is an UNMOUNTED spare (checked: sda1/sda2 have no
+        # mountpoint, root is on the NVMe), and the exporter runs with
+        # `--smartctl.powermode-check=standby` -- its default, and the right
+        # choice, since the alternative wakes an idle disk every 120s. So if
+        # that drive ever spins down it drops out of the scan, and a
+        # `count < 6` rule would report a mystery number where this one says
+        # "k8s-lab5 sda stopped reporting".
+        #
+        # ⚠️ `node!=""` is load-bearing. Without it the 6h lookback reaches
+        # back into this exporter's OWN history from before the node-name
+        # relabeling was added, when every series carried no node label -- and
+        # those show up as two permanently-missing phantom drives. Any future
+        # relabeling would re-create that, so the guard stays.
+        - alert: SmartDeviceStoppedReporting
+          expr: |
+            count by (node, device) (max_over_time(smartctl_device{scsi_vendor!="QNAP", node!=""}[6h]))
+              unless
+            count by (node, device) (smartctl_device{scsi_vendor!="QNAP", node!=""})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $labels.node }} {{ $labels.device }} disappeared from the SMART scan"
+            description: >-
+              This drive was reporting within the last 6 hours and is not now,
+              so every health alert about it has gone quiet rather than
+              healthy. Causes worth checking, in order: a controller or cable
+              fault, the drive spinning down (expected only for k8s-lab5's
+              unmounted WDC spare), a kernel device rename, or the drive
+              genuinely being gone. Clears by itself 6 hours after a
+              deliberate removal.
 
         # smartctl's own exit status, a bitmask. 0 on all eighteen devices
         # today (6 local + 12 QNAP LUNs). Non-zero means SMART reads are
