@@ -23,7 +23,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | Backups | **none at all** | 3 nightly jobs, restore-verified (pihole's retired — see below) |
 | Alerting | receiver `"null"`, 7 alerts into a black hole | **Pushover**, verified delivered; 3 permanent false positives purged |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
-| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 58 Synced / 3 OutOfSync / **0 Unknown** (all three benign, all diagnosed) |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | **60 Synced / 1 OutOfSync / 0 Unknown** — and the one is `pihole`, OutOfSync *by design* |
 | Disk health | **nothing watching any drive** | SMART on 6 local drives, 10 alerts, delivery proven |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
@@ -114,8 +114,11 @@ and stays gone, that is worth chasing.
 - `redis-data-redis-master-0` and `redis-data-redis-replicas-0` — Bound, unused,
   `qnap-iscsi`. Nothing mounts them. `Retain`, so clearing them needs
   `tridentctl delete volume` too or the backend LUN leaks.
-- the old `pihole` PVC on `local-path` (Phase 0.D rollback point) — one of the
-  benign OutOfSync apps.
+- the old `pihole` PVC on `local-path` (Phase 0.D rollback point). Since
+  2026-08-03 it is the **only** thing keeping any app OutOfSync, which makes
+  it look like litter to tidy. It is not: `Prune=false,Delete=false` is
+  deliberate, and clearing it is a decision about the rollback point, not
+  about sync status.
 - stray `coredns-pdb.yaml` copies on lab2–5 from a delegation bug; identical
   content so they do not flap. Untidy rather than harmful.
 
@@ -867,44 +870,79 @@ against a remembered total of 15 devices and two "failed". The real total is
 18, and the expressions were right — but the check is what surfaced the
 discrepancy at all, which is the point of writing the expected number down.)*
 
-**`pyroscope` OutOfSync is benign, permanent, and cannot be fixed by syncing.**
-Diagnosed 2026-08-02 by rendering the chart locally and diffing against the
-live object. The *entire* difference is one field:
+**A chart that emits an EMPTY map produces permanent, unfixable drift under
+client-side diff.** ✅ **FIXED 2026-08-03 for the whole repo** — see the
+`ServerSideDiff` entry below. Kept because the *shape* recurs constantly and
+is worth recognising on sight.
 
-```
-spec/volumeClaimTemplates[0]/metadata/annotations: desired {} , absent in live
-```
+Two apps had it, both diagnosed by rendering the chart locally and diffing
+against the live object:
 
-The chart emits an empty annotations map; the API server drops it. ArgoCD's
-differ sees a difference and `volumeClaimTemplates` is **immutable on a
-StatefulSet**, so no sync can ever converge it — the app will sit OutOfSync
-forever while being perfectly Healthy (STS 1/1, pyroscope 1.21.0). It is *not*
-a stuck operation: `.operation` is empty and the last sync reported Succeeded.
-Fix if the noise matters: an `ignoreDifferences` entry for that path. Note the
-ApplicationSet template is shared by all Helm apps and `app.yaml` is
-deliberately flat 5 keys, so this is a decision about a global rule, not a
-per-app tweak. Left alone for now.
+- **`pyroscope`** — `spec/volumeClaimTemplates[0]/metadata/annotations:
+  desired {} , absent in live`. One field, nothing else.
+- **`kyverno`** — empty `annotations` **and** `labels` on all 11
+  `policies.kyverno.io` CRDs. Appeared the moment Phase 5 landed. Confirmed
+  from `managedFields`: `argocd-controller` Apply lists
+  `f:metadata: {f:annotations: {}, f:labels: {}}`, i.e. it applied empty maps
+  that did not persist.
 
-**`kyverno` OutOfSync is the SAME bug as `pyroscope`, on 11 CRDs.** Appeared
-the moment Phase 5 landed and diagnosed 2026-08-03 by the same method:
-rendering the chart locally and diffing against live. The chart emits
-`metadata.annotations: {}` and `metadata.labels: {}` on every
-`policies.kyverno.io` CRD; the API server drops both, and the live object has
-neither key. ArgoCD's differ sees desired `{}` against absent and reports
-drift that no sync can ever clear — `selfHeal` re-applies forever, harmlessly.
-Confirmed from `managedFields`: `argocd-controller` Apply lists
-`f:metadata: {f:annotations: {}, f:labels: {}}`, i.e. it applied empty maps
-that did not persist.
+The chart emits `{}`; the API server drops the key; ArgoCD's client-side
+differ compares desired `{}` against absent and reports drift no sync can
+clear. Both apps sat OutOfSync forever while perfectly Healthy, with
+`selfHeal` re-applying indefinitely. Neither was a stuck operation —
+`.operation` empty, last sync Succeeded.
 
-Unlike pyroscope this one *is* fixable, and cheaply: the **manifests**
-ApplicationSet already carries
-`argocd.argoproj.io/compare-options: ServerSideDiff=true` with a comment
-explaining this exact failure class, while the **Helm** ApplicationSet
-(`home-appset.yaml`) does not. Adding it there would very likely clear both
-`kyverno` and `pihole`. Left alone deliberately: that annotation is on the
-shared template, so it changes diff behaviour for all 29 Helm apps at once —
-the same "global rule, not a per-app tweak" call recorded for pyroscope. It is
-a one-line change whenever the noise is worth a deliberate run.
+⚠️ **This section previously claimed pyroscope "cannot be fixed by syncing"
+because `volumeClaimTemplates` is immutable on a StatefulSet, and recommended
+an `ignoreDifferences` entry. That reasoning was wrong**, and a measurement
+settled it: `kubectl apply --server-side --dry-run=server` on the rendered
+StatefulSet **succeeds** and returns an object byte-identical to live. Nothing
+is actually changing, so immutability is never engaged. The immutable field
+made the diff *unconvergeable by a client-side sync*, which is not the same
+claim as unfixable.
+
+**`ServerSideDiff=true` was on the manifests ApplicationSet and NOT on the
+Helm one, and that asymmetry was the bug.** ✅ Fixed 2026-08-03; the
+annotation is now on both. It computes the diff via a server-side apply dry
+run, so the desired side goes through the same defaulting and pruning a real
+write gets — which is exactly what dissolves the empty-map problem above.
+
+Result, measured against a full before/after snapshot of all 61 Applications:
+**58 Synced / 3 OutOfSync → 60 Synced / 1 OutOfSync, zero Unknown**, and the
+*only* two lines that changed were `kyverno` and `pyroscope` going Synced.
+kyverno went from 11 drifted resources to 0, pyroscope from 1 to 0.
+
+What made this safe to do to a shared template covering all 29 Helm apps —
+storage, networking and the secret path included — checked **before** pushing
+rather than after:
+
+- A real `--server-side --dry-run=server` on both charts' rendered objects
+  returned results byte-identical to live, so the outcome was known in advance
+  rather than hoped for.
+- All 11 kyverno CRDs were checked, not two and an extrapolation.
+- The failure mode named in the manifests appset's own comment is that the
+  dry-run invokes admission webhooks every diff cycle, so a webhook being down
+  flips apps to **Unknown**. Every webhook in this cluster was inventoried
+  first: each is scoped to its own API group (`cert-manager.io`,
+  `postgresql.cnpg.io`, `external-secrets.io`, ingresses, and Kyverno's own
+  policy CRs), so none sees the bulk of these resources. Kyverno in particular
+  no longer has a wide webhook — Phase 5 moved volume protection to a native
+  VAP, which incidentally removed the one thing that would have made this
+  change risky.
+- 30/30 `-manifests` apps had already been running it, in this cluster, all
+  Synced. Reverting is deleting two lines.
+
+Phase 5's guarantee re-verified afterwards, since kyverno was one of the apps
+that re-synced: the VAP and its binding are present and a server-side
+dry-run delete of `pihole-data` is still denied in-process.
+
+⚠️ **`pihole` stays OutOfSync and MUST.** Its one drifted resource is
+`PersistentVolumeClaim/pihole` — the deliberate Phase 0.D rollback point
+carrying `Prune=false,Delete=false`. That is a decision, not drift. **Do not
+"fix" it**; clearing it means deleting the rollback PVC, which is a separate
+judgement call and not one to make while tidying sync status. It is now the
+cluster's *only* OutOfSync app, which makes it look far more like litter than
+it is — hence this warning.
 
 **`prometheus` drifts in and out of Sync on its own.** Observed flapping twice
 on 2026-08-02 — `Secret/prometheus-operator-grafana` plus the matching
