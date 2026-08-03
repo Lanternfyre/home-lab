@@ -1,0 +1,57 @@
+# Refuse to delete a PersistentVolumeClaim or PersistentVolume that carries
+# homelab.techyon.dev/protect: "true".
+#
+# This is the enforcement layer the `protect` label has always implied and never
+# had. Until now the label was documentation: scripts/audit-protected-volumes.py
+# could TELL you a volume was protected, but nothing stopped `kubectl delete`.
+# On this cluster that gap matters more than usual, because every protected
+# volume is reclaimPolicy: Retain -- so a deletion leaks the PV *and* the QNAP
+# backend LUN, and the data is only recoverable by hand with tridentctl.
+#
+# ── ValidatingPolicy, not ClusterPolicy ──────────────────────────────────────
+# ClusterPolicy is deprecated with removal planned for Kyverno v1.20 (Oct 2026).
+# ValidatingPolicy at policies.kyverno.io/v1 is the replacement, and — the part
+# that matters — with features.generateValidatingAdmissionPolicy enabled it
+# COMPILES TO A NATIVE ValidatingAdmissionPolicy evaluated by the API server
+# in-process. So this protection survives Kyverno being down, which is the
+# acceptance test the plan asks for: Kyverno at 0 replicas, protected PVCs still
+# undeletable.
+#
+# ── Why the expression is phrased as "allow unless" ──────────────────────────
+# CEL validations PASS when the expression is true, so this reads as a list of
+# reasons the delete is fine. Deletes of unlabelled volumes short-circuit on the
+# first two clauses. Getting this backwards would deny EVERY PVC deletion in the
+# cluster, which is why the acceptance test below checks both directions rather
+# than just that protected ones are blocked.
+#
+# ⚠️ On DELETE, `object` is null and the resource under review is `oldObject`.
+# Reading `object.metadata` here would error on every request.
+#
+# To genuinely delete something protected: remove the label first, which is a
+# deliberate second step and exactly the pause this policy exists to create.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: protect-labelled-volumes
+spec:
+  validationActions:
+    - Deny
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["DELETE"]
+        resources:
+          - persistentvolumeclaims
+          - persistentvolumes
+  validations:
+    - expression: >-
+        !has(oldObject.metadata.labels) ||
+        !('homelab.techyon.dev/protect' in oldObject.metadata.labels) ||
+        oldObject.metadata.labels['homelab.techyon.dev/protect'] != 'true'
+      message: >-
+        This volume carries homelab.techyon.dev/protect=true and cannot be
+        deleted. It is reclaimPolicy Retain, so deleting it would leak the
+        PersistentVolume and the QNAP backend LUN behind it, recoverable only by
+        hand with tridentctl. If you really mean it, remove the protect label
+        first, then delete -- and remember to clean up the backend volume.
