@@ -1,0 +1,198 @@
+---
+# Detect-then-remediate, matching the rest of this repo: every probe runs even
+# under --check (check_mode: false), and the acceptance tests assert BEHAVIOUR
+# rather than file presence -- three separate bugs here have been "the file
+# exists and has never worked".
+
+- name: Ensure the user-local bin directory exists
+  ansible.builtin.file:
+    path: "{{ kubelogin_install_dir }}"
+    state: directory
+    mode: "0755"
+
+# ── Detect ───────────────────────────────────────────────────────────────────
+- name: Check whether kubelogin is already installed, and at which version
+  ansible.builtin.command: "{{ kubelogin_install_dir }}/{{ kubelogin_binary_name }} --version"
+  register: kubelogin_current
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Decide whether an install is needed
+  ansible.builtin.set_fact:
+    # `--version` prints e.g. "kubelogin version v1.36.3 ...". Matching the
+    # exact version string means a partial or wrong-version binary is treated
+    # as needing reinstall, rather than being accepted because a file exists.
+    kubelogin_needs_install: >-
+      {{ kubelogin_current.rc != 0 or (kubelogin_version not in (kubelogin_current.stdout | default(''))) }}
+
+- name: Report what was detected
+  ansible.builtin.debug:
+    msg: >-
+      kubelogin: {{ 'MISSING or wrong version -- will install ' ~ kubelogin_version
+                    if kubelogin_needs_install | bool
+                    else 'already at ' ~ kubelogin_version ~ ', nothing to do' }}
+
+# ── Remediate ────────────────────────────────────────────────────────────────
+# ⚠️ `not ansible_check_mode` is load-bearing on this block, not caution.
+# ansible.builtin.tempfile is SKIPPED under --check, so `kubelogin_tmp` is
+# never registered and every task below it fails resolving `.path` -- a dry run
+# that dies on its own scaffolding rather than on anything about the cluster.
+# Same family as the documented finding that --check silently skips
+# command:/shell: tasks and returns empty stdout. The detect step above already
+# reports what WOULD happen, which is the useful part of a dry run here.
+- name: Install kubelogin
+  when:
+    - kubelogin_needs_install | bool
+    - not ansible_check_mode
+  block:
+    - name: Create a scratch directory for the download
+      ansible.builtin.tempfile:
+        state: directory
+        suffix: kubelogin
+      register: kubelogin_tmp
+
+    - name: Download the release archive
+      ansible.builtin.get_url:
+        url: >-
+          https://github.com/int128/kubelogin/releases/download/{{ kubelogin_version }}/kubelogin_linux_amd64.zip
+        dest: "{{ kubelogin_tmp.path }}/kubelogin.zip"
+        # get_url verifies this itself and FAILS the task on mismatch, so a
+        # tampered or truncated download never reaches the extract step.
+        checksum: "sha256:{{ kubelogin_sha256 }}"
+        mode: "0644"
+
+    - name: Extract it
+      ansible.builtin.unarchive:
+        src: "{{ kubelogin_tmp.path }}/kubelogin.zip"
+        dest: "{{ kubelogin_tmp.path }}"
+        remote_src: true
+
+    - name: Install as the kubectl plugin name
+      ansible.builtin.copy:
+        src: "{{ kubelogin_tmp.path }}/kubelogin"
+        dest: "{{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}"
+        mode: "0755"
+        remote_src: true
+
+  always:
+    - name: Clean up the scratch directory
+      ansible.builtin.file:
+        path: "{{ kubelogin_tmp.path }}"
+        state: absent
+      when: kubelogin_tmp.path is defined
+
+- name: Say what a dry run would have done
+  ansible.builtin.debug:
+    msg: >-
+      --check: would download kubelogin {{ kubelogin_version }}, verify sha256
+      {{ kubelogin_sha256[:16] }}..., and install it to
+      {{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}.
+  when:
+    - kubelogin_needs_install | bool
+    - ansible_check_mode
+
+# ── Verify the BEHAVIOUR, not the file ───────────────────────────────────────
+- name: Confirm kubectl actually resolves the plugin
+  ansible.builtin.command: kubectl oidc-login --version
+  register: kubelogin_via_kubectl
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  environment:
+    PATH: "{{ kubelogin_install_dir }}:{{ ansible_env.PATH }}"
+
+- name: Fail if kubectl cannot find the plugin
+  ansible.builtin.assert:
+    that:
+      - kubelogin_via_kubectl.rc == 0
+      - kubelogin_version in kubelogin_via_kubectl.stdout
+    fail_msg: >-
+      kubelogin is installed at {{ kubelogin_install_dir }}/{{ kubelogin_binary_name }}
+      but `kubectl oidc-login --version` did not report {{ kubelogin_version }}
+      (rc={{ kubelogin_via_kubectl.rc }}). kubectl finds plugins by filename on
+      PATH -- check that {{ kubelogin_install_dir }} is on YOUR interactive PATH,
+      not just this playbook's.
+    success_msg: "kubectl resolves the plugin: {{ kubelogin_via_kubectl.stdout | trim }}"
+  when: not ansible_check_mode
+
+# ── Kubeconfig wiring ────────────────────────────────────────────────────────
+# The client secret is read from the live cluster rather than stored in git.
+# It still ends up in ~/.kube/config in plaintext, which is inherent to the
+# kubelogin flow -- see the playbook header for why that is acceptable here
+# and what the alternative is.
+- name: Read the OIDC client secret from the cluster
+  ansible.builtin.command: >-
+    kubectl -n {{ kubectl_oidc_secret_namespace }} get secret {{ kubectl_oidc_secret_name }}
+    -o jsonpath={.data.{{ kubectl_oidc_secret_key }}}
+  register: kubectl_oidc_secret_b64
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Decode it
+  ansible.builtin.set_fact:
+    kubectl_oidc_client_secret: "{{ kubectl_oidc_secret_b64.stdout | b64decode | trim }}"
+  no_log: true
+
+- name: Assert the secret looks like a Google client secret
+  ansible.builtin.assert:
+    that:
+      - kubectl_oidc_client_secret | length > 10
+      - kubectl_oidc_client_secret is match('^GOCSPX-')
+    fail_msg: >-
+      The value read from {{ kubectl_oidc_secret_namespace }}/{{ kubectl_oidc_secret_name }}
+      does not look like a Google OAuth client secret. Refusing to write it into
+      the kubeconfig -- a wrong value here produces an auth failure that says
+      nothing about its cause.
+    success_msg: "Client secret retrieved from the cluster and shape-checked."
+  when: not ansible_check_mode
+
+- name: Rename the certificate context to make its role explicit
+  ansible.builtin.command: >-
+    kubectl config rename-context {{ kubectl_current_context }} {{ kubectl_breakglass_context_name }}
+  when:
+    - not ansible_check_mode
+    - kubectl_current_context != kubectl_breakglass_context_name
+    - kubectl_current_context != kubectl_oidc_context_name
+  register: kubectl_rename
+  changed_when: kubectl_rename.rc == 0
+  failed_when: false
+
+- name: Define the OIDC credential
+  ansible.builtin.command: >-
+    kubectl config set-credentials {{ kubectl_oidc_context_name }}
+    --exec-api-version=client.authentication.k8s.io/v1beta1
+    --exec-command=kubectl
+    --exec-arg=oidc-login --exec-arg=get-token
+    --exec-arg=--oidc-issuer-url={{ kubectl_oidc_issuer_url }}
+    --exec-arg=--oidc-client-id={{ kubectl_oidc_client_id }}
+    --exec-arg=--oidc-client-secret={{ kubectl_oidc_client_secret }}
+    --exec-arg=--oidc-extra-scope=email
+    --exec-arg=--oidc-extra-scope=profile
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+- name: Define the OIDC context against the same cluster
+  ansible.builtin.command: >-
+    kubectl config set-context {{ kubectl_oidc_context_name }}
+    --cluster={{ kubectl_cluster_name }}
+    --user={{ kubectl_oidc_context_name }}
+  when: not ansible_check_mode
+  changed_when: true
+
+- name: Make OIDC the default context (opt-in only)
+  ansible.builtin.command: "kubectl config use-context {{ kubectl_oidc_context_name }}"
+  when:
+    - not ansible_check_mode
+    - kubectl_oidc_set_default | bool
+  changed_when: true
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "break-glass (certificate) context: {{ kubectl_breakglass_context_name }}"
+      - "OIDC context:                      {{ kubectl_oidc_context_name }}"
+      - "default context is now:            {{ kubectl_oidc_context_name if kubectl_oidc_set_default | bool else kubectl_breakglass_context_name }}"
+      - "Try it:  kubectl --context {{ kubectl_oidc_context_name }} auth can-i list nodes"

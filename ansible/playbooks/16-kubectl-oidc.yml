@@ -1,0 +1,99 @@
+---
+# kubectl via Google sign-in, as an ADDITION to the certificate credential.
+#
+#   ansible-playbook playbooks/16-kubectl-oidc.yml
+#   ansible-playbook playbooks/16-kubectl-oidc.yml --check --diff
+#
+#   # once you have confirmed the OIDC context works AND know what still
+#   # depends on the default context:
+#   ansible-playbook playbooks/16-kubectl-oidc.yml -e kubectl_oidc_set_default=true
+#
+# ── No sudo, and it does not touch a node ────────────────────────────────────
+# Runs on the WORKSTATION, like 15-argocd.yml. kubelogin installs to
+# ~/.local/bin, which is already on PATH, so nothing needs root.
+#
+# ── Why bother, when a working kubeconfig already exists ─────────────────────
+# Because of what that kubeconfig actually contains:
+#
+#   subject=O=system:masters, CN=system:admin      notAfter=Jan 2 2027
+#
+# `O=system:masters` is the built-in superuser group. The API server
+# SHORT-CIRCUITS authorization for it, so that credential is not bound by any
+# ClusterRoleBinding, cannot be scoped down, and cannot be attributed to a
+# person. It is root, in a plaintext file, for another five months, and
+# revoking it means rotating the k3s client CA.
+#
+# An OIDC identity is revoked by deleting one ClusterRoleBinding or disabling
+# the Google account, expires in about an hour, carries the operator's email
+# into the audit trail, and is subject to RBAC like anything else.
+#
+# ⚠️ THE CERTIFICATE IS NOT REMOVED, AND MUST NOT BE. It is the break-glass
+# path: if Google is unreachable, the client secret rotates, or an apiserver
+# flag is wrong, it is the only way back in. This repo has already learned that
+# a gate placed before its own remedy blocks the repair. The role renames that
+# context to `homelab-breakglass` so its purpose is obvious, and leaves it
+# fully working.
+#
+# ── Two things worth knowing before running ──────────────────────────────────
+#
+# 1. THE CLIENT SECRET ENDS UP IN ~/.kube/config IN PLAINTEXT. That is inherent
+#    to how kubelogin authenticates; the file is 0600. It is read from the live
+#    cluster at run time so it never enters git. But note WHICH secret it is:
+#    by default this reuses the Google client that also gates oauth2-proxy, and
+#    therefore every other app on the LAN. If that bothers you -- reasonably --
+#    create a separate "Desktop app" client in Google Console for kubectl and
+#    set kubectl_oidc_client_id / point the role at a different secret. A
+#    desktop client's secret is not considered confidential, so it is a much
+#    smaller thing to have sitting in a local file.
+#
+# 2. IT DOES NOT BECOME THE DEFAULT CONTEXT unless you ask. Making OIDC the
+#    default changes the credential used by everything unattended on this
+#    workstation -- 15-argocd.yml runs helm against the current context, and
+#    scripts/audit-protected-volumes.py uses kubectl -- from a certificate that
+#    always works into one that opens a BROWSER when its token expires.
+#
+# ── Prerequisite ─────────────────────────────────────────────────────────────
+# The API server must already trust this issuer and client id
+# (k3s_oidc_* in inventory/group_vars/all.yml, applied by 20-config-converge.yml),
+# and Google Console must list http://localhost:8000 as an authorised redirect
+# URI for the client -- see MANUAL-STEPS.md. Without the latter, the browser
+# step fails with redirect_uri_mismatch before the cluster is involved.
+
+- name: kubectl OIDC credential plugin
+  hosts: localhost
+  connection: local
+  gather_facts: true          # needs ansible_env for HOME and PATH
+  become: false
+
+  pre_tasks:
+    - name: Read the current kubeconfig context and its cluster
+      ansible.builtin.command: kubectl config view -o jsonpath={.current-context}
+      register: kubectl_ctx
+      changed_when: false
+      check_mode: false
+
+    - name: Resolve the cluster that context points at
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        kubectl config view -o jsonpath="{.contexts[?(@.name=='{{ kubectl_ctx.stdout }}')].context.cluster}"
+      register: kubectl_cluster
+      changed_when: false
+      check_mode: false
+
+    - name: Record them
+      ansible.builtin.set_fact:
+        kubectl_current_context: "{{ kubectl_ctx.stdout }}"
+        kubectl_cluster_name: "{{ kubectl_cluster.stdout }}"
+
+    - name: Refuse to run without a usable starting context
+      ansible.builtin.assert:
+        that:
+          - kubectl_current_context | length > 0
+          - kubectl_cluster_name | length > 0
+        fail_msg: >-
+          Could not determine the current kubectl context or its cluster.
+          This role edits the existing kubeconfig rather than writing a new
+          one, so it needs a working starting point.
+
+  roles:
+    - role: kubectl_oidc

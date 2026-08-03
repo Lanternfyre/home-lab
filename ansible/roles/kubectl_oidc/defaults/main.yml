@@ -1,0 +1,47 @@
+---
+# kubelogin (kubectl oidc-login) -- the credential plugin that turns a Google
+# sign-in into a short-lived Kubernetes token.
+#
+# Pinned, not "latest". A credential helper sits directly in the auth path;
+# tracking a moving tag means an upstream change can break cluster access on a
+# day you did not choose. Bump deliberately and re-record the checksum.
+kubelogin_version: "v1.36.3"
+
+# Published alongside the release as kubelogin_linux_amd64.zip.sha256.
+# Verified before install -- this binary mints credentials for a cluster whose
+# admin path bypasses RBAC, so an unverified download is not acceptable.
+kubelogin_sha256: "54428b2be68ce297c5c743feed65a2fa2ed2a671881ff70fb6560e560bb18eaf"
+
+# User-local install. Deliberately NOT /usr/local/bin: this keeps the whole
+# playbook sudo-free, matching 15-argocd.yml, which is the only other thing
+# here that runs on the workstation.
+# kubectl discovers plugins by filename on PATH, so the binary must be named
+# kubectl-oidc_login for `kubectl oidc-login` to resolve.
+kubelogin_install_dir: "{{ ansible_env.HOME }}/.local/bin"
+kubelogin_binary_name: "kubectl-oidc_login"
+
+# ── Which Google client mints kubectl's tokens ───────────────────────────────
+# Defaults to the same client the API server trusts (k3s_oidc_client_id), which
+# is also oauth2-proxy's. The client SECRET is read from the live cluster at
+# run time rather than stored in git -- see tasks/main.yml.
+kubectl_oidc_issuer_url: "{{ k3s_oidc_issuer_url | default('https://accounts.google.com') }}"
+kubectl_oidc_client_id: "{{ k3s_oidc_client_id }}"
+
+# Where to read the client secret from, so it never lands in this repo.
+kubectl_oidc_secret_namespace: "auth"
+kubectl_oidc_secret_name: "oauth2-proxy-creds"
+kubectl_oidc_secret_key: "client-secret"
+
+# Context naming. The existing certificate context is RENAMED rather than
+# removed -- it is the break-glass path and must keep working.
+kubectl_oidc_context_name: "homelab-oidc"
+kubectl_breakglass_context_name: "homelab-breakglass"
+
+# ⚠️ Deliberately FALSE. Making OIDC the default context would change the
+# credential used by every unattended thing on this workstation -- including
+# 15-argocd.yml (helm against the current context) and scripts/*.py -- from a
+# certificate that always works into one that opens a BROWSER when its ~1h
+# token expires. Flip it only once you have confirmed the OIDC context works
+# and you know what still depends on the default:
+#   ansible-playbook playbooks/16-kubectl-oidc.yml -e kubectl_oidc_set_default=true
+kubectl_oidc_set_default: false

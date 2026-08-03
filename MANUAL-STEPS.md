@@ -343,6 +343,31 @@ Google matches redirect URIs exactly, including scheme and trailing slash.
 Leave the existing `https://oauth.lab.techyon.dev/oauth2/callback` entry in
 place; oauth2-proxy still needs it. A client may hold several.
 
+### 9d. Redirect URI for **kubectl** OIDC — `http://localhost:8000`
+
+Only needed if you use the `homelab-oidc` kubectl context (installed by
+`ansible-playbook playbooks/16-kubectl-oidc.yml`). Same Google client, same
+Credentials page as §9a — add a **second** authorised redirect URI:
+
+```
+http://localhost:8000
+```
+
+`http://` and no TLS is correct and is not a downgrade: Google permits plain
+HTTP **only** for loopback addresses, precisely because the authorization code
+never leaves your machine. kubelogin spins up a throwaway local listener on
+that port to catch the callback.
+
+⚠️ The former alternative — Google's out-of-band `urn:ietf:wg:oauth:2.0:oob`
+flow, which avoided any local listener — was **shut off by Google in 2022**.
+Loopback is the only remaining option, so do not go looking for a way to skip
+this step.
+
+All three redirect URIs coexist on one client:
+`https://oauth.lab.techyon.dev/oauth2/callback` (oauth2-proxy),
+`https://headlamp.lab.techyon.dev/oidc-callback` (Headlamp),
+`http://localhost:8000` (kubectl).
+
 ---
 
 ### 9c. Headlamp login — the `headlamp-admin` SA was DELETED 2026-08-03
