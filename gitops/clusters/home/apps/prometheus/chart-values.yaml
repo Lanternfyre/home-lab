@@ -47,6 +47,83 @@ prometheus:
   prometheusSpec:
     enableRemoteWriteReceiver: true
 
+# ── Alerts actually reach a human ────────────────────────────────────────────
+# Until 2026-08-03 the ONLY receiver was `name: "null"`. Every alert the
+# cluster produced went into a black hole — including Watchdog, whose entire
+# purpose is to prove the pipeline reaches someone. Seven were firing.
+alertmanager:
+  alertmanagerSpec:
+    # Mounted at /etc/alertmanager/secrets/pushover-credentials/<key>.
+    # Populated by manifests/pushover.external-secret.yaml from 1Password.
+    secrets:
+      - pushover-credentials
+
+  config:
+    global:
+      resolve_timeout: 5m
+
+    route:
+      # Group by alertname too, not just namespace: a single node problem
+      # otherwise arrives as one notification covering unrelated alerts.
+      group_by: ["namespace", "alertname"]
+      group_wait: 30s
+      group_interval: 5m
+      # 12h, deliberately. A home lab has no on-call rotation; re-notifying
+      # every 4h for something already known is how a phone gets muted, and a
+      # muted phone is the same as the null receiver this replaces.
+      repeat_interval: 12h
+      receiver: pushover
+      routes:
+        # Watchdog fires CONSTANTLY by design — it is a dead-man's switch meant
+        # for an external service that alerts when it STOPS arriving. Routed to
+        # Pushover it would be a notification every few minutes forever.
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+        # InfoInhibitor is not an alert, it is plumbing for the inhibit_rules
+        # below. It has no meaning to a human.
+        - receiver: "null"
+          matchers:
+            - alertname = "InfoInhibitor"
+
+    # Stock kube-prometheus-stack inhibitions: do not page about a warning when
+    # the critical version of the same thing on the same object is already
+    # firing.
+    inhibit_rules:
+      - source_matchers: [severity = "critical"]
+        target_matchers: [severity =~ "warning|info"]
+        equal: ["namespace", "alertname"]
+      - source_matchers: [severity = "warning"]
+        target_matchers: [severity = "info"]
+        equal: ["namespace", "alertname"]
+      - source_matchers: [alertname = "InfoInhibitor"]
+        target_matchers: [severity = "info"]
+        equal: ["namespace"]
+
+    receivers:
+      - name: "null"
+      - name: pushover
+        pushover_configs:
+          # ⚠️ *_file, not literals. The credentials are mounted from the
+          # Secret; inlining them would put both into this repo and into the
+          # rendered Helm release.
+          - user_key_file: /etc/alertmanager/secrets/pushover-credentials/userKey
+            token_file: /etc/alertmanager/secrets/pushover-credentials/apiToken
+            # Pushover priority: -2..2. critical -> high (1), everything else
+            # normal (0). Deliberately NOT 2/emergency: that demands
+            # acknowledgement and retries until you tap it, which is wrong for
+            # a lab that can be down for a weekend without harm.
+            priority: '{{ if eq .CommonLabels.severity "critical" }}1{{ else }}0{{ end }}'
+            title: '{{ .Status | toUpper }}{{ if eq .Status "firing" }} ({{ .Alerts.Firing | len }}){{ end }} {{ .CommonLabels.alertname }}'
+            message: |-
+              {{ range .Alerts }}{{ .Annotations.summary }}
+              {{ if .Annotations.description }}{{ .Annotations.description }}
+              {{ end }}{{ if .Labels.namespace }}ns: {{ .Labels.namespace }}  {{ end }}{{ if .Labels.node }}node: {{ .Labels.node }}{{ end }}
+              {{ end }}
+            url: https://grafana.lab.techyon.dev
+            url_title: Open Grafana
+            send_resolved: true
+
 grafana:
   # Google Workspace OIDC. Client ID + Secret are injected as env vars from
   # the grafana-google-oidc Secret (populated from 1Password via the
