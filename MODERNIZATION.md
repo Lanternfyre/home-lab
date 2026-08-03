@@ -692,14 +692,53 @@ with teeth — OIDC goes in via `kube-apiserver-arg`, and ⚠️ **k3s refuses t
 start on an invalid apiserver flag, so a typo bricks a server.** Roll
 `serial: 1` with full gates, at a keyboard.
 
-### Phase 5 — Kyverno
-Use `ValidatingPolicy` (`policies.kyverno.io/v1`), **not** the deprecated
-`ClusterPolicy` (removal planned v1.20, Oct 2026). Set
-`autogen.validatingAdmissionPolicy.enabled: true` so enforcing policies compile
-to **native VAPs** evaluated in-process — Kyverno being down then cannot block
-pod creation. Zero mutation (avoids the ServerSideApply drift-fight).
-Acceptance test: Kyverno at 0 replicas → pods still schedule, protected PVCs
-still undeletable.
+### Phase 5 — Kyverno ✅ **DONE 2026-08-03**
+
+Kyverno 3.8.2 / v1.18.2 installed, and the `homelab.techyon.dev/protect` label
+is now **enforced** rather than merely documented. Until today the audit script
+could tell you a volume was protected; nothing stopped `kubectl delete`. That
+gap mattered because every protected volume is `Retain`, so a deletion leaks
+the PV *and* the QNAP backend LUN.
+
+✅ **The acceptance test the plan demanded, passed verbatim.** With
+`kyverno-admission-controller` scaled to **0 replicas**:
+
+```
+$ kubectl -n dns delete pvc pihole-data --dry-run=server
+ValidatingAdmissionPolicy 'vpol-protect-labelled-volumes' denied request: ...
+```
+
+Denied by the **API server in-process**, with Kyverno entirely absent — and an
+unprotected PVC in the same state was still deletable, which is what proves the
+CEL is right rather than blanket-denying. Both sides tested with server-side
+dry-run, so nothing was destroyed.
+
+⚠️ **VAP generation needs TWO settings, and they are not the same knob.**
+This cost a full cycle. The chart-level
+`features.generateValidatingAdmissionPolicy` only *permits* generation; each
+policy must also carry `spec.autogen.validatingAdmissionPolicy.enabled: true`.
+With only the chart flag, the policy still enforced — but through the Kyverno
+**webhook** (`vpol.validate.kyverno.svc-fail`), which dies with Kyverno,
+losing the entire point. The status said so plainly:
+`"skip generating ValidatingAdmissionPolicy: not enabled."` Once the policy
+opts in, Kyverno generates the VAP *and removes its own webhook*.
+
+*(This section previously recorded that `autogen.validatingAdmissionPolicy.enabled`
+was a non-existent chart value. That "correction" was wrong — it is a policy
+spec field, and the original plan was right.)*
+
+⚠️ **Kyverno needs explicit RBAC for cluster-scoped PersistentVolumes.** Its
+default roles do not include them, so the policy reported *"not ready for
+reporting, missing permissions"*. Enforcement was unaffected (admission review
+hands it the object) but background scans and PolicyReports could not list what
+they protect. Granted via an **aggregated** ClusterRole
+(`rbac.kyverno.io/aggregate-to-*` labels), read-only — editing Kyverno's own
+roles would be overwritten on chart upgrade.
+
+Mutation is off (`generateMutatingAdmissionPolicy: false`, verified in the
+render): every app here syncs with ServerSideApply + selfHeal, so a mutating
+policy would rewrite objects after ArgoCD applies them and the two would fight
+indefinitely.
 
 ### Phase 6 — ingress-nginx → Envoy Gateway
 `ingress-nginx` was **archived 2026-03-24**; no further CVE fixes. Exposure is
