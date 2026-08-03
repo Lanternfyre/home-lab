@@ -532,9 +532,34 @@ around it.
 **Escape hatch:** set `global.networkPolicy.create: false` in
 `gitops/argocd-values.yaml` and run `ansible-playbook playbooks/15-argocd.yml`.
 
-### 5b. Remove flannel — all five nodes, one change
+### 5b. Remove flannel — DEFERRED TO THE VERY END, 2026-08-03
 
 **🔑 NEEDS SUDO. This is the genuinely one-way step.**
+
+⚠️ **Deliberately deferred.** Nothing in Phases 4–7 depends on flannel being
+gone — checked, not assumed. It is inert dead weight: `flannel.1` is up on all
+five nodes carrying zero pods, while Cilium runs all 63 on port 8473. Do it as
+the last act of the modernization, not as the closing move of Phase 3.
+
+Two things to know when you come back to it:
+
+1. **`disable-network-policy` is the part with real substance.** flannel itself
+   genuinely does not implement NetworkPolicy — but k3s separately ships
+   **kube-router** as a policy engine, on by default. With Cilium now enforcing
+   policy, leaving k3s's engine enabled means two implementations on the same
+   objects. (Whether it was quietly enforcing the argocd policies before could
+   not be determined: by the time it was checked those policies had already
+   been removed, so there was nothing for either engine to act on.)
+   Note `roles/k3s_config` renders both settings from a single `if`, so today
+   they cannot be set independently.
+
+2. **The all-at-once requirement has EXPIRED.** It existed to stop the
+   dual-overlay bridge being destroyed mid-migration. Zero pods are on flannel
+   now, so there is no bridge left to destroy, and 5b can roll `serial: 1` with
+   full gates — far safer than restarting k3s on five control-plane nodes
+   simultaneously, and a failure then stops with four nodes still good.
+   **Do not just follow the all-at-once instruction below without re-reading
+   this.**
 
 Set in `ansible/inventory/group_vars/all.yml`:
 ```yaml
