@@ -167,7 +167,15 @@ spec:
     matchLabels:
       io.cilium.migration/cilium-default: "true"
   defaults:
-    write-cni-conf-when-ready: /host/var/lib/rancher/k3s/agent/etc/cni/net.d/05-cilium.conflist
+    # ⚠️ This is a path INSIDE the agent container, and it is /host/etc/cni/net.d
+    # even though the host path is the k3s one. Verified by rendering the chart
+    # 2026-08-03: the `etc-cni-netd` volume has
+    #   hostPath  = /var/lib/rancher/k3s/agent/etc/cni/net.d   (from cni.confPath)
+    #   mountPath = /host/etc/cni/net.d                        (FIXED by the chart)
+    # so cni.confPath redirects the host side only. Writing
+    # /host/var/lib/rancher/... here points at nothing in the container, and the
+    # node would come back from its reboot with no CNI config at all.
+    write-cni-conf-when-ready: /host/etc/cni/net.d/05-cilium.conflist
     custom-cni-conf: "false"
     cni-chaining-mode: "none"
     cni-exclusive: "true"
