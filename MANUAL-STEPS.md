@@ -315,6 +315,36 @@ Two ways to make it green, both understood, neither started:
 Do not "tidy" this away without deciding which one you want — it holds the only
 copy of the pre-migration Pi-hole data.
 
+### 9a. 🔴 DO THIS FIRST — register Headlamp's redirect URI in Google Console
+
+**Blocks the API-server OIDC rollout. Two minutes, and it is the one part of
+Phase 4 that cannot be done from this repo.**
+
+Google rejects any authorization request whose `redirect_uri` is not
+pre-registered on the client, so without this the login fails with
+`Error 400: redirect_uri_mismatch` before the cluster is ever involved.
+
+In [Google Cloud Console](https://console.cloud.google.com/apis/credentials),
+open the OAuth 2.0 Client ID
+`138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com`
+— the same client oauth2-proxy already uses — and under
+**Authorised redirect URIs** add:
+
+```
+https://headlamp.lab.techyon.dev/oidc-callback
+```
+
+⚠️ **That exact string is OBSERVED, not guessed.** Headlamp builds its
+`redirect_uri` from the *request host*, not from the `OIDC_CALLBACK_URL` env
+var, so it was captured by replaying a real request with the ingress's own
+Host and `X-Forwarded-Proto: https` headers. Do not retype it from memory —
+Google matches redirect URIs exactly, including scheme and trailing slash.
+
+Leave the existing `https://oauth.lab.techyon.dev/oauth2/callback` entry in
+place; oauth2-proxy still needs it. A client may hold several.
+
+---
+
 ### 9c. Headlamp login — the `headlamp-admin` SA was DELETED 2026-08-03
 
 **Headlamp cannot be logged into right now, and that is expected.** Removed on

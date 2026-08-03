@@ -58,12 +58,68 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
    **no second copy anywhere**, and backups still sit on the same NAS as the
    data. SMART buys warning, not a copy.
 
-2. **Headlamp + API-server OIDC (rest of Phase 4).** ⚠️ **The risky one — do it
-   at a keyboard, with the sudo password to hand.** Adds `oidc-*` flags via
+2. **API-server OIDC — ⏸ EVERYTHING PREPARED, ONE COMMAND LEFT.**
+   Steps 1–3 are committed and applied; only the node rollout remains, and it
+   is the part needing sudo.
+
+   **Done already (all zero-risk, deliberately ordered before the dangerous
+   step so nothing is left to configure afterwards):**
+   - ClusterRoleBinding `oidc-cluster-admins` → `adrian.jutrowski@techyon.dev`
+     as cluster-admin. **Inert** until the API server can authenticate that
+     name. The subject is ground truth: oauth2-proxy's logs show Google has
+     issued exactly that address 1242 times.
+   - Headlamp signs in with Google — `config.oidc.externalSecret` pointing at
+     a new `headlamp-oidc` ExternalSecret from the *same* 1Password item and
+     Google client oauth2-proxy uses. Verified live: Headlamp's `/config` now
+     reports `"auth_type": "oidc"`, all five secret keys are correct with no
+     trailing whitespace, and the chart emits **no Secret of its own**.
+   - `k3s_oidc_*` vars set, and `20-config-converge.yml` gained
+     `order: reverse_inventory` so **k8s-1 rolls LAST** rather than first.
+
+   **🔴 Blocked on one manual step:** register
+   `https://headlamp.lab.techyon.dev/oidc-callback` in Google Console —
+   `MANUAL-STEPS.md` §9a. Without it the login dies with
+   `redirect_uri_mismatch` before the cluster is involved.
+
+   **Then run, at a keyboard:**
+   ```
+   cd ansible
+   ansible-playbook playbooks/20-config-converge.yml --ask-become-pass --check --diff
+   ansible-playbook playbooks/20-config-converge.yml --ask-become-pass
+   ```
+
+   ⚠️ **The gates in that playbook CANNOT detect the failure you care about.**
+   Node-Ready and etcd-quorum both pass with a completely non-functional
+   authenticator. k3s only refuses to start on an *unknown flag*; a known flag
+   with a wrong **value** starts fine and authenticates nobody. The flag names
+   were verified against the binary that runs them (see
+   `inventory/group_vars/all.yml`), so the brick risk is largely retired — but
+   that means the remaining risk is exactly the kind the gates are blind to.
+
+   **The acceptance test is therefore a login that yields an identity**, not a
+   green playbook run:
+   ```
+   kubectl get clusterrolebinding oidc-cluster-admins     # exists already
+   # then sign in to https://headlamp.lab.techyon.dev with Google and
+   # confirm you can list nodes -- i.e. RBAC matched the email claim.
+   ```
+   A login that succeeds and then shows only 401s means the token is fine and
+   the *username* did not match the binding.
+
+   **Rollback:** delete the three `k3s_oidc_*` lines from
+   `inventory/group_vars/all.yml` and re-run the playbook. If a node will not
+   start, its API is down, so that one is edited by hand:
+   `sudo vi /etc/rancher/k3s/config.yaml` (remove the `kube-apiserver-arg`
+   block) then `sudo systemctl restart k3s`. Being at a keyboard is what makes
+   this acceptable.
+
+   <details><summary>original risk notes, still accurate</summary>
+
+   ⚠️ Adds `oidc-*` flags via
    `kube-apiserver-arg`; **k3s refuses to start on an invalid apiserver flag, so
    a bad value costs a node** until repaired by hand.
    - Plumbing already exists: `roles/k3s_config` renders the block when
-     `k3s_oidc_issuer_url` is defined. No vars are set yet.
+     `k3s_oidc_issuer_url` is defined. *(Superseded: the vars ARE now set.)*
    - Roll with `playbooks/20-config-converge.yml` — already `serial: 1`,
      `any_errors_fatal: true`, with a 5-minute node-Ready gate and an etcd
      quorum check, so a bad flag stops at **one** node, not five.
@@ -80,6 +136,8 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
      if you need it before OIDC lands. Deleting it was cheap because there was
      no long-lived token Secret and minting one already required cluster-admin
      kubectl access — it granted nothing its user did not already have.
+
+   </details>
 
 2b. **🔴 Give the ArgoCD stack resource requests.** Surfaced by the VPA
    recommender on 2026-08-03 and it is the highest-value finding it produced:
