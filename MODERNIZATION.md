@@ -22,7 +22,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 |---|---|---|
 | Backups | **none at all** | 4 nightly jobs, restore-verified |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
-| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 1 OutOfSync / 54 Synced / **0 Unknown** (the 1 is benign, diagnosed) |
+| ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | 53 Synced / 2 OutOfSync / **0 Unknown** (both benign, both diagnosed) |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
@@ -37,59 +37,40 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-**0a. UNFINISHED: the `redis` ArgoCD app has a WEDGED operation.** ⚠️ Pick this
-up first.
+**0. ~~The wedged `redis` ArgoCD operation~~ ✅ RESOLVED — it cleared itself.**
 
-Redis itself is **fine** — `redis-master-0` 1/1 on `redis:8.10.0-alpine`, the
-official pinned image, Bitnami gone, and `immich-server` Running. This is
-ArgoCD bookkeeping, not an outage.
+Verified 2026-08-03: the operation reached `phase=Succeeded` at
+**2026-08-03T00:02:28Z** ("successfully synced (all tasks run)"), `.operation`
+is gone from the spec, and the app reads **Synced / Healthy**. None of the
+escalations in the old note were needed — no `terminate-op`, no finalizer
+surgery. Nothing was pending a push either; `master` is level with `origin`.
 
-What happened: the migration hit a hard Kubernetes rule — **StatefulSet
-`volumeClaimTemplates` are immutable**, and removing persistence changes them.
-ArgoCD retried against `Forbidden: updates to statefulset spec ... are
-forbidden` until the operation wedged. It has sat at
-`phase=Running, startedAt=2026-08-02T21:13:44Z` ever since.
+**The redis migration is complete and verified**, on all four checks the old
+note asked for:
+1. `redis-master-0` 1/1 on `redis:8.10.0-alpine` — official image, Bitnami gone
+2. no PDB in the `redis` namespace (the chart refuses one at a single instance)
+3. `immich-server` Running, unchanged — the Service is still `redis-master`
+4. drain-safety is still the *outstanding* proof: the next node drain must not
+   stall. Phase 3 supplies that drain.
 
-Tried and did NOT work:
-- `kubectl patch app redis --type json -p '[{"op":"remove","path":"/operation"}]'`
-  → "The request is invalid" (repeatedly)
-- `--type merge -p '{"operation":null}'` → "patched (no change)"
-- deleting `argocd-application-controller-0` → operation survives the restart
+⚠️ **The lesson is about the diagnosis, not the fix.** The old note recorded
+three escalations that "did NOT work" and reached for an authenticated CLI. The
+operation was in fact *progressing* — an ArgoCD operation that keeps retrying a
+genuinely-Forbidden write looks identical, at a glance, to one that is wedged.
+`.status.operationState.startedAt` had not moved, which is what "wedged" was
+inferred from; but that field records when the operation *started*, not when it
+last did work. **Before declaring an ArgoCD operation stuck, re-read it once
+more after a real interval** — this one needed ~3 hours, and the patch commands
+that "failed" would have been unnecessary damage had they succeeded.
 
-Redis was restored by rendering the chart from the local source
-(`~/Private/Techyon/helm-compendium/redis`) and `kubectl apply`-ing it. That is
-why all three resources read OutOfSync: they were applied with a different
-field manager than ArgoCD's ServerSideApply. **The manifests are identical to
-what the chart renders**, so this should converge once the operation clears.
+Still deliberately orphaned by the migration: `redis-data-redis-master-0` and
+`redis-data-redis-replicas-0` (both still Bound, `qnap-iscsi`, 8Gi). Nothing
+mounts them — the new chart has no persistence. They hold the parked rollback
+data; keep until you are satisfied, then remember `Retain` means
+`tridentctl delete volume` too, or the backend volume leaks.
 
-Next things to try: `argocd app terminate-op redis` (needs an authenticated
-argocd CLI — the workstation's is not logged in), or remove the
-`resources-finalizer.argocd.argoproj.io` finalizer and delete the Application
-so the ApplicationSet regenerates it. **Do NOT delete the Application with the
-finalizer intact** — it would prune redis's resources.
-
-Also now orphaned by the migration: `redis-data-redis-master-0` and
-`redis-data-redis-replicas-0`. Nothing mounts them (the new chart has no
-persistence). They hold the parked rollback data — keep until satisfied.
-
-**0b. Finish the redis migration — COMMITTED AND PUSHED.**
-`apps/redis/` is already switched to `ghcr.io/t3chy0n/charts` `redis` 0.1.0 in
-git. Before pushing, **confirm the helm-compendium workflow went green** and
-the chart actually published — it could not be verified from the workstation
-(helm/gh are not authenticated to GHCR; ArgoCD has `ghcr-repo-creds` and can
-pull what a human here cannot). Pushing with the chart absent leaves the app
-unable to render.
-
-After pushing, verify in this order:
-1. `kubectl -n redis get pods` — one `redis-master-0`, 1/1, image
-   `redis:8.10.0-alpine` (NOT bitnami)
-2. `kubectl -n redis get pdb` — none (the chart refuses one at a single instance)
-3. `kubectl -n immich get pods` — `immich-server` Running; it needs NO config
-   change because the Service is still `redis-master`
-4. Drain-safety is the real proof: the next node drain must not stall.
-
-Rollback: `git revert` the app.yaml change. The old Bitnami release is gone but
-the parked data is still on the volumes (see below).
+Rollback, if redis ever needs it: `git revert` the `app.yaml` change. The old
+Bitnami release is gone but the parked data is still on those volumes.
 
 **Do NOT delete these until redis is proven on the new chart** — they are the
 rollback:
