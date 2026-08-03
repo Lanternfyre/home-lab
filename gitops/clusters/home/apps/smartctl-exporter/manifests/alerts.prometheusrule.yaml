@@ -151,9 +151,9 @@ spec:
         # warning point while still giving notice before thermal throttling.
         - alert: SmartSataTemperatureHigh
           expr: |
-            smartctl_device_temperature{temperature_type="current"} > 60
+            smartctl_device_temperature{temperature_type="current"} > 30
               and on (node, device) smartctl_device{protocol="ATA"}
-          for: 30m
+          for: 0m
           labels:
             severity: warning
           annotations:
