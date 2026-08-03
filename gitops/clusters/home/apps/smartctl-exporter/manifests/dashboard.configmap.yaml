@@ -1,0 +1,168 @@
+# Grafana dashboard provisioned via the kube-prometheus-stack sidecar.
+# The sidecar watches ConfigMaps with `grafana_dashboard: "1"` cluster-wide
+# and imports them into Grafana. Committing the JSON here means the dashboard
+# survives any Grafana pod loss and lives in Git, not the UI.
+#
+# Every panel scopes to LOCAL drives via `scsi_vendor!="QNAP"` -- the same
+# discriminator the alert rules use. Without it the fleet reads as 18 devices,
+# 12 of which are QNAP iSCSI LUNs reporting a flat 0C and no SMART attributes,
+# which buries the six drives that can actually die.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: smartctl-disk-health-dashboard
+  namespace: monitoring
+  labels:
+    grafana_dashboard: "1"
+  annotations:
+    grafana_folder: "Infrastructure"
+data:
+  smartctl-disk-health.json: |
+    {
+      "annotations": {"list": []},
+      "editable": false,
+      "graphTooltip": 1,
+      "title": "Disk Health (SMART)",
+      "tags": ["storage", "smart", "hardware"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "refresh": "1m",
+      "time": {"from": "now-7d", "to": "now"},
+      "templating": {"list": []},
+      "panels": [
+        {
+          "type": "stat",
+          "title": "Local drives monitored",
+          "description": "Six expected: one SATA disk per node plus k8s-lab5's NVMe. A drop here means a node stopped reporting, which is the failure that looks like health.",
+          "id": 1,
+          "gridPos": {"h": 4, "w": 5, "x": 0, "y": 0},
+          "targets": [{"expr": "count(smartctl_device{scsi_vendor!=\"QNAP\"})", "refId": "A"}],
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+          },
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 5}, {"color": "green", "value": 6}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Failing SMART self-assessment",
+          "description": "The drive's own overall-health verdict. Anything but 0 means back up that node now.",
+          "id": 2,
+          "gridPos": {"h": 4, "w": 5, "x": 5, "y": 0},
+          "targets": [{"expr": "count(smartctl_device_smart_status != 1 and on (node, device) smartctl_device{scsi_vendor!=\"QNAP\"}) or vector(0)", "refId": "A"}],
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+          },
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Bad sectors, fleet total",
+          "description": "Reallocated + pending + offline-uncorrectable across every local drive. Baseline is 0 on all six as of 2026-08-03, so any non-zero value is a change, not a threshold guess.",
+          "id": 3,
+          "gridPos": {"h": 4, "w": 7, "x": 10, "y": 0},
+          "targets": [{"expr": "sum(smartctl_device_attribute{attribute_value_type=\"raw\", attribute_id=~\"5|197|198\"}) or vector(0)", "refId": "A"}],
+          "options": {
+            "colorMode": "background",
+            "graphMode": "none",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+          },
+          "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "type": "stat",
+          "title": "Hottest local drive",
+          "description": "k8s-lab1's SM871 reports no temperature at all and cannot appear here.",
+          "id": 4,
+          "gridPos": {"h": 4, "w": 7, "x": 17, "y": 0},
+          "targets": [{"expr": "max(smartctl_device_temperature{temperature_type=\"current\"} and on (node, device) smartctl_device{scsi_vendor!=\"QNAP\"})", "refId": "A"}],
+          "options": {
+            "colorMode": "value",
+            "graphMode": "none",
+            "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}
+          },
+          "fieldConfig": {"defaults": {"unit": "celsius", "decimals": 0, "color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 60}, {"color": "red", "value": 75}]}}}
+        },
+        {
+          "type": "table",
+          "title": "Drive inventory",
+          "description": "One row per local drive. Node, device, model, serial and firmware -- the facts you need before ordering a replacement.",
+          "id": 5,
+          "gridPos": {"h": 8, "w": 24, "x": 0, "y": 4},
+          "targets": [{"expr": "smartctl_device{scsi_vendor!=\"QNAP\"}", "refId": "A", "instant": true, "format": "table"}],
+          "transformations": [
+            {
+              "id": "organize",
+              "options": {
+                "excludeByName": {
+                  "Time": true, "Value": true, "__name__": true, "container": true,
+                  "endpoint": true, "instance": true, "job": true, "namespace": true,
+                  "pod": true, "service": true, "prometheus": true,
+                  "ata_additional_product_id": true, "model_family": true,
+                  "scsi_product": true, "scsi_revision": true, "scsi_vendor": true,
+                  "scsi_version": true, "ata_version": true, "protocol": false
+                },
+                "indexByName": {
+                  "node": 0, "device": 1, "model_name": 2, "protocol": 3,
+                  "interface": 4, "form_factor": 5, "sata_version": 6,
+                  "firmware_version": 7, "serial_number": 8
+                }
+              }
+            }
+          ],
+          "options": {"showHeader": true}
+        },
+        {
+          "type": "timeseries",
+          "title": "Temperature",
+          "description": "SATA drives baseline 40-47C; the NVMe idles around 64C, which is normal for an M.2 part with no heatsink and is why the alert thresholds are split by protocol (60C SATA, 75C NVMe).",
+          "id": 6,
+          "gridPos": {"h": 9, "w": 12, "x": 0, "y": 12},
+          "targets": [{"expr": "smartctl_device_temperature{temperature_type=\"current\"} and on (node, device) smartctl_device{scsi_vendor!=\"QNAP\"}", "legendFormat": "{{node}} {{device}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "celsius", "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 5}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Bad sectors by drive",
+          "description": "Reallocated (5), Current_Pending (197) and Offline_Uncorrectable (198). These go non-zero well before the self-assessment flips, so this is the panel that buys time.",
+          "id": 7,
+          "gridPos": {"h": 9, "w": 12, "x": 12, "y": 12},
+          "targets": [{"expr": "smartctl_device_attribute{attribute_value_type=\"raw\", attribute_id=~\"5|197|198\"}", "legendFormat": "{{node}} {{device}} {{attribute_name}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 5}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Power-on time",
+          "description": "Age in service. k8s-lab2's SanDisk leads at ~29700 hours (3.4 years) as of 2026-08-03; k8s-lab1's Samsung is at ~22600.",
+          "id": 8,
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 21},
+          "targets": [{"expr": "smartctl_device_attribute{attribute_value_type=\"raw\", attribute_id=\"9\"} / 24", "legendFormat": "{{node}} {{device}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"unit": "d", "decimals": 0, "custom": {"lineWidth": 2, "fillOpacity": 0}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "NVMe wear and spare capacity",
+          "description": "k8s-lab5 only. Available spare against the drive's own declared threshold (currently 100% vs 50%), plus the endurance counter. The alert fires when spare drops below threshold, not at a number picked here.",
+          "id": 9,
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 21},
+          "targets": [
+            {"expr": "smartctl_device_available_spare", "legendFormat": "{{node}} {{device}} available spare", "refId": "A"},
+            {"expr": "smartctl_device_available_spare_threshold", "legendFormat": "{{node}} {{device}} threshold", "refId": "B"},
+            {"expr": "smartctl_device_percentage_used", "legendFormat": "{{node}} {{device}} endurance used", "refId": "C"}
+          ],
+          "fieldConfig": {"defaults": {"unit": "percent", "decimals": 0, "min": 0, "max": 100, "custom": {"lineWidth": 2, "fillOpacity": 0}}}
+        },
+        {
+          "type": "timeseries",
+          "title": "Devices enumerated per node",
+          "description": "Includes QNAP iSCSI LUNs, deliberately -- this panel is about whether the exporter can still see anything at all, not about drive health. Zero on a node means its disks are silently unmonitored.",
+          "id": 10,
+          "gridPos": {"h": 7, "w": 24, "x": 0, "y": 29},
+          "targets": [{"expr": "smartctl_devices", "legendFormat": "{{node}}", "refId": "A"}],
+          "fieldConfig": {"defaults": {"decimals": 0, "min": 0, "custom": {"lineWidth": 2, "fillOpacity": 0}}}
+        }
+      ]
+    }
