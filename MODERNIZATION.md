@@ -25,6 +25,7 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
 | ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | **60 Synced / 1 OutOfSync / 0 Unknown** — and the one is `pihole`, OutOfSync *by design* |
 | Disk health | **nothing watching any drive** | SMART on 6 local drives, 10 alerts, delivery proven |
+| Resource specs | 96/141 containers with no CPU request, unmeasured | VPA recommender live, 68 VPAs, all `updateMode: Off` |
 | QNAP CSI | v1.6.0 (mkfs bug) | **v1.6.2** |
 | k8s-lab4 | Ready but **0 CSI drivers**, no DNS | **repaired + uncordoned** |
 | k8s-lab5 | storage unproven | **storage-proven + uncordoned** |
@@ -79,6 +80,15 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
      if you need it before OIDC lands. Deleting it was cheap because there was
      no long-lived token Secret and minting one already required cluster-admin
      kubectl access — it granted nothing its user did not already have.
+
+2b. **🔴 Give the ArgoCD stack resource requests.** Surfaced by the VPA
+   recommender on 2026-08-03 and it is the highest-value finding it produced:
+   every ArgoCD pod is **BestEffort QoS**, so the controller that holds every
+   Application is first in line for eviction under node memory pressure —
+   while using 732Mi with no request declared. Fix in
+   `gitops/argocd-values.yaml` + `playbooks/15-argocd.yml`. **Wait a day first**
+   so the recommendations are based on real history rather than five minutes
+   of it.
 
 3. **Then Phase 6** (ingress-nginx → Envoy Gateway; needs the OIDC spike on a
    throwaway host first) and the rest of **Phase 7**.
@@ -832,10 +842,79 @@ sector counts and power-on hours all report normally.
 Fixing it is a `prometheus` chart-values change affecting every dashboard, so
 it was left alone and recorded instead.
 
+✅ **Goldilocks + VPA DONE 2026-08-03 — recommend only.** Chart `goldilocks`
+10.4.1 with the `vpa` 4.12.x subchart. **Taken out of the phase's written
+order** (it is third; 1 and 2 are NOT done) because unattended-upgrades needs
+sudo and Descheduler evicts pods, while this needs neither.
+
+Motivation was measured, not assumed: of **141 containers, 96 have no CPU
+request, 95 no memory request, 111 no memory limit**. This cluster has already
+been bitten twice by resource specs that were wrong and silent for months.
+
+⚠️ **The VPA subchart's `updater` and `admissionController` both default to
+TRUE, and the updater EVICTS PODS to resize them.** Here that would aim
+evictions at CNPG primaries and the PDBs every drain is careful about, and it
+would fight ArgoCD indefinitely — every app syncs ServerSideApply + selfHeal,
+so a mutated pod spec is reverted and remutated forever. That is the same
+reasoning that keeps Kyverno's mutating policies off. Both are explicitly
+`false`; **deleting the keys would not work**, because Helm merges over chart
+defaults. An admission webhook would also have invalidated the webhook
+inventory that made `ServerSideDiff` safe earlier the same day, since that
+rests on every webhook being scoped to its own API group and a pod-matching
+one is not.
+
+Verified live rather than trusted: **68 VPA objects, all `updateMode: Off`**,
+3 Deployments only, zero webhooks of either kind, no second metrics-server.
+
+`on-by-default: true` instead of per-namespace opt-in labels — namespaces here
+are created implicitly by `CreateNamespace=true`, so labels would be invisible
+hand-made state, the same shape as the `headlamp-admin` binding deleted the
+same day for being untracked.
+
+The chart creates **no Service for the recommender's metrics port**, so its own
+health was unobservable; `manifests/` adds a headless Service + ServiceMonitor
+(`up=1`, confirmed).
+
+#### 🔴 The first real finding, and it is a good one
+
+**The entire ArgoCD stack is `BestEffort` QoS — 53 pods cluster-wide are.**
+`argocd-application-controller-0` has `resources: {}` — no request, no limit —
+while *actually using 732Mi*, against a VPA recommendation of 878Mi.
+
+BestEffort pods are the **first thing the kubelet evicts under node memory
+pressure**. So the component that holds every Application and performs every
+prune is, today, first in the queue to be killed when a node runs short —
+ahead of workloads that merely declared a request. Nothing would have surfaced
+this without a recommender.
+
+Not fixed here: ArgoCD's resources live in `gitops/argocd-values.yaml` and are
+applied by `playbooks/15-argocd.yml`, so it is a deliberate op, not a drive-by.
+
+⚠️ **Do not act on any recommendation yet.** The recommender had ~5 minutes of
+history when these were read. VPA's `upperBound` is enormous with little data
+(13588m CPU for trident-operator), and several `target` values sit exactly on
+the configured floors (`pod-recommendation-min-cpu-millicores: 15`,
+`min-memory-mb: 100`). **Re-read after a day** before changing anything.
+
+*The discriminating check, since a VPA object with garbage recommendations
+looks identical to a working one:* trident-operator is the one workload with
+independently measured ground truth (Phase 4: 7.7–11.4m CPU peak, 79.4 MiB
+peak working set). Its recommendation came back `cpu=15m, mem=100Mi` — both
+exactly the floor, which is the correct answer for a workload whose real usage
+is below the floor, and consistent rather than coincidental. Confirmed
+separately that the recommender is reading real history and not merely
+clamping: `argocd/application-controller` came back at **627m / 878Mi** and
+`argocd/repo-server` at 182m, far above any floor.
+
 Remaining: unattended-upgrades (security only, never auto-reboot) →
-Descheduler → Goldilocks/VPA (recommend only) → NFD → **kured last**, gated:
-all five nodes are etcd members, concurrency 1, blocking-pod-selector for CNPG
-primaries. Reloader is already installed.
+Descheduler → NFD → **kured last**, gated: all five nodes are etcd members,
+concurrency 1, blocking-pod-selector for CNPG primaries. Reloader is already
+installed.
+
+Read recommendations with:
+`kubectl -n goldilocks port-forward svc/goldilocks-dashboard 8080:80`
+(ClusterIP only, deliberately no Ingress — that would drag in an oauth2-proxy
+decision for no benefit).
 
 ---
 
