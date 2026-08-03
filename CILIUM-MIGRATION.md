@@ -57,22 +57,24 @@ scale down. **In k3s, flannel runs inside the k3s server process.** So:
 | chart creates no webhooks/CRDs | `helm template` + `grep kind:` | ✅ none — unlike Envoy Gateway |
 | kubelet probes survive policy | upstream | ✅ host→pod ingress is implicitly allowed |
 
-### ⚠️ Open, and it needs sudo — ask before stage 2
+### ✅ containerd paths — CONFIRMED 2026-08-03, not inferred
 
-`/var/lib/rancher/k3s/agent/etc/containerd/config.toml` could not be read
-(0600). Two things are unconfirmed:
+`/var/lib/rancher/k3s/agent/etc/containerd/config.toml` read with sudo:
 
-1. that containerd's `bin_dir` really is `/var/lib/rancher/k3s/data/cni`
-2. that its `conf_dir` really is `/var/lib/rancher/k3s/agent/etc/cni/net.d`
-
-Both are the documented k3s defaults and both directories exist while the two
-chart defaults do not, so the inference is strong — but this repo's own
-standing rule is *assert values, never presence*. **Read that file before
-stage 2.** One command:
-
-```bash
-sudo grep -E 'bin_dir|conf_dir' /var/lib/rancher/k3s/agent/etc/containerd/config.toml
 ```
+bin_dirs = ["/var/lib/rancher/k3s/data/cni"]
+conf_dir = "/var/lib/rancher/k3s/agent/etc/cni/net.d"
+```
+
+Both match the values in `cilium-values-migration.yaml` exactly. The last open
+prerequisite is closed.
+
+💡 **`bin_dirs` is a plural array, and that is a useful escape hatch.**
+containerd accepts multiple CNI bin directories. Adding a second entry —
+`/opt/cni/bin`, created and owned by Ansible — would take Cilium's binary off
+versioned k3s ground entirely and retire the "restart the agent after every
+k3s hop" mitigation below. Worth doing later as its own small op; **not** worth
+changing mid-migration.
 
 ### ⚠️ A k3s version change rewrites the CNI bin directory
 
@@ -137,6 +139,28 @@ remounts on a pod restart.
 ---
 
 ## Stage 1 — install, take over nothing
+
+### ✅ DONE 2026-08-03 08:00 — clean, and it changed nothing
+
+Observed after the install, which is what makes stage 1 a verified no-op
+rather than a claimed one:
+
+- `cilium` DaemonSet **5/5**, `cilium-envoy` **5/5**, `cilium-operator` 2/2 —
+  **zero restarts** on all 12 pods
+- `cilium-dbg status` → `Ok 1.20.0`, and every value confirmed live:
+  `KubeProxyReplacement: False`, `Routing: Tunnel [vxlan] / Host: Legacy`,
+  `CNI Chaining: none`, `IPAM: 10.245.1.0/24`
+- **0 pods on 10.245.x.x** — nothing migrated, exactly as intended
+- all 5 nodes Ready, API VIP answering, LAN DNS resolving, ArgoCD unchanged at
+  53 Synced / 2 OutOfSync, all Healthy
+- 🔑 **the CNI directory proof**, which was the one thing that could have made
+  this a cluster-wide outage. `/var/lib/rancher/k3s/data/cni/` now reads:
+  ```
+  bandwidth  bridge  cilium-cni  cni  firewall  flannel  host-local  loopback  portmap
+  ```
+  `cilium-cni` added; **every k3s original intact**, `flannel` and `loopback`
+  included. The `install-plugin.sh` reading below is now confirmed by
+  observation.
 
 **No sudo. Fully reversible. Changes no traffic.**
 

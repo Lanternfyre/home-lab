@@ -37,6 +37,34 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
+**🔴 NEW 2026-08-03: the Pi-hole backup CronJob has been silently broken since
+the storage migration.** Found incidentally while verifying Cilium stage 1 —
+it is NOT related to Cilium.
+
+`pihole-backup-29762025` has sat **Pending for 4h**, and the last successful
+run was **28h ago**. The cause is the Phase 0.D storage migration:
+
+- the CronJob mounts PVC **`pihole`** — the OLD `local-path` claim, pinned by
+  node affinity to **k8s-lab3**
+- it also carries a `requiredDuringScheduling` **podAffinity** onto the running
+  Pi-hole pod
+- Pi-hole now uses `pihole-data` (`qnap-iscsi`) and runs on **k8s-lab5**
+
+So the two constraints are unsatisfiable — `0/5 nodes are available: 1 node(s)
+didn't match pod affinity rules, 4 node(s) didn't match PersistentVolume's node
+affinity`. It can never schedule.
+
+Two problems, not one: the job cannot run **and** it was pointed at the stale
+volume, so even its last "successful" runs backed up data Pi-hole had already
+stopped using. Fix is to point the `config` volume at `pihole-data`.
+
+⚠️ **This is the exact failure shape this repo keeps rediscovering** — the
+CronJob exists, the PVC exists, `MODERNIZATION.md` counts "4 nightly jobs" as a
+win, and nothing alerted. Same family as the GHCR token that reported
+`Ready=True` while delivering an expired credential. **Assert values and
+behaviour, never presence.** Worth asking what else the Pi-hole migration left
+pointing at the old claim.
+
 **0. ~~The wedged `redis` ArgoCD operation~~ ✅ RESOLVED — it cleared itself.**
 
 Verified 2026-08-03: the operation reached `phase=Succeeded` at
@@ -129,11 +157,18 @@ you want; the rest still stand:
    - **its `desired == ready` DaemonSet gate will trip during a Cilium
      migration**, when the cilium DaemonSet is legitimately part-ready. Do not
      run a k3s hop and the CNI migration in the same window.
-6. **Phase 3 (Cilium) — planned and hardened 2026-08-03, NOT started.**
-   See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md). Stage 1 (helm install,
-   takes over no node) needs no sudo and is fully reversible. **Stage 2 is the
-   first step whose rollback requires sudo on a node**, so it must not begin
-   unattended.
+6. **Phase 3 (Cilium) — ✅ STAGE 1 DONE 2026-08-03. Stage 2 is next.**
+   See [`CILIUM-MIGRATION.md`](CILIUM-MIGRATION.md).
+
+   Cilium 1.20.0 is installed cluster-wide in migration mode and has taken
+   over **nothing**: 12/12 pods ready with zero restarts, 0 pods on
+   10.245.x.x, all five nodes Ready, VIP and LAN DNS fine, ArgoCD unchanged.
+   containerd's `bin_dirs`/`conf_dir` were read with sudo and match the values
+   exactly. The CNI directory proof passed — `cilium-cni` was added and every
+   k3s symlink (`flannel`, `loopback`, …) survived.
+
+   **Next is stage 2: migrate k8s-lab5.** That drains and REBOOTS a node, and
+   its rollback needs sudo. Deliberate op with a human watching.
 
 ---
 
