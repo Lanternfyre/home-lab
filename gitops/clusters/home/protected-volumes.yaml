@@ -61,6 +61,23 @@ protected:
     backup: CNPG barmanObjectStore + WAL archiving
     reason: Replica of immich-db-2. Protected so a drain cannot destroy the pair.
 
+  - namespace: immich
+    claim: immich-db-4
+    size: 20Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
+    backup: CNPG barmanObjectStore + WAL archiving
+    reason: >-
+      Third instance, added 2026-08-02 when immich-db went 2 -> 3 so that every
+      drain has more than one switchover target. Protected so a drain cannot
+      destroy the set.
+    warning: >-
+      Registered here on 2026-08-03. CNPG gave it the protect label and Retain
+      automatically via inheritedMetadata, so the CLUSTER was always correct —
+      but the registry was not, and the audit failed on it. Scaling a CNPG
+      cluster silently creates a protected volume; add the entry in the same
+      change that scales it.
+
   - namespace: databases
     claim: postgres-ha-1
     size: 8Gi
@@ -123,29 +140,53 @@ protected:
     reason: Nightly tar of Mealie's data dir. SMB, so immune to the mkfs bug.
 
   - namespace: dns
+    claim: pihole-data
+    size: 5Gi
+    class: qnap-iscsi
+    source: gitops/clusters/home/apps/pihole/manifests/pihole-data.pvc.yaml
+    backup: NONE                 # deliberate, 2026-08-03 — see warning
+    reason: >-
+      THE LIVE Pi-hole volume since Phase 0.D. Blocklists, custom DNS entries
+      for every node and LAN host, and query history. Losing it takes LAN DNS
+      down for the whole house.
+    warning: >-
+      Registered here on 2026-08-03. It carried the protect label and Retain in
+      the cluster from the day it was created, but was MISSING from this file,
+      so the audit had no entry to check it against — the live volume serving
+      LAN DNS was the one unregistered protected volume in the cluster.
+      It now has no backup job: pihole-backup was retired the same day because
+      its whole rationale was local-path fragility, which this migration
+      removed. Recovery is therefore a rebuild from
+      apps/pihole/chart-values.yaml, not a restore.
+
+  - namespace: dns
     claim: pihole-backup
     size: 5Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/pihole/manifests/pihole-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup
     reason: >-
-      Nightly tar of /etc/pihole. This is the only off-node copy of the LAN's
-      DNS config, whose PVC lives on local-path pinned to k8s-lab3.
+      STALE ARCHIVE, no longer written to. Held nightly tars of /etc/pihole
+      until the CronJob was retired on 2026-08-03. Kept because it still holds
+      real history from before the qnap-iscsi migration; delete it — and the
+      backend volume with tridentctl — once that history is worthless.
 
   - namespace: dns
     claim: pihole
     size: 5Gi
     class: local-path            # NOTE: node-local, NOT on the NAS
-    source: pihole chart (persistentVolumeClaim.enabled)
-    backup: file-level, off-NAS
+    source: pihole chart (persistentVolumeClaim.enabled) — NO LONGER MOUNTED
+    backup: n/a - superseded
     reason: >-
-      Blocklists, custom DNS entries for every node and LAN host, and query
-      history. Rebuildable but tedious, and losing it takes LAN DNS down.
+      ROLLBACK POINT for Phase 0.D, not the live volume. Pi-hole moved to
+      pihole-data on qnap-iscsi; nothing mounts this any more. Kept
+      deliberately (Prune=false, Delete=false) until the migration is trusted.
     warning: >-
-      This is the only volume on local-path. It is pinned by nodeAffinity to
-      k8s-lab3 and dies with that node's disk — reclaimPolicy Retain does not
-      help here. Phase 0.D migrates it to qnap-iscsi; until then it is the most
-      fragile protected volume in the cluster.
+      Pinned by nodeAffinity to k8s-lab3 and dies with that node's disk —
+      reclaimPolicy Retain does not help here. This is now stale data, so that
+      exposure no longer matters, but it also means the volume is worth
+      strictly less than its size suggests. It is local-path, so cleaning it up
+      is deleting a directory on lab3's disk, NOT a tridentctl operation.
 
 # Deliberately NOT protected. Listed so the audit can distinguish "considered
 # and declined" from "nobody looked at it".
