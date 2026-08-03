@@ -1,0 +1,108 @@
+# https://github.com/FairwindsOps/charts/blob/master/stable/goldilocks/values.yaml
+#
+# Goldilocks + VPA, RECOMMEND ONLY. Phase 7.
+#
+# Why: this cluster has already been bitten twice by resource specs that were
+# wrong and silent for months -- trident-operator throttled 70.2% against a
+# 20m CPU limit, and its memory peaking at 79.4 MiB against an 80Mi limit, a
+# rounding error from OOM-kill. Neither was reported by anything. Measured
+# today: of 141 containers, 96 have NO CPU request, 95 have no memory request
+# and 111 have no memory limit. A recommender is the tool that turns that from
+# a guess into a number.
+#
+# ONE app, not two: the goldilocks chart declares vpa as a subchart
+# (`condition: vpa.enabled`), so VPA is installed here rather than as a
+# separate Application.
+#
+# ⚠️ The dangerous defaults are in the VPA subchart and they are ON.
+# `updater.enabled` and `admissionController.enabled` both default to TRUE.
+# The updater ACTS: it evicts pods to resize them. In this cluster that would
+# aim evictions straight at CNPG primaries and the PDBs that every drain here
+# is careful about, and it would fight ArgoCD -- every app syncs with
+# ServerSideApply + selfHeal, so a mutated pod spec gets reverted and remutated
+# indefinitely. That is the same reasoning that keeps Kyverno's mutating
+# policies off (Phase 5).
+#
+# So both are explicitly false below. Deleting the keys would NOT do it --
+# Helm merges values over chart defaults, so an absent key falls back to the
+# chart's `true`. That exact trap cost two near-misses here already (the
+# ingress HPA memory target, and the duplicate tridentOperator block).
+#
+# Asserted in the render, not assumed: exactly 3 Deployments
+# (vpa-recommender, goldilocks-controller, goldilocks-dashboard), zero
+# MutatingWebhookConfiguration, and no updater or admission-controller.
+
+vpa:
+  enabled: true
+
+  # The recommender is the only VPA component that runs. It watches pod
+  # metrics and writes recommendations into VPA objects. It changes nothing.
+  recommender:
+    enabled: true
+    resources:
+      requests:
+        cpu: 50m
+        memory: 500Mi
+      # Memory limit only, no CPU limit -- the trident-operator lesson. CFS
+      # enforces CPU quota per 100ms period rather than as an average, so a
+      # small limit throttles a bursty process that never approaches the cap
+      # on average. The recommender holds decayed histograms for every pod in
+      # the cluster, so memory is the dimension that actually needs a bound;
+      # 1Gi is 2x its request, giving room to grow with the pod count without
+      # letting a leak take a node down.
+      limits:
+        memory: 1Gi
+
+  # ⚠️ EVICTS PODS. Never enable without a deliberate decision about CNPG
+  # primaries, PDBs and the ArgoCD selfHeal fight described above.
+  updater:
+    enabled: false
+
+  # Would add a MutatingWebhookConfiguration in the pod admission path.
+  # Beyond the mutation objection, it would invalidate the webhook inventory
+  # that made ServerSideDiff safe to enable on all 29 Helm apps -- that
+  # analysis rests on every webhook being scoped to its own API group, and a
+  # pod-matching webhook is not.
+  admissionController:
+    enabled: false
+
+# k3s already ships metrics-server (1/1 in kube-system, 213 days). Installing
+# a second would fight it for the same APIService. The chart defaults this to
+# false; it is stated explicitly because it is load-bearing.
+metrics-server:
+  enabled: false
+
+controller:
+  # Watch every namespace rather than requiring an opt-in label per namespace.
+  #
+  # The alternative is labelling namespaces live, which has no git home here:
+  # namespaces are created implicitly by `CreateNamespace=true`, so nothing
+  # declares them and the labels would be invisible hand-made state -- the
+  # exact shape of the headlamp-admin binding that just got deleted for being
+  # untracked.
+  #
+  # Safe precisely because this is recommend-only: a VPA object with no
+  # updater is an observation, so full coverage costs nothing but a CR per
+  # workload.
+  flags:
+    on-by-default: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+dashboard:
+  # ClusterIP only, deliberately no Ingress. Reading recommendations is a
+  # deliberate act, not something that needs a permanent LAN surface -- and an
+  # Ingress here would drag in an oauth2-proxy decision for no benefit.
+  #   kubectl -n goldilocks port-forward svc/goldilocks-dashboard 8080:80
+  flags:
+    on-by-default: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
