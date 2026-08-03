@@ -118,7 +118,11 @@ and stays gone, that is worth chasing.
   2026-08-03 it is the **only** thing keeping any app OutOfSync, which makes
   it look like litter to tidy. It is not: `Prune=false,Delete=false` is
   deliberate, and clearing it is a decision about the rollback point, not
-  about sync status.
+  about sync status. 📌 **DEFERRED BY DECISION 2026-08-03** — both routes to
+  green are written up in `MANUAL-STEPS.md` §9b. Note the retire route needs
+  **three** steps: unlabel PVC *and* PV, delete both, then `rm -rf` the
+  directory on k8s-lab3 by hand, because local-path has no `tridentctl`
+  equivalent.
 - stray `coredns-pdb.yaml` copies on lab2–5 from a delegation bug; identical
   content so they do not flap. Untidy rather than harmful.
 

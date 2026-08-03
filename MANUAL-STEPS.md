@@ -280,6 +280,41 @@ crashloops: Gateway API CRDs installed without Helm ownership labels). The plan
 adopts Envoy Gateway, so the answer is probably "keep and finish it" — but if
 you would rather not, say so before I do the CRD ownership work.
 
+### 9b. DEFERRED BY DECISION 2026-08-03 — retire the old `pihole` PVC
+
+**A judgement call you explicitly parked, kept here so it does not evaporate.**
+
+The old `pihole` PVC (5Gi, `local-path`, pinned to **k8s-lab3**) is the Phase
+0.D rollback point from moving Pi-hole to `qnap-iscsi`. Pi-hole has been proven
+on the new volume since 2026-08-02.
+
+It is now the **only** thing keeping any ArgoCD app OutOfSync — 60 Synced / 1
+OutOfSync, and that one is this. The chart no longer renders the PVC, so ArgoCD
+marks it `requiresPruning: true` while `Prune=false,Delete=false` blocks the
+prune. Permanent by construction, not a fault.
+
+Two ways to make it green, both understood, neither started:
+
+1. **Adopt it into git.** Add a `pihole-old.pvc.yaml` to
+   `gitops/clusters/home/apps/pihole/manifests/`, next to the two PVCs already
+   declared there. Ownership moves to `pihole-manifests`, so the Helm app stops
+   seeing an extraneous resource and both go green. Keeps the rollback point
+   and upgrades it from untracked leftover to declared intent. Reversible;
+   deletes nothing.
+2. **Retire it.** ⚠️ One-way, and it needs **three** steps, not one:
+   - remove `homelab.techyon.dev/protect: "true"` from **both** the PVC and
+     the PV `pvc-c9212135-243e-4c78-8367-5df27209b626` — the Kyverno VAP denies
+     the delete otherwise, in-process, even with Kyverno down;
+   - delete the PVC, then the PV (it is `reclaimPolicy: Retain`, so the PV
+     does not go on its own);
+   - **then clean up on k8s-lab3 by hand.** This is local-path, so the data is
+     a directory on that node's disk and nothing above removes it. Unlike the
+     `qnap-iscsi` volumes there is no `tridentctl delete volume` to run — it is
+     `sudo rm -rf` on the node, which is why this sits in MANUAL-STEPS.
+
+Do not "tidy" this away without deciding which one you want — it holds the only
+copy of the pre-migration Pi-hole data.
+
 ---
 
 ## 🟢 Whenever
