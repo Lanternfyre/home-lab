@@ -19,15 +19,44 @@ controller:
 
   autoscaling:
     enabled: true
-    # minReplicas 2, not 1: the chart only renders its PodDisruptionBudget when
-    # replicas > 1 (a `gt $replicas 1` gate in the template). At minReplicas: 1
-    # there is no PDB at all, so a drain can evict the last controller and take
-    # all 13 Ingresses down. The HPA currently sits pinned at 3 anyway
-    # (memory 97%/80%), so this changes no pod count today.
-    minReplicas: 2
-    maxReplicas: 3
+    # minReplicas is never 1: the chart only renders its PodDisruptionBudget
+    # when replicas > 1 (a `gt $replicas 1` gate in the template). At
+    # minReplicas: 1 there is no PDB at all, so a drain can evict the last
+    # controller and take all 13 Ingresses down.
+    #
+    # ── Why the memory target is GONE, 2026-08-03 ────────────────────────────
+    # It was unsatisfiable by construction, and `KubeHpaMaxedOut` fired the
+    # moment real alerting was wired up. The note here used to read "the HPA
+    # currently sits pinned at 3 anyway (memory 97%/80%)" — it had drifted to
+    # **149%/80%** by the time it was measured properly.
+    #
+    # nginx allocates worker buffers and does not release them, so its memory
+    # is roughly constant per replica and says nothing about load. Scaling on
+    # it therefore ratchets to maxReplicas and stays there forever, which is
+    # not autoscaling — it is a fixed replica count with an alert attached.
+    # Measured while deciding this: memory 121Mi / 123Mi / 291Mi per pod
+    # against a 120Mi request, while **CPU sat at 3%**. There was no load at
+    # all; the only thing keeping three replicas alive was a bad metric.
+    #
+    # CPU is the correct signal for an ingress controller (RPS would be better
+    # still, but needs a custom-metrics adapter we do not run).
+    #
+    # minReplicas raised 2 -> 3 DELIBERATELY, so that fixing the alert does not
+    # quietly reduce availability: the cluster is effectively running 3
+    # controllers today and this keeps it there. maxReplicas 3 -> 5 gives one
+    # per node and real headroom — and is also what clears the alert, since
+    # KubeHpaMaxedOut fires on `desired == max` and desired now sits at 3.
+    minReplicas: 3
+    maxReplicas: 5
     targetCPUUtilizationPercentage: 70
-    targetMemoryUtilizationPercentage: 80
+    # ⚠️ MUST be an explicit 0, NOT omitted. Helm merges these values over the
+    # chart's own defaults, and this chart defaults it to 50 — so deleting the
+    # line does not disable memory scaling, it silently sets it to 50, which is
+    # STRICTER than the 80 being removed and would scale straight to max.
+    # Caught by rendering the chart; the edit looked obviously correct and was
+    # exactly backwards. The template guards with `{{- with ... }}`, which skips
+    # on an empty value, so 0 is what actually removes the metric.
+    targetMemoryUtilizationPercentage: 0
 
   # topologySpreadConstraints, NOT podAntiAffinity.
   #
@@ -59,4 +88,13 @@ controller:
   resources:
     requests:
       cpu: 100m
-      memory: 120Mi
+      # 120Mi -> 256Mi, 2026-08-03. The old value was simply wrong: measured
+      # usage is 121Mi / 123Mi / 291Mi per pod, so every replica ran above its
+      # request permanently. That misleads the scheduler about how much memory
+      # the node actually has committed, and it is what made the (now removed)
+      # memory-based HPA target unreachable.
+      memory: 256Mi
+    # Deliberately NO limits. A memory limit here would OOM-kill the 291Mi pod;
+    # a CPU limit would throttle it. See the trident-operator entry in
+    # MODERNIZATION.md for what a too-low CPU limit actually costs — 70%
+    # throttling on the storage operator, from a 20m cap.

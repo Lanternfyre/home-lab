@@ -635,8 +635,36 @@ notification every few minutes forever); `repeat_interval: 12h`; priority 1 for
 critical and 0 otherwise, deliberately **not** 2/emergency, which retries until
 acknowledged.
 
-Two GENUINE signals surfaced immediately and are worth investigating:
-`KubeHpaMaxedOut` and `CPUThrottlingHigh`. Also: `Watchdog` did not reappear
+Two GENUINE signals surfaced immediately, and BOTH were real config bugs that
+had been live for months with nothing to report them — which is the clearest
+possible argument that this work was overdue:
+
+**`KubeHpaMaxedOut` — ingress-nginx. ✅ FIXED 2026-08-03.** The HPA scaled on
+memory at 80% against a 120Mi request, while pods actually used 121/123/291Mi
+and **CPU sat at 3%**. nginx allocates worker buffers and never releases them,
+so its memory is roughly constant per replica and says nothing about load: the
+target was unsatisfiable by construction and the HPA had been pinned at max
+forever. That is not autoscaling, it is a fixed replica count with an alert
+attached. Now CPU-only, min 3 (deliberately raised from 2 so fixing an alert
+does not quietly drop a replica), max 5, request corrected to 256Mi.
+
+⚠️ **The obvious edit was exactly backwards, and only rendering caught it.**
+Deleting `targetMemoryUtilizationPercentage` does NOT disable memory scaling —
+Helm merges values over the chart's defaults and this chart defaults it to
+**50**, i.e. stricter than the 80 being removed, which would have scaled
+straight to max. The template guards with `{{- with ... }}`, so an explicit
+`0` is what actually removes the metric.
+
+**`CPUThrottlingHigh` — trident-operator, 70.2% throttled. ⚠️ NOT FIXED, and
+it needs a different repo.** The QNAP CSI *operator* — the thing that
+reconciles the storage driver — runs with `limits.cpu: 20m`. It idles at 2m but
+any burst is clamped, hence 70% throttling. This is the classic Kubernetes
+anti-pattern: a CPU limit does not protect anything here, it just throttles.
+The value is **hardcoded**, not templated from values, at
+`~/Private/Techyon/helm-compendium/qnap-trident/templates/bundle.yaml:553`, so
+it cannot be overridden from this repo and must not be `kubectl patch`ed
+(chart-managed, `selfHeal` reverts it). Fix = raise or drop the limit in that
+chart, bump `qnap-trident` past 0.1.1, publish, bump `targetRevision`. Also: `Watchdog` did not reappear
 after the Alertmanager restart, which is mildly odd for an always-firing alert
 — it changes nothing operationally (it routes to `null`) but it is the canary
 for "is the pipeline alive", so worth a glance.
