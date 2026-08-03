@@ -655,16 +655,34 @@ Helm merges values over the chart's defaults and this chart defaults it to
 straight to max. The template guards with `{{- with ... }}`, so an explicit
 `0` is what actually removes the metric.
 
-**`CPUThrottlingHigh` — trident-operator, 70.2% throttled. ⚠️ NOT FIXED, and
-it needs a different repo.** The QNAP CSI *operator* — the thing that
-reconciles the storage driver — runs with `limits.cpu: 20m`. It idles at 2m but
-any burst is clamped, hence 70% throttling. This is the classic Kubernetes
-anti-pattern: a CPU limit does not protect anything here, it just throttles.
-The value is **hardcoded**, not templated from values, at
-`~/Private/Techyon/helm-compendium/qnap-trident/templates/bundle.yaml:553`, so
-it cannot be overridden from this repo and must not be `kubectl patch`ed
-(chart-managed, `selfHeal` reverts it). Fix = raise or drop the limit in that
-chart, bump `qnap-trident` past 0.1.1, publish, bump `targetRevision`. Also: `Watchdog` did not reappear
+**`CPUThrottlingHigh` — trident-operator, 70.2% throttled. ✅ FIXED via chart
+0.1.3.** The QNAP CSI *operator* ran with `limits.cpu: 20m`, **hardcoded** in
+the chart template rather than templated from values — so it could not be
+overridden from this repo, and must not be `kubectl patch`ed (chart-managed,
+`selfHeal` reverts it). Fixed properly in `helm-compendium`: resources are now
+`tridentOperator.resources` via `toYaml`, and this repo only bumps
+`targetRevision`. One source of truth; nothing overridden here.
+
+⚠️ **The lesson is how CPU limits are ENFORCED, and the naive reading of the
+metrics says the limit was never reached.** Measured peak CPU over 24h was
+**7.7–11.4m** against a 20m cap — the operator never approached it *on average*
+and was throttled 70.2% anyway. CFS enforces quota **per 100ms period**, not as
+an average: 20m grants 2ms per slice, so a reconcile burst wanting tens of ms
+is chopped across many periods while the 2-minute average still reads 2m.
+**Size a CPU limit for instantaneous burst, not average usage.** Now 500m — a
+50ms burst per period, far beyond anything measured, while still bounding a
+runaway loop to half a core.
+
+⚠️ **A first attempt removed the CPU limit entirely, and that was wrong.** It
+resolved throttling by deleting the guardrail, which silently changes resource
+governance for every consumer of the chart. Corrected in 0.1.3.
+
+Memory also went **80Mi → 192Mi**, separately measured: peak working set was
+**79.4 MiB against the old 80Mi limit** — the storage operator was a rounding
+error away from OOM-kill, and nothing had ever reported it because there was no
+alerting until that day.
+
+Also: `Watchdog` did not reappear
 after the Alertmanager restart, which is mildly odd for an always-firing alert
 — it changes nothing operationally (it routes to `null`) but it is the canary
 for "is the pipeline alive", so worth a glance.
