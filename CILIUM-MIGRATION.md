@@ -306,13 +306,33 @@ Then, and only then: `kubectl uncordon k8s-lab5`.
 
 **🔑 NEEDS SUDO. This is why the migration does not start while you are asleep.**
 
+⚠️⚠️ **Deleting the Cilium conflist is NOT enough, and getting this wrong
+leaves the node with no CNI at all.** Observed on lab5 2026-08-03: because
+`cni-exclusive: "true"`, Cilium **renames flannel's config out of the way**
+rather than leaving it alongside. After takeover the directory reads:
+
+```
+05-cilium.conflist                 <- new
+10-flannel.conflist.cilium_bak     <- flannel's, RENAMED
+```
+
+So the rollback must **restore flannel's conflist**, not just remove Cilium's:
+
 ```bash
 kubectl cordon k8s-lab5 && kubectl drain k8s-lab5 --ignore-daemonsets --delete-emptydir-data
 kubectl label node k8s-lab5 io.cilium.migration/cilium-default-      # remove label
-ssh k8s-5.home sudo rm -f /var/lib/rancher/k3s/agent/etc/cni/net.d/05-cilium.conflist   # 🔑 sudo
+
+# 🔑 sudo — BOTH commands, and the mv is the one that matters
+ssh k8s-5.home 'sudo rm -f /var/lib/rancher/k3s/agent/etc/cni/net.d/05-cilium.conflist'
+ssh k8s-5.home 'sudo mv /var/lib/rancher/k3s/agent/etc/cni/net.d/10-flannel.conflist.cilium_bak \
+                        /var/lib/rancher/k3s/agent/etc/cni/net.d/10-flannel.conflist'
 ssh k8s-5.home sudo reboot                                                              # 🔑 sudo
 kubectl uncordon k8s-lab5
 ```
+
+If you cannot reach the node over ssh, k3s will also rewrite its own flannel
+conflist on start — but only on a **version** change, so do not rely on it.
+
 The node comes back on flannel with a 10.42.x.x pod CIDR. Cost: one node
 drained twice, ~10 minutes. **Verify the node's pods get 10.42 addresses again
 before declaring it recovered.**
