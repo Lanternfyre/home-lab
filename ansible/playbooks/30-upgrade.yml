@@ -492,6 +492,60 @@
             name: kube_vip
           when: not ansible_check_mode
 
+        # ── Cilium's CNI binary lives in k3s-managed, VERSIONED ground ───────
+        # Since 2026-08-03 this cluster is on Cilium, whose cilium-cni binary is
+        # installed into /var/lib/rancher/k3s/data/cni/. That is NOT a stable
+        # directory: it is symlinks into the content-addressed data/<hash>/bin/
+        # tree, and a k3s VERSION change repopulates it. Same shape as the
+        # finding that already cost an outage here -- custom things in
+        # k3s-managed paths do not survive a hop.
+        #
+        # The agent's install-cni-binaries init container rewrites the binary on
+        # every pod start (OVERWRITE_CILIUM defaults true), so a restart is the
+        # whole fix. Deleting the pod is deliberate rather than relying on the
+        # k3s restart to bounce it: if containerd merely resumes the existing
+        # container, the init container does NOT re-run, and the node is left
+        # unable to create pods with no obvious symptom until something tries.
+        #
+        # Skipped cleanly on a cluster without Cilium, so this stays safe to run
+        # against any state of this repo's history.
+        - name: "{{ node_name }} | is Cilium installed?"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl -n kube-system get ds cilium
+          register: cil_present
+          changed_when: false
+          failed_when: false
+          check_mode: false
+          delegate_to: "{{ peer }}"
+
+        - name: "{{ node_name }} | re-assert Cilium's CNI binary by restarting its agent"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl -n kube-system delete pod
+            -l k8s-app=cilium --field-selector spec.nodeName={{ node_name }}
+          delegate_to: "{{ peer }}"
+          when:
+            - not ansible_check_mode
+            - cil_present.rc == 0
+          changed_when: true
+
+        - name: "{{ node_name }} | wait for the Cilium agent to be Ready again"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl -n kube-system get pod
+            -l k8s-app=cilium --field-selector spec.nodeName={{ node_name }}
+            -o jsonpath='{.items[0].status.containerStatuses[0].ready}'
+          args:
+            executable: /bin/bash
+          register: cil_ready
+          changed_when: false
+          delegate_to: "{{ peer }}"
+          until: cil_ready.stdout | trim == 'true'
+          retries: 60
+          delay: 5
+          when:
+            - not ansible_check_mode
+            - cil_present.rc == 0
+
         # ⚠️ AFTER the re-assert above, never before. Placed earlier, this gate
         # blocked the very step that repairs the VIP -- the run failed on lab2
         # with "No route to host" while the fix sat unreached below it.

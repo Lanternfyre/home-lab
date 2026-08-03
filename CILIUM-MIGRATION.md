@@ -482,11 +482,14 @@ two separate deliberate ops, not one.**
 ### 5a. Switch to production values
 
 ```bash
-helm upgrade cilium cilium/cilium --version 1.20.0 \
-  -n kube-system -f gitops/cilium-values-production.yaml
-kubectl -n kube-system rollout restart ds/cilium
+cd ansible && ansible-playbook playbooks/34-cilium.yml -e cilium_stage=production
 kubectl delete ciliumnodeconfig -n kube-system cilium-default
 ```
+
+No sudo. The playbook **refuses to run** if any node is unmigrated or any pod
+still holds a `10.42.x` address, because enabling policy around a pod on the
+old CNI is exactly what upstream warns against. Rehearse it first with
+`--check`, which runs every gate and applies nothing.
 
 This flips `policyEnforcementMode` to `default`, which makes the **6 argocd
 NetworkPolicies enforceable for the first time in their existence.**
@@ -557,9 +560,19 @@ have it has no bridge to them.
 
 ## Post-migration, do not forget
 
-- [ ] **Add a Cilium-agent restart to `30-upgrade.yml`** — see the CNI bin
-      directory warning above. Until this exists, the next k3s hop is a risk.
-- [ ] Adopt Cilium into ArgoCD (only now — `prune` + `selfHeal` would have
-      fought the half-migrated state and deleted the CiliumNodeConfig).
+- [x] ~~**Add a Cilium-agent restart to `30-upgrade.yml`**~~ ✅ **2026-08-03.**
+      It now detects Cilium and bounces the agent on each node after the hop,
+      alongside the CoreDNS and kube-vip re-asserts. Deletes the pod rather than
+      trusting the k3s restart to bounce it: if containerd merely resumes the
+      existing container the init container does not re-run, and the node is
+      left unable to create pods with no obvious symptom. No-ops cleanly on a
+      cluster without Cilium.
+- [x] ~~Adopt Cilium into ArgoCD~~ **DECIDED AGAINST, 2026-08-03 — it is under
+      Ansible instead** (`roles/cilium` + `playbooks/34-cilium.yml`), following
+      the `roles/argocd` precedent. ArgoCD's ApplicationSets apply `prune: true`
+      + `selfHeal: true`, ArgoCD's own pods run on the pod network Cilium
+      provides, and there is no "just restart the pod" for a cluster with no
+      CNI. It would also delete the `CiliumNodeConfig`, which is migration
+      state rather than desired state in git.
 - [ ] Reconsider `bpf.hostLegacyRouting: false` as its own small op.
 - [ ] Hubble is off. Turning it on is a separate decision, not part of this.

@@ -1,0 +1,330 @@
+---
+# Install, upgrade and verify Cilium.
+#
+# Runs from the WORKSTATION, not a node: helm and the kubeconfig live here and
+# nothing in this role touches a node's filesystem. So no sudo — same as
+# roles/argocd, and for the same reason.
+#
+# ── Why Ansible owns Cilium instead of ArgoCD ────────────────────────────────
+# Identical reasoning to ArgoCD, only stronger. This repo's ApplicationSets
+# apply prune: true + selfHeal: true to everything they generate. ArgoCD's own
+# pods run ON the pod network Cilium provides, so an ArgoCD that manages Cilium
+# can prune the network its controller needs in order to put it back. There is
+# no equivalent of "just restart the pod" for a cluster with no CNI.
+#
+# It would also actively fight the migration: the CiliumNodeConfig is migration
+# STATE rather than desired state in git, and prune would delete it.
+#
+# ── The per-node cutover is a DIFFERENT playbook ─────────────────────────────
+# This role installs and versions Cilium. playbooks/35-cilium-migrate.yml moves
+# nodes onto it. Install first, migrate second — hence 34 before 35.
+
+- name: "preflight | helm is available"
+  ansible.builtin.command: helm version --short
+  register: cil_helm
+  changed_when: false
+  check_mode: false
+
+- name: "preflight | the cluster is reachable"
+  ansible.builtin.command: kubectl version -o json
+  register: cil_kube
+  changed_when: false
+  check_mode: false
+
+- name: "preflight | the stage is one this role knows"
+  ansible.builtin.assert:
+    that: cilium_stage in ['migration', 'production']
+    fail_msg: >-
+      cilium_stage is '{{ cilium_stage }}'; expected 'migration' or
+      'production'. A typo here would resolve to a values file that does not
+      exist, and the next task would tell you so — but say it plainly here.
+
+- name: "preflight | the values file exists"
+  ansible.builtin.stat:
+    path: "{{ cilium_values_file }}"
+  register: cil_values_stat
+  check_mode: false
+
+# Installing Cilium with chart defaults would be actively destructive here:
+# enableLBIPAM defaults true and would fight MetalLB for the same 8 Service
+# IPs, tunnelPort would collide with flannel's 8472, the pod CIDR would be
+# 10.0.0.0/8, and both CNI paths would point at directories that do not exist
+# on k3s. A missing values file must stop the run.
+- name: "preflight | refuse to install with chart defaults"
+  ansible.builtin.fail:
+    msg: >-
+      {{ cilium_values_file }} not found. Installing without it would take
+      chart defaults: LB-IPAM fighting MetalLB over 192.168.32.10-250,
+      tunnelPort colliding with flannel's 8472, pod CIDR 10.0.0.0/8, and
+      cni.binPath/confPath pointing at /opt/cni/bin and /etc/cni/net.d —
+      NEITHER of which exists on these k3s nodes. Fix the path.
+  when: not cil_values_stat.stat.exists
+
+# ── How much of the cluster is actually on Cilium right now? ─────────────────
+
+- name: "detect | nodes carrying the migration label"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get nodes
+    -o jsonpath='{range .items[*]}{.metadata.labels.io\.cilium\.migration/cilium-default}{"\n"}{end}'
+    | grep -c '^true$' || true
+  args:
+    executable: /bin/bash
+  register: cil_migrated
+  changed_when: false
+  check_mode: false
+
+- name: "detect | total nodes"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get nodes -o name | wc -l
+  args:
+    executable: /bin/bash
+  register: cil_nodes
+  changed_when: false
+  check_mode: false
+
+- name: "detect | pods still addressed by flannel"
+  # Latch rather than exit early: `grep -c` reads all input, but a pipeline
+  # whose consumer exits early takes SIGPIPE and, under `set -o pipefail`,
+  # fails the task while stdout holds the right answer. Bitten by exactly that
+  # on 2026-08-03 — see MODERNIZATION.md.
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get pods -A -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}'
+    | grep -c '^{{ cilium_flannel_cidr_prefix | regex_escape }}' || true
+  args:
+    executable: /bin/bash
+  register: cil_on_flannel
+  changed_when: false
+  check_mode: false
+
+# ⚠️ THE gate on the riskiest step in Phase 3. `production` values set
+# policyEnforcementMode: default, which makes every NetworkPolicy in the
+# cluster enforceable — including 6 in argocd that have never once been
+# exercised, because flannel does not implement NetworkPolicy at all. Doing
+# that while nodes are still on flannel ALSO risks dropping traffic between
+# migrated and unmigrated pods, which upstream warns about explicitly.
+- name: "preflight | refuse production values on a half-migrated cluster"
+  ansible.builtin.fail:
+    msg: >-
+      cilium_stage=production, but only {{ cil_migrated.stdout | trim }} of
+      {{ cil_nodes.stdout | trim }} nodes carry the migration label and
+      {{ cil_on_flannel.stdout | trim }} pods are still on
+      {{ cilium_flannel_cidr_prefix }}x. Production values enable policy
+      enforcement cluster-wide, and upstream is explicit that policy must stay
+      off while any pod is still on the old CNI. Finish
+      playbooks/35-cilium-migrate.yml first. Override with
+      -e cilium_allow_partial_production=true only if you know why.
+  when:
+    - cilium_stage == 'production'
+    - not (cilium_allow_partial_production | bool)
+    - (cil_migrated.stdout | trim | int) < (cil_nodes.stdout | trim | int)
+      or (cil_on_flannel.stdout | trim | int) > 0
+
+- name: "detect | version already deployed"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    helm -n {{ cilium_namespace }} list -o json
+    | python3 -c "import json,sys; r=[x for x in json.load(sys.stdin) if x['name']=='{{ cilium_release_name }}']; print(r[0]['chart'].rsplit('-',1)[1] if r else 'ABSENT')"
+  args:
+    executable: /bin/bash
+  register: cil_before
+  changed_when: false
+  check_mode: false
+
+- name: "detect | values currently stored in the release"
+  ansible.builtin.command: >-
+    helm -n {{ cilium_namespace }} get values {{ cilium_release_name }} -o yaml
+  register: cil_live_values
+  changed_when: false
+  check_mode: false
+  failed_when: false
+
+# `helm upgrade` always writes a new revision, so running it unconditionally
+# makes every run report changed=1 — and this repo's rule is that a second run
+# is changed=0, because anything else hides real non-idempotency in the noise.
+- name: "detect | is anything actually different?"
+  ansible.builtin.set_fact:
+    cil_values_differ: >-
+      {{ (cil_live_values.stdout | default('') | from_yaml | default({}, true))
+         != (lookup('file', cilium_values_file) | from_yaml) }}
+    cil_version_differs: "{{ (cil_before.stdout | trim) != cilium_chart_version }}"
+
+- name: "report | what this run will do"
+  ansible.builtin.debug:
+    msg: >-
+      Cilium: installed={{ cil_before.stdout | trim }},
+      target={{ cilium_chart_version }} (app {{ cilium_app_version }}),
+      stage={{ cilium_stage }}.
+      {{ cil_migrated.stdout | trim }}/{{ cil_nodes.stdout | trim }} nodes
+      migrated, {{ cil_on_flannel.stdout | trim }} pods still on flannel.
+
+- name: "install | add the cilium helm repo"
+  ansible.builtin.command: >-
+    helm repo add {{ cilium_repo_name }} {{ cilium_repo_url }} --force-update
+  changed_when: false
+
+- name: "install | refresh the repo index"
+  ansible.builtin.command: "helm repo update {{ cilium_repo_name }}"
+  changed_when: false
+
+# ⚠️ Deliberately NO --atomic, unlike roles/argocd.
+# --atomic rolls back on failure, and a rollback of the CNI is a second
+# unplanned change to cluster networking at the exact moment it is already
+# unhealthy. For ArgoCD a rollback is safe; for the component every pod's
+# networking depends on, stopping and leaving the state inspectable is better
+# than automatically applying another change nobody is watching.
+- name: "install | helm upgrade --install"
+  ansible.builtin.command: >-
+    helm upgrade --install {{ cilium_release_name }} {{ cilium_chart }}
+    --namespace {{ cilium_namespace }}
+    --version {{ cilium_chart_version }}
+    --values {{ cilium_values_file }}
+    --wait
+    --timeout 15m
+  register: cil_helm_run
+  when:
+    - not ansible_check_mode
+    - cil_version_differs | bool or cil_values_differ | bool
+      or cilium_force_upgrade | bool
+  changed_when: "'has been upgraded' in cil_helm_run.stdout or 'has been installed' in cil_helm_run.stdout"
+
+- name: "install | already at the target, nothing to do"
+  ansible.builtin.debug:
+    msg: >-
+      Cilium is already chart {{ cilium_chart_version }} with the values in
+      {{ cilium_values_file | basename }}; skipping helm to keep the run
+      idempotent. Force with -e cilium_force_upgrade=true.
+  when:
+    - not (cil_version_differs | bool)
+    - not (cil_values_differ | bool)
+    - not (cilium_force_upgrade | bool)
+
+# ── Verify: behaviour and values, never "helm exited 0" ──────────────────────
+
+- name: "verify | the agent DaemonSet covers every node"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout status ds/cilium --timeout=300s
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | the operator becomes Available"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} wait --for=condition=Available
+    deployment/cilium-operator --timeout=300s
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | desired == ready on the agent DaemonSet"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl -n {{ cilium_namespace }} get ds cilium
+    -o jsonpath='{.status.desiredNumberScheduled}{" "}{.status.numberReady}'
+  args:
+    executable: /bin/bash
+  register: cil_ds
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | assert every node has a ready agent"
+  ansible.builtin.assert:
+    that:
+      - (cil_ds.stdout.split()[0] | int) == (cil_nodes.stdout | trim | int)
+      - (cil_ds.stdout.split()[0] | int) == (cil_ds.stdout.split()[1] | int)
+    fail_msg: >-
+      cilium DaemonSet is {{ cil_ds.stdout }} (desired ready) against
+      {{ cil_nodes.stdout | trim }} nodes. A node without a ready agent cannot
+      create pods once it is on Cilium.
+    success_msg: "cilium DaemonSet {{ cil_ds.stdout }} across {{ cil_nodes.stdout | trim }} nodes."
+  when: not ansible_check_mode
+
+# The agent's own view. `cilium-dbg status` is the only place several of these
+# values are observable at runtime rather than merely rendered into a ConfigMap.
+- name: "verify | read the agent's live status"
+  ansible.builtin.shell: |
+    set -o pipefail
+    POD=$(kubectl -n {{ cilium_namespace }} get pod -l k8s-app=cilium \
+          -o jsonpath='{.items[0].metadata.name}')
+    test -n "$POD" || { echo "no cilium agent pod found"; exit 1; }
+    kubectl -n {{ cilium_namespace }} exec "$POD" -c cilium-agent -- \
+      cilium-dbg status
+  args:
+    executable: /bin/bash
+  register: cil_status
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+- name: "verify | assert the running agent is the version this file claims"
+  ansible.builtin.assert:
+    that: "cilium_app_version in (cil_status.stdout | regex_search('Cilium:.*') | default(''))"
+    fail_msg: >-
+      The agent reports
+      '{{ cil_status.stdout | regex_search("Cilium:.*") | default("no version line") }}'
+      but chart {{ cilium_chart_version }} was expected to deliver
+      {{ cilium_app_version }}. Either cilium_app_version is stale in
+      defaults/main.yml or the chart shipped something else — do not assume the
+      version you asked for is the version you got.
+    success_msg: "{{ cil_status.stdout | regex_search('Cilium:.*') }}"
+  when: not ansible_check_mode
+
+# The values that would silently break things if a values edit moved them.
+# Asserted against the AGENT, not the ConfigMap, because a ConfigMap that has
+# not been picked up is exactly the class of bug this repo keeps finding.
+- name: "verify | the load-bearing values are live, not just rendered"
+  ansible.builtin.assert:
+    that:
+      - "'Tunnel [vxlan]' in cil_status.stdout"
+      - "cilium_pod_cidr_prefix in cil_status.stdout"
+      - "'KubeProxyReplacement:    False' in cil_status.stdout or 'KubeProxyReplacement: False' in (cil_status.stdout | regex_replace(' +', ' '))"
+    fail_msg: >-
+      The agent's live status does not match this role's expectations.
+      Wanted vxlan tunnelling, IPAM from {{ cilium_pod_cidr_prefix }}x and
+      kube-proxy NOT replaced (k3s runs kube-proxy in-process). Got:
+      {{ cil_status.stdout | regex_search('(Routing|IPAM|KubeProxyReplacement).*') | default('nothing matching') }}
+    success_msg: "vxlan, {{ cilium_pod_cidr_prefix }}x IPAM, kube-proxy retained — as configured."
+  when: not ansible_check_mode
+
+- name: "verify | how many pods are still on flannel now"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get pods -A -o jsonpath='{range .items[*]}{.status.podIP}{"\n"}{end}'
+    | grep -c '^{{ cilium_flannel_cidr_prefix | regex_escape }}' || true
+  args:
+    executable: /bin/bash
+  register: cil_flannel_after
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode
+
+# At production stage the migration is supposed to be COMPLETE, so any pod left
+# on flannel means something was missed and policy is now being enforced around
+# it.
+- name: "verify | production stage means nothing is left on flannel"
+  ansible.builtin.assert:
+    that: (cil_flannel_after.stdout | trim | int) == 0
+    fail_msg: >-
+      {{ cil_flannel_after.stdout | trim }} pods still hold
+      {{ cilium_flannel_cidr_prefix }}x addresses while running production
+      values with policy enforcement ON. Those pods are now subject to
+      NetworkPolicy on a network Cilium does not manage.
+  when:
+    - not ansible_check_mode
+    - cilium_stage == 'production'
+
+- name: Summary
+  ansible.builtin.debug:
+    msg: >-
+      Cilium {{ cil_before.stdout | trim }} -> {{ cilium_chart_version }},
+      stage={{ cilium_stage }}. DaemonSet {{ cil_ds.stdout | default('?') }},
+      {{ cil_migrated.stdout | trim }}/{{ cil_nodes.stdout | trim }} nodes
+      migrated, {{ cil_flannel_after.stdout | default('?') | trim }} pods still
+      on flannel.
+      {{ 'Migration incomplete — run playbooks/35-cilium-migrate.yml.'
+         if (cil_migrated.stdout | trim | int) < (cil_nodes.stdout | trim | int)
+         else 'All nodes migrated.' }}
+  when: not ansible_check_mode

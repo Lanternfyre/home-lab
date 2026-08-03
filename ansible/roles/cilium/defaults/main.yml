@@ -1,0 +1,56 @@
+---
+# ── The one knob, same idea as k3s_version and argocd_chart_version ──────────
+# Change this, run playbooks/34-cilium.yml, and Cilium upgrades.
+#
+# Before this role existed the version lived NOWHERE: Cilium was installed on
+# 2026-08-03 with a `helm install` typed by hand, and the only record was the
+# Helm release secret in-cluster. That is the exact situation ArgoCD was in
+# before roles/argocd, and it matters more here — every pod in the cluster now
+# rides on this CNI.
+cilium_chart_version: "1.20.0"
+
+# Asserted against the running agent after the run. If the chart ever ships a
+# different app version than expected, fail loudly rather than quietly running
+# something other than what this file claims.
+cilium_app_version: "1.20.0"
+
+cilium_repo_name: cilium
+cilium_repo_url: https://helm.cilium.io/
+cilium_chart: cilium/cilium
+cilium_release_name: cilium
+cilium_namespace: kube-system
+
+# ── Which stage of the migration's values to apply ───────────────────────────
+#   migration  -- policy OFF, cni.customConf true, per-node opt-in via
+#                 CiliumNodeConfig. Correct while ANY node is still on flannel.
+#   production -- policy ENFORCED, Cilium owns CNI on every node
+#                 unconditionally. Stage 5a of CILIUM-MIGRATION.md.
+#
+# ⚠️ Moving to `production` is the single riskiest change in Phase 3: it makes
+# the 6 argocd NetworkPolicies enforceable for the first time in their
+# existence. The role REFUSES to do it while any node is unmigrated.
+cilium_stage: migration
+
+# Single source of truth for values, deliberately NOT copied into the role —
+# same reasoning as argocd_values_file. gitops/cilium-values-*.yaml are real
+# GitOps config and referenced by CILIUM-MIGRATION.md; duplicating them here
+# would create two files that drift.
+cilium_values_file: "{{ playbook_dir }}/../../gitops/cilium-values-{{ cilium_stage }}.yaml"
+
+# The pool Cilium hands out. Asserted so a values edit cannot silently move it:
+# changing this after migration re-addresses every pod in the cluster.
+cilium_pod_cidr_prefix: "10.245."
+
+# flannel's pool. Used to report/assert how much of the cluster is still on the
+# old CNI. Not a config value — purely an observation target.
+cilium_flannel_cidr_prefix: "10.42."
+
+# Escape hatch: re-run helm even when the deployed chart version and stored
+# values already match. Needed after a chart is re-released under the same
+# version, or to force a redeploy.
+cilium_force_upgrade: false
+
+# Skip the "is every node migrated" gate when moving to production. Exists so a
+# deliberate operator can override it; defaults off because the gate is
+# protecting the one irreversible-ish step in the phase.
+cilium_allow_partial_production: false

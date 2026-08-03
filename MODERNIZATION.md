@@ -152,9 +152,10 @@ you want; the rest still stand:
    re-assert, and the VIP gate placed after the repair that fixes it.
 
    Two things it does **not** yet cover, both real for Phase 3:
-   - **no Cilium-agent re-assert.** It re-asserts CoreDNS and kube-vip because
-     a k3s version change rewrites k3s-managed paths — and Cilium's CNI binary
-     will live in exactly such a path. Add it before the next hop.
+   - ~~no Cilium-agent re-assert~~ ✅ **added 2026-08-03.** It now bounces the
+     Cilium agent per node after each hop, alongside CoreDNS and kube-vip,
+     because a k3s version change rewrites `data/cni/` where Cilium's binary
+     lives. No-ops on a cluster without Cilium.
    - **its `desired == ready` DaemonSet gate will trip during a Cilium
      migration**, when the cilium DaemonSet is legitimately part-ready. Do not
      run a k3s hop and the CNI migration in the same window.

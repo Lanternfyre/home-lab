@@ -1,0 +1,52 @@
+---
+# Cilium: install, upgrade, and switch migration stage.
+#
+#   # see what would change, change nothing
+#   ansible-playbook playbooks/34-cilium.yml --check
+#
+#   # install, or converge an existing install onto the pinned version
+#   ansible-playbook playbooks/34-cilium.yml
+#
+#   # STAGE 5a -- enable policy enforcement, Cilium owns CNI outright.
+#   # Refuses to run while any node is still on flannel.
+#   ansible-playbook playbooks/34-cilium.yml -e cilium_stage=production
+#
+# ── No sudo, does not touch the nodes ────────────────────────────────────────
+# Runs on the WORKSTATION, like playbooks/15-argocd.yml: helm and the
+# kubeconfig live here. So no --ask-become-pass, and it works even when the
+# nodes are unreachable over SSH.
+#
+# ── This installs Cilium. 35-cilium-migrate.yml MOVES NODES ONTO IT. ─────────
+# Two playbooks because they are two different operations with different blast
+# radii and different privileges:
+#
+#   34 (this one)  workstation-only, no sudo, reversible with `helm rollback`.
+#                  Owns WHICH Cilium and WHAT configuration.
+#   35             drains and REBOOTS nodes, needs sudo, rollback is a
+#                  per-node file restore. Owns WHICH NODES use it.
+#
+# Numbered 34 before 35 because that is the operational order: nothing can be
+# migrated onto a Cilium that is not installed.
+#
+# ── Why not ArgoCD ───────────────────────────────────────────────────────────
+# Same reason ArgoCD itself is not self-managed here, only more so. The
+# ApplicationSets apply prune: true + selfHeal: true, ArgoCD's pods run on the
+# pod network Cilium provides, and there is no "just restart the pod" for a
+# cluster with no CNI. It would also delete the CiliumNodeConfig, which is
+# migration state rather than desired state in git.
+#
+# ── The one knob ─────────────────────────────────────────────────────────────
+# cilium_chart_version in roles/cilium/defaults/main.yml. Before this playbook
+# existed, Cilium's version was recorded only in the in-cluster Helm release
+# secret -- the exact hole roles/argocd was written to close, on a component
+# with a considerably larger blast radius.
+
+- name: Install or upgrade Cilium
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+
+  roles:
+    - role: cilium
