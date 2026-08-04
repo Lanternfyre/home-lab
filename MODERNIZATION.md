@@ -170,14 +170,41 @@ next item is #2 below, and it is the one that needs a human at a keyboard.
 
    </details>
 
-2b. **🔴 Give the ArgoCD stack resource requests.** Surfaced by the VPA
-   recommender on 2026-08-03 and it is the highest-value finding it produced:
-   every ArgoCD pod is **BestEffort QoS**, so the controller that holds every
-   Application is first in line for eviction under node memory pressure —
-   while using 732Mi with no request declared. Fix in
-   `gitops/argocd-values.yaml` + `playbooks/15-argocd.yml`. **Wait a day first**
-   so the recommendations are based on real history rather than five minutes
-   of it.
+2b. ~~**Give the ArgoCD stack resource requests.**~~ ✅ **DONE 2026-08-04.**
+   Every ArgoCD pod is now **Burstable** instead of BestEffort — verified on the
+   live pods. Cluster-wide BestEffort dropped **53 → 45**. ArgoCD stayed healthy
+   throughout: 63 Applications present and Healthy, UI reachable.
+
+   Applied via `gitops/argocd-values.yaml` + `ansible-playbook
+   playbooks/15-argocd.yml` (workstation, no sudo). Values are the VPA's own
+   targets after ~24h, rounded up; memory limits only, no CPU limits.
+
+   ⚠️ **The first attempt silently destroyed half the file.** Appending
+   `server:` and `repoServer:` blocks to the end created DUPLICATE YAML KEYS —
+   last one wins — which replaced the originals and removed `replicas: 2`,
+   the topologySpreadConstraints, both PDBs and the freshly-added httproute.
+   This is the same trap already recorded here from the `tridentOperator`
+   near-miss, in a repo that warns about it, and it was caught **only** because
+   the verification asserted the OLD keys had survived rather than checking the
+   new ones existed. Assert what should NOT have changed, not just what should.
+
+   🔵 **NFD dropped from Phase 7 by decision (2026-08-04).** Node Feature
+   Discovery labels nodes with detected hardware so workloads can target it.
+   These nodes are near-homogeneous with no GPUs and nothing schedules on
+   hardware features; the single plausible use (marking lab5's NVMe) is one
+   `kubectl label` away. It was on the list because it is on the standard list.
+
+   🔵 **Descheduler: do it AFTER requests exist, if at all.** It does NOT
+   conflict with ArgoCD — ArgoCD manages manifests, descheduler evicts pods, so
+   nothing drifts (unlike VPA's *updater*, which mutates pod specs and is
+   deliberately off). CNPG primaries are protected: `immich-db-primary` and
+   `postgres-ha-primary` PDBs both allow **0** disruptions and descheduler
+   respects PDBs.
+   ⚠️ But `LowNodeUtilization` computes utilisation from **requests**, and 96
+   containers still have none — it would see near-empty nodes and either do
+   nothing or shuffle pods pointlessly. And k8s-lab5's 53-pod imbalance is
+   *caused* by those missing requests, so descheduler would treat the symptom
+   while the cause went unfixed.
 
 3. **Then Phase 6** (ingress-nginx → Envoy Gateway; needs the OIDC spike on a
    throwaway host first) and the rest of **Phase 7**.
