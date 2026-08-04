@@ -980,6 +980,36 @@ have **silently removed HTTP basic auth from an internet-adjacent MCP proxy.**
 Envoy Gateway's SecurityPolicy has a `basicAuth` block, so it is translatable —
 but it needs its own policy, not the shared Google one.
 
+#### 🔴 github-mcp CANNOT migrate as-is — bcrypt vs SHA-1
+
+Attempted 2026-08-04, **reverted the same day**, decision deferred by the
+operator. Envoy Gateway rejected the SecurityPolicy outright:
+
+```
+BasicAuth: unsupported htpasswd format: please use {SHA}
+```
+
+Envoy's basic auth filter accepts **only SHA-1** htpasswd; the credential is
+**bcrypt** (`$2a$10$`), which is what ESO's `htpasswd` template function
+produces. Sprig cannot easily generate `{SHA}` either — it needs base64 of the
+**raw** digest and `sha1sum` returns hex.
+
+✅ **Envoy failed CLOSED**, which is the reassuring part: the endpoint returned
+**HTTP 500**, never 200. A rejected policy does not become an open route.
+
+It was reverted rather than left broken, because that host was down for
+everything while the policy was invalid. It is back on ingress-nginx and
+enforcing basic auth (401 without credentials).
+
+Three ways forward when it is picked up again:
+1. **`apiKeyAuth`** instead of basic auth — no hash-format problem, and a
+   better fit for a machine client. Costs one change to the consumer's config.
+2. **Store a pre-computed `user:{SHA}base64...` line in 1Password** and have
+   the ExternalSecret copy it verbatim. Keeps the client unchanged. ⚠️ SHA-1 is
+   unsalted and fast to brute-force — a real downgrade from bcrypt.
+3. Leave it on nginx. ⚠️ Then Phase 6 never completes and an archived,
+   CVE-unpatched ingress controller stays alive for one endpoint.
+
 #### nginx annotations that need translating, surveyed 2026-08-04
 
 | host | annotation | Gateway API equivalent |

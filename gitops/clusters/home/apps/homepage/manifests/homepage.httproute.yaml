@@ -1,0 +1,32 @@
+# Homepage on Envoy Gateway. The chart's Ingress is disabled in chart-values.yaml.
+#
+# ⚠️ GATED, and this one genuinely matters: Homepage has NO authentication of
+# its own, and it is an index of every other lab URL. Left open it would hand
+# anyone on the LAN a complete map of the cluster's services. That is precisely
+# why its Ingress carried the oauth2-proxy annotations; the edge gate replaces
+# that hop rather than removing it.
+#
+# ⚠️ `config.allowedHosts` in chart-values.yaml had to move with this, from
+# 192.168.32.13 (nginx) to 192.168.32.19 (gated Gateway). Homepage validates
+# the Host header itself, so a stale IP there fails with "Host validation
+# failed" -- which looks nothing like a routing problem and would be hunted for
+# in the wrong place.
+#
+# No gethomepage.dev/* annotations here on purpose: homepage does not list
+# itself.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: homepage
+  namespace: homepage
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - home.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: homepage
+          port: 80

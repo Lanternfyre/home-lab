@@ -23,13 +23,12 @@ config:
   # is what lets the kubelet's health probes past this check -- before that,
   # probing by pod IP hit "Host validation failed".
   #
-  # ⚠️ 192.168.32.13 is INGRESS-NGINX's address, and it is correct only while
-  # homepage is still served by nginx. When home.lab.techyon.dev migrates to
-  # Envoy Gateway (Phase 6) this must become the gated Gateway's IP
-  # (192.168.32.19) or direct-by-IP access starts failing host validation.
-  # Deliberately left as-is until that migration, so it is right now rather
-  # than right later.
-  allowedHosts: ['192.168.32.13']
+  # ⚠️ UPDATED WITH THE MIGRATION: this is now the GATED Gateway's address
+  # (192.168.32.19), not ingress-nginx's 192.168.32.13. Homepage validates the
+  # Host header, so leaving the old IP here would have made direct-by-IP access
+  # fail with "Host validation failed" -- a silent breakage that has nothing to
+  # do with routing and would have been hunted for in the wrong place.
+  allowedHosts: ['192.168.32.19']
 
 serviceAccount:
   # -- Specifies whether a service account should be created
@@ -67,30 +66,15 @@ service:
   port: 80
 
 
+# ── Migrated to Envoy Gateway (Phase 6) ──────────────────────────────────────
+# Routing is manifests/homepage.httproute.yaml, on the GATED Gateway.
+#
+# Homepage has NO native auth of its own, and it links to every lab URL, so the
+# gate is load-bearing rather than decorative -- that is exactly why its
+# Ingress carried the oauth2-proxy annotations. Envoy Gateway now performs the
+# Google flow directly, so the oauth2-proxy hop disappears.
 ingress:
-  enabled: true
-  ingressClassName: ""
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: cloudflare-ca
-    # Google Workspace SSO gate — oauth2-proxy sits in front of the dashboard.
-    # Homepage has no native auth, so without this every lab URL it links
-    # to would be publicly reachable. rd= must include https://$host because
-    # oauth2-proxy lives on a different subdomain; without it oauth2-proxy
-    # redirects back to its own success page after auth instead of here.
-    nginx.ingress.kubernetes.io/auth-url: "https://oauth.lab.techyon.dev/oauth2/auth"
-    nginx.ingress.kubernetes.io/auth-signin: "https://oauth.lab.techyon.dev/oauth2/start?rd=https://$host$escaped_request_uri"
-    # kubernetes.io/ingress.class: nginx
-  # kubernetes.io/tls-acme: "true"
-  hosts:
-    - host: home.lab.techyon.dev
-      paths:
-        - path: /
-          pathType: ImplementationSpecific
-  tls:
-    - secretName: homepage-tls
-      hosts:
-        - home.lab.techyon.dev
+  enabled: false
 
 rbac:
   enabled: true
