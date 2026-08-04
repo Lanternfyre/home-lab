@@ -1,0 +1,137 @@
+# The three telemetry-ingest hostnames on Envoy Gateway. Replaces
+# alloy-faro.ingress.yaml, alloy-gateway.ingress.yaml and
+# pyroscope-ingest.ingress.yaml.
+#
+# ⚠️ ALL THREE ARE ON THE OPEN GATEWAY, AND MUST STAY THERE. These receive
+# telemetry from browsers and applications, none of which can complete an
+# interactive Google login. Attaching them to `homelab-gated` would silently
+# break every sender -- they would get a 302 to accounts.google.com and simply
+# stop reporting, with no error anywhere that looks like a misconfiguration.
+#
+# The `proxy-body-size` annotations these carried (10m / 50m / 50m) have NO
+# equivalent here and need none: measured 2026-08-04, Envoy streams request
+# bodies and accepted a 400 MB POST with HTTP 200. nginx's 1 MB default is the
+# only reason those annotations existed.
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: alloy-faro
+  namespace: monitoring
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Observability
+    gethomepage.dev/name: Faro Collector
+    gethomepage.dev/description: Browser telemetry ingest (Grafana Faro Web SDK)
+    gethomepage.dev/icon: alloy.png
+    gethomepage.dev/href: https://faro.lab.techyon.dev
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - faro.lab.techyon.dev
+  rules:
+    # ⚠️ The `/collect` path match is LOAD-BEARING and was on the Ingress.
+    # Without it this route would expose the whole alloy-gateway backend on
+    # that hostname rather than just the Faro receiver.
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /collect
+      backendRefs:
+        - name: alloy-gateway
+          port: 12347
+---
+# Preserves faro's `limit-rps: 50` and `limit-connections: 20`. These are a
+# real DoS guard on a browser-facing, unauthenticated endpoint -- dropping
+# them silently during migration was a genuine risk.
+#
+# `type: Local` is the correct equivalent: nginx's limit_req is per-instance,
+# and Local rate limiting is per-Envoy-instance too. `Global` would need the
+# Redis-backed rate limit service, which is not deployed and is not warranted
+# for this.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: alloy-faro-limits
+  namespace: monitoring
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: alloy-faro
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - limit:
+            requests: 50
+            unit: Second
+
+# ⚠️ `limit-connections: 20` is NOT carried over, and this is a real gap rather
+# than an oversight.
+#
+# `connectionLimit` exists only on ClientTrafficPolicy, which targets a GATEWAY
+# or listener — never an HTTPRoute. So the only way to reinstate it would cap
+# concurrent connections for every app on the open Gateway, not just faro.
+# That trades a narrow guard on one endpoint for a blunt limit on grafana and
+# everything else, which is worse.
+#
+# Accepted knowingly: the 50 req/s rate limit above is the stronger of the two
+# guards and IS preserved, the endpoint is LAN-only, and a connection cap is
+# reinstatable later at the Gateway level if it ever matters.
+#
+# (First attempt put `connection.connectionLimit` on this BackendTrafficPolicy;
+# the API rejected it outright — "unknown field spec.connection.connectionLimit"
+# — because that object's `connection` block governs UPSTREAM connections and
+# only offers bufferLimit/preconnect/socketBufferLimit.)
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: alloy-gateway
+  namespace: monitoring
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Observability
+    gethomepage.dev/name: OTel Gateway
+    gethomepage.dev/description: OTLP ingest for external apps
+    gethomepage.dev/icon: alloy.png
+    gethomepage.dev/href: https://otel.lab.techyon.dev
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - otel.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: alloy-gateway
+          port: 4318
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: alloy-pyroscope-ingest
+  namespace: monitoring
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Observability
+    gethomepage.dev/name: Pyroscope Ingest
+    gethomepage.dev/description: Pyroscope profile ingest (no-auth, machine push)
+    gethomepage.dev/icon: pyroscope.png
+    gethomepage.dev/href: https://pyroscope-ingest.lab.techyon.dev
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - pyroscope-ingest.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: alloy-gateway
+          port: 12348
