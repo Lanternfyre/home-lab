@@ -4,30 +4,23 @@ service:
   type: LoadBalancer
   port: 9000
 
+# ── Migrated to Envoy Gateway (Phase 6) ──────────────────────────────────────
+# The Ingress is off; routing now lives in manifests/mealie.httproute.yaml.
+#
+# The chart exposes an `httpRoute:` block, but it is a STUB -- rendering with
+# httpRoute.enabled=true produces no object at all, so it cannot be used.
+#
+# The old annotations and where they went:
+#   proxy-body-size: 100m   -> NOT needed. Measured 2026-08-04: Envoy streams
+#                              request bodies and accepted a 400 MB POST. That
+#                              annotation existed only because nginx defaults
+#                              to 1 MB. Migrating relaxes this to unlimited,
+#                              accepted knowingly -- LAN-only.
+#   cert-manager cluster-issuer -> the Gateway serves one wildcard cert.
+#   gethomepage.dev/*       -> moved onto the HTTPRoute, or the app silently
+#                              disappears from the homepage dashboard.
 ingress:
-  enabled: true
-  className: nginx
-
-  annotations:
-    nginx.ingress.kubernetes.io/proxy-body-size: "100m"
-    kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: cloudflare-ca
-    gethomepage.dev/description: Recipe manager
-    gethomepage.dev/enabled: "true"
-    gethomepage.dev/group: Home
-    gethomepage.dev/icon: mealie.png
-    gethomepage.dev/name: CookBook
-
-
-  hosts:
-    - host: mealie.lab.techyon.dev
-      paths:
-        - path: /
-          pathType: Prefix
-  tls:
-    - hosts:
-        - mealie.lab.techyon.dev
-      secretName: mealie-tls
+  enabled: false
 
 httpRoute:
   enabled: false

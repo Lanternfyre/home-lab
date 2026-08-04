@@ -1,0 +1,30 @@
+# Mealie on Envoy Gateway. The chart's Ingress is disabled in chart-values.yaml.
+#
+# Attached to `homelab`, the OPEN Gateway: Mealie has its own user accounts and
+# login (ALLOW_SIGNUP is false, so it is invite-only). Its Ingress carried no
+# oauth2-proxy annotation for the same reason. Adding the edge gate would stack
+# a second, unrelated login in front of an app that already authenticates.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: mealie
+  namespace: home-utils
+  annotations:
+    # Carried over from the Ingress -- dropping these silently removes the app
+    # from the homepage dashboard.
+    gethomepage.dev/description: Recipe manager
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Home
+    gethomepage.dev/icon: mealie.png
+    gethomepage.dev/name: CookBook
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - mealie.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: mealie
+          port: 9000
