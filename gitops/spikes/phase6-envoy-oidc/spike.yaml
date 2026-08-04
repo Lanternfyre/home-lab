@@ -69,15 +69,64 @@ spec:
         namespaces:
           from: Same
 ---
-# A Service with NO selector and NO endpoints. Envoy routes to an empty cluster
-# and returns 503, which is the "got all the way through" signal. Nothing is
-# served, so a SecurityPolicy that fails to attach exposes nothing.
+# The backend started life as a Service with NO endpoints, so Envoy returned
+# 503 and the spike could prove the filter chain while serving nothing at all.
+# That did its job -- both tests passed on status codes alone.
+#
+# Now swapped for a real page, so success is visible rather than inferred.
+# `traefik/whoami` is ~10 MB, needs no configuration, and renders the request
+# as it ARRIVED AT THE BACKEND -- which is strictly more useful than "hello
+# world" here, because it shows exactly which headers Envoy forwards through
+# the oidc/jwt/authorization chain. That is the same question every migrated
+# app will raise.
+#
+# Still safe to expose: whoami echoes the request and holds no state, and it
+# only answers after the SecurityPolicy has allowed the request. The ID token
+# is NOT forwarded to it -- `forwardIDToken` is left unset (default false).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spike-hello
+  namespace: gateway-envoy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spike-hello
+  template:
+    metadata:
+      labels:
+        app: spike-hello
+    spec:
+      containers:
+        - name: whoami
+          image: traefik/whoami:v1.11.0
+          args: ["--port=80"]
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 5m
+              memory: 16Mi
+            # Memory limit only, no CPU limit -- the CFS lesson.
+            limits:
+              memory: 64Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+---
 apiVersion: v1
 kind: Service
 metadata:
   name: spike-sink
   namespace: gateway-envoy
 spec:
+  selector:
+    app: spike-hello
   ports:
     - name: http
       port: 80

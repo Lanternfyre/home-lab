@@ -917,6 +917,51 @@ API support (it is **not** enabled today — no `--enable-gateway-api` flag) or
 keep issuing Certificates and referencing the Secrets from the Gateway. The
 DNS01 wildcard finding makes the second option perfectly workable.
 
+#### The migration is smaller than "15 Ingresses" suggests
+
+Surveyed live 2026-08-04. Only **6 of 15** hostnames are auth-gated today; the
+rest are either machine ingest endpoints or apps that authenticate themselves.
+
+| gated by oauth2-proxy (6) | open at the ingress (9) |
+|---|---|
+| pihole, goldilocks, headlamp, home, prometheus, pyroscope | argocd, grafana, mealie, photos, github-mcp, faro, otel, pyroscope-ingest, **oauth** |
+
+⚠️ **`faro`, `otel` and `pyroscope-ingest` are machine traffic** — telemetry
+ingest from apps and browsers. Putting an interactive OIDC redirect in front of
+any of them breaks the senders silently, since nothing there can complete a
+browser flow. They must stay open.
+
+`argocd`, `grafana`, `mealie` and `photos` are "open" only at the ingress —
+each authenticates its own users. Do not add a second login in front of them
+without deciding that deliberately.
+
+⚠️ **Native EG `oidc` needs ONE REDIRECT URI PER HOSTNAME**, because the OAuth
+callback has to land on the host being browsed. That is 6 manual Google Console
+entries — tedious but one-off, and far better than it first looks, since it is
+6 and not 15. The alternative is keeping oauth2-proxy and pointing EG's
+`extAuth` at it, which preserves the single `oauth.lab.techyon.dev` callback at
+the cost of an extra hop and a permanent dependency on the component being
+replaced.
+
+**`oauth.lab.techyon.dev` retires with the last of those 6** — oauth2-proxy
+exists only to serve them.
+
+#### Shape of the migration
+
+1. One shared `Gateway` with a **wildcard `*.lab.techyon.dev`** cert (DNS01, so
+   one Certificate covers everything) and `allowedRoutes.namespaces.from: All`,
+   so each app keeps its route in its own namespace.
+2. Per app, one commit swaps `*.ingress.yaml` for `*.httproute.yaml`
+   (+ `SecurityPolicy` for the 6). external-dns retargets the A record from
+   `192.168.32.13` to the Gateway IP — and it publishes with **`ttl=1`**, so
+   cutover and rollback are both near-instant.
+3. Rollback is reverting that one commit.
+4. ingress-nginx is removed only once all 15 are moved.
+
+Order: start with the low-stakes ones (`goldilocks`, `home`), leave `argocd`,
+`pihole` and `photos` until the pattern is proven — `pihole` in particular,
+because breaking it takes LAN DNS down with it.
+
 ⚠️ **Spike cleanup:** deleting the manifests will **not** remove
 `spike.lab.techyon.dev` from Cloudflare — `external-dns` runs
 `--policy=upsert-only`. Remove that record by hand.
