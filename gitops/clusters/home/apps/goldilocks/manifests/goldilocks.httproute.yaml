@@ -31,6 +31,22 @@ kind: HTTPRoute
 metadata:
   name: goldilocks
   namespace: goldilocks
+  annotations:
+    # ⚠️ THESE MUST BE CARRIED OVER FROM THE INGRESS, AND FORGETTING THEM IS
+    # SILENT. homepage discovers apps from `gethomepage.dev/*` annotations; the
+    # first version of this migration dropped them, and goldilocks simply
+    # disappeared from the dashboard with nothing anywhere reporting an error.
+    #
+    # homepage v1.8.0 already holds RBAC for `httproutes` and `gateways`
+    # (verified), so HTTPRoute discovery works exactly like Ingress discovery —
+    # the annotations just have to move with the object.
+    #
+    # Every migrated app needs this check.
+    gethomepage.dev/description: Resource request recommendations (VPA)
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/icon: kubernetes.png
+    gethomepage.dev/name: Goldilocks
 spec:
   parentRefs:
     - name: homelab-gated
