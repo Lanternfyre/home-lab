@@ -20,36 +20,19 @@ serviceWeb:
   annotations:
     metallb.io/allow-shared-ip: pihole-svc
 
+# ── Migrated to Envoy Gateway (Phase 6) ──────────────────────────────────────
+# Routing is manifests/pihole.httproute.yaml, on the GATED Gateway.
+#
+# ⚠️ THIS ONLY EVER FRONTED THE ADMIN UI. Pi-hole's actual DNS service is
+# separate LoadBalancers -- pihole-dns-tcp/udp on 192.168.32.53 -- which this
+# change does not touch. LAN DNS is unaffected by anything here, which is what
+# made pihole safe to migrate despite being the scariest name on the list.
+#
+# Pi-hole has no native OIDC, so the edge gate is doing real work; its own
+# local admin password remains as a second layer.
 ingress:
-  enabled: true
-  ingressClassName: nginx
+  enabled: false
 
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: cloudflare-ca
-    # Google Workspace SSO gate — handled by oauth2-proxy at oauth.lab.techyon.dev.
-    # Pi-hole has no native OIDC, so nginx authenticates every request against
-    # oauth2-proxy first and only then forwards to the Pi-hole admin UI
-    # (which still has its own local password as a second layer).
-    # rd= must be a full URL (https://$host$escaped_request_uri) because
-    # oauth2-proxy lives on a different subdomain than the protected service;
-    # without the scheme+host prefix it redirects back to oauth.lab.techyon.dev
-    # instead of the originally requested URL.
-    nginx.ingress.kubernetes.io/auth-url: "https://oauth.lab.techyon.dev/oauth2/auth"
-    nginx.ingress.kubernetes.io/auth-signin: "https://oauth.lab.techyon.dev/oauth2/start?rd=https://$host$escaped_request_uri"
-    gethomepage.dev/description: PIHole Administration Panel
-    gethomepage.dev/enabled: "true"
-    gethomepage.dev/group: Administration
-    gethomepage.dev/icon: pi-hole.png
-    gethomepage.dev/name: PIHole DNS
-
-  hosts:
-    - pihole.lab.techyon.dev
-
-  tls:
-    - secretName: pihole-tls
-      hosts:
-        - pihole.lab.techyon.dev
 dnsmasq:
   customDnsEntries:
     - address=/k8s-1.home/192.168.33.3

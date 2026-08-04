@@ -1,0 +1,39 @@
+# Pi-hole admin UI on Envoy Gateway. The chart's Ingress is disabled in
+# chart-values.yaml.
+#
+# ⚠️ THIS DOES NOT TOUCH LAN DNS, and that is worth stating loudly because
+# "migrating pihole" sounds like it should. Pi-hole serves DNS from separate
+# LoadBalancer Services -- pihole-dns-tcp and pihole-dns-udp, both on
+# 192.168.32.53 -- which no Ingress or HTTPRoute has ever fronted. This route
+# carries only the admin web UI.
+#
+# The distinction matters here more than anywhere else in the cluster: Pi-hole
+# resolves the `.home` names that Ansible's own inventory depends on, so
+# breaking DNS breaks the tool used to repair it.
+#
+# ⚠️ GATED: Pi-hole has no native OIDC, which is why its Ingress sat behind
+# oauth2-proxy. Its own local admin password stays as a second layer.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: pihole
+  namespace: dns
+  annotations:
+    gethomepage.dev/description: PIHole Administration Panel
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Administration
+    gethomepage.dev/icon: pi-hole.png
+    gethomepage.dev/name: PIHole DNS
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - pihole.lab.techyon.dev
+  rules:
+    - backendRefs:
+        # The Ingress referenced this port by NAME ("http"); HTTPRoute requires
+        # a number. Resolved from the live Service: name=http -> port 80.
+        - name: pihole-web
+          port: 80
