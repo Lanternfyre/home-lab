@@ -1,0 +1,31 @@
+# Pyroscope on Envoy Gateway. Replaces pyroscope.ingress.yaml.
+#
+# Attached to `homelab-gated`: the Pyroscope UI has no authentication of its
+# own and exposes application profiles.
+#
+# ⚠️ NOTE the separate `pyroscope-ingest.lab.techyon.dev` hostname is a
+# DIFFERENT thing and must NOT be gated -- it receives profile data from
+# applications, which cannot complete a browser login. It stays on the open
+# Gateway when it migrates.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: pyroscope
+  namespace: monitoring
+  annotations:
+    gethomepage.dev/description: Continuous Profiling
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Monitoring
+    gethomepage.dev/icon: pyroscope.png
+    gethomepage.dev/name: Pyroscope
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - pyroscope.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: pyroscope
+          port: 4040
