@@ -1,5 +1,5 @@
 repoURL: "oci://ghcr.io/m0nsterrr/helm-charts/homepage"
 chart: "homepage"
-targetRevision: "4.5.0"   # replace with the version you want
+targetRevision: "4.14.0"
 releaseName: "homepage"
 namespace: "homepage"

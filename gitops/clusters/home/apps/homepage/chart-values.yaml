@@ -17,7 +17,18 @@ extraEnvFrom: []
 config:
   # -- List of allowed hosts (sometimes with the port) that can host your homepage install
   # -- see https://gethomepage.dev/installation/#homepage_allowed_hosts
-  #TODO: After setting ingress remove add its domain here
+  # The chart already appends the ingress domain (home.lab.techyon.dev) and the
+  # in-cluster Service names, so this list only needs the RAW IP anyone might
+  # browse directly. Chart 4.14.0 also appends `$(POD_IP):3000` itself, which
+  # is what lets the kubelet's health probes past this check -- before that,
+  # probing by pod IP hit "Host validation failed".
+  #
+  # ⚠️ 192.168.32.13 is INGRESS-NGINX's address, and it is correct only while
+  # homepage is still served by nginx. When home.lab.techyon.dev migrates to
+  # Envoy Gateway (Phase 6) this must become the gated Gateway's IP
+  # (192.168.32.19) or direct-by-IP access starts failing host validation.
+  # Deliberately left as-is until that migration, so it is right now rather
+  # than right later.
   allowedHosts: ['192.168.32.13']
 
 serviceAccount:
