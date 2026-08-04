@@ -72,29 +72,18 @@ valkey:
 # --- Immich Server ---
 server:
   enabled: true
+  # ── Migrated to Envoy Gateway (Phase 6) ────────────────────────────────────
+  # Routing is now manifests/immich.httproute.yaml, on the OPEN Gateway --
+  # Immich has native Google OAuth, so it must NOT be wrapped a second time.
+  #
+  # ⚠️ The old `proxy-body-size: "0"` meant UNLIMITED, for large photo uploads.
+  # Dropping it is NOT a tightening: measured 2026-08-04, Envoy streams request
+  # bodies and accepted a 400 MB POST with HTTP 200, so unlimited is Envoy's
+  # behaviour anyway. Setting a "conservative" cap here would have been the
+  # change that broke uploads.
   ingress:
     main:
-      enabled: true
-      annotations:
-        kubernetes.io/ingress.class: nginx
-        cert-manager.io/cluster-issuer: cloudflare-ca
-        # Immich handles big photo uploads — raise the nginx body limit.
-        nginx.ingress.kubernetes.io/proxy-body-size: "0"
-        # Immich has native Google OAuth — do NOT wrap with oauth2-proxy.
-        gethomepage.dev/enabled: "true"
-        gethomepage.dev/name: Immich
-        gethomepage.dev/description: Photo library
-        gethomepage.dev/group: Home
-        gethomepage.dev/icon: immich.png
-      hosts:
-        - host: photos.lab.techyon.dev
-          paths:
-            - path: /
-              service:
-                identifier: main
-      tls:
-        - hosts: [photos.lab.techyon.dev]
-          secretName: immich-tls
+      enabled: false
 
 # --- Machine Learning ---
 machine-learning:

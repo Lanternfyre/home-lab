@@ -1,0 +1,31 @@
+# Immich on Envoy Gateway. The chart's Ingress is disabled in chart-values.yaml.
+#
+# ⚠️ OPEN Gateway, and this one is not a style choice: Immich has NATIVE Google
+# OAuth. Putting it behind the edge gate would mean two separate Google flows
+# for the same user, and would also break the mobile app, which authenticates
+# against Immich's own API and cannot complete a browser redirect.
+#
+# The Ingress said as much in a comment: "Immich has native Google OAuth -- do
+# NOT wrap with oauth2-proxy."
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: immich
+  namespace: immich
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Immich
+    gethomepage.dev/description: Photo library
+    gethomepage.dev/group: Home
+    gethomepage.dev/icon: immich.png
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - photos.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: immich-server
+          port: 2283
