@@ -95,6 +95,12 @@ configs:
 #   workloads -- so that is an acceptable trade, and a deadlocked drain is not.
 server:
   replicas: 2
+  resources:
+    requests:
+      cpu: 25m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
   # Two replicas on the same node is not redundancy; it is one drain away from
   # a full outage while the PDB reports everything as fine. This repo has
   # already been bitten by that exact shape -- all three ingress replicas
@@ -158,6 +164,12 @@ server:
 # second replica costs nothing but memory.
 repoServer:
   replicas: 2
+  resources:
+    requests:
+      cpu: 50m
+      memory: 192Mi
+    limits:
+      memory: 512Mi
   topologySpreadConstraints:
     - maxSkew: 1
       topologyKey: kubernetes.io/hostname
@@ -168,3 +180,83 @@ repoServer:
   pdb:
     enabled: true
     maxUnavailable: 1
+
+# ── Resource requests (Phase 7 / item 2b) ────────────────────────────────────
+#
+# ⚠️ THE PROBLEM THIS FIXES IS QoS CLASS, NOT CAPACITY. Before this, EVERY
+# ArgoCD pod ran with `resources: {}` and was therefore **BestEffort** -- the
+# first thing the kubelet evicts under node memory pressure. So the controller
+# holding all 63 Applications, and the repo-server every sync depends on, were
+# ahead of workloads that had merely declared a request. Any request at all
+# moves them to Burstable; the exact numbers matter far less than that.
+#
+# Surfaced by the VPA recommender installed earlier in Phase 7 -- nothing else
+# in the cluster reported it, and it had been true since ArgoCD was installed.
+#
+# Values are the VPA's own targets after ~24h of history, rounded up:
+#
+#   component        VPA target        actual usage at the time
+#   controller       247m / 1.15 GiB   5m / 732 Mi
+#   server           15m  / 237 Mi     1m / 70-188 Mi
+#   redis            23m  / 156 Mi     12m / 129 Mi
+#   repo-server      35m  / 121 Mi     3-4m / 45-59 Mi
+#   applicationset   23m  / 121 Mi     26m / 66 Mi
+#   dex              15m  / 100 Mi     1m / 23 Mi      (VPA floor)
+#   notifications    15m  / 100 Mi     1m / 30 Mi      (VPA floor)
+#
+# ⚠️ MEMORY LIMITS ONLY, NO CPU LIMITS -- the trident-operator lesson. CFS
+# enforces CPU quota per 100ms period rather than as an average, so a small
+# limit throttles a bursty process that never approaches the cap on average.
+# trident-operator sat 70.2% throttled at 20m while peaking at 11.4m; the
+# controller's reconcile loop is exactly that shape.
+#
+# ⚠️ `controller`, `redis`, `applicationSet`, `dex` and `notifications` are
+# appended as NEW top-level keys because this file did not define them. The
+# `server:` and `repoServer:` resources are set INSIDE their existing blocks
+# instead -- appending second `server:`/`repoServer:` keys silently REPLACED
+# the originals, losing replicas, topologySpreadConstraints, pdb and the
+# httproute. That is the duplicate-key trap already recorded in
+# MODERNIZATION.md, and it was caught only by asserting the old keys survived.
+
+controller:
+  resources:
+    requests:
+      cpu: 250m
+      # Deliberately generous: the controller's working set scales with the
+      # number of Applications and the size of their manifests, and it is the
+      # one component whose OOM-kill stalls every sync in the cluster.
+      memory: 1536Mi
+    limits:
+      memory: 3Gi
+
+redis:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 192Mi
+    limits:
+      memory: 384Mi
+
+applicationSet:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 192Mi
+    limits:
+      memory: 384Mi
+
+dex:
+  resources:
+    requests:
+      cpu: 15m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+notifications:
+  resources:
+    requests:
+      cpu: 15m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
