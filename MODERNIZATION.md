@@ -917,6 +917,47 @@ API support (it is **not** enabled today — no `--enable-gateway-api` flag) or
 keep issuing Certificates and referencing the Secrets from the Gateway. The
 DNS01 wildcard finding makes the second option perfectly workable.
 
+#### Diagnosing an OIDC failure: follow the redirect, and DECODE it
+
+Hit 2026-08-04 when `goldilocks` stopped logging in while the other five gated
+hosts were fine. Everything cluster-side checked out — route Accepted with
+resolved refs, all pods Running, backend 200 on every path, correct derived
+callback — so the fault was outside the cluster.
+
+⚠️ **A 302 from Google's authorize endpoint means NOTHING on its own.** The
+first check here concluded "Google returns 302, so the client is fine". Wrong:
+Google 302s to its *own error page*. Following that redirect and
+base64-decoding the `authError` parameter gives the real answer, and it names
+the offending value exactly:
+
+```
+redirect_uri_mismatch
+redirect_uri: https://goldilocks.lab.techyon.dev/oauth2/callback
+```
+
+The cause was mundane and worth expecting again: goldilocks' callback had been
+registered FIRST, alone, and was lost when a later batch of five was added to
+the Google client — the Console makes replacing the list as easy as appending
+to it. Sweeping all six gated hosts with the same decode proved goldilocks was
+the only one affected, which is what ruled out the migration itself.
+
+**Native EG `oidc` needs one redirect URI per hostname, so this list only
+grows.** As of now the client must carry all of:
+
+```
+https://oauth.lab.techyon.dev/oauth2/callback        oauth2-proxy
+https://headlamp.lab.techyon.dev/oidc-callback       Headlamp's OWN OIDC
+https://headlamp.lab.techyon.dev/oauth2/callback     the edge gate in front of it
+http://localhost:8000                                kubectl / kubelogin
+https://goldilocks.lab.techyon.dev/oauth2/callback
+https://home.lab.techyon.dev/oauth2/callback
+https://prometheus.lab.techyon.dev/oauth2/callback
+https://pyroscope.lab.techyon.dev/oauth2/callback
+https://pihole.lab.techyon.dev/oauth2/callback
+```
+
+⚠️ Headlamp needs **two** — one for its own login, one for the edge gate.
+
 #### ✅ MIGRATION STATE 2026-08-04 — 13 of 15 hostnames moved
 
 ingress-nginx now serves **2**. Everything below was cut over one commit at a
