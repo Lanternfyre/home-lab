@@ -370,6 +370,28 @@ All three redirect URIs coexist on one client:
 
 ---
 
+### 9e. Cloudflare DNS records left behind by Phase 6 scratch work
+
+`external-dns-cloudflare` runs `--policy=upsert-only`, so it **never deletes**.
+Two throwaway hostnames from Phase 6 therefore still resolve even though the
+objects behind them are gone. Delete these in the Cloudflare dashboard:
+
+```
+spike.lab.techyon.dev        A  192.168.32.17   (+ its a-spike TXT record)
+bodytest.lab.techyon.dev     A  192.168.32.18   (+ its TXT record)
+```
+
+⚠️ `external-dns.alpha.kubernetes.io/exclude: "true"` was set on the
+`bodytest` HTTPRoute specifically to avoid this, **and it did not work** — the
+record was published regardless. Do not rely on that annotation for temporary
+routes; assume any hostname you create is permanent until removed by hand.
+
+Neither is harmful — both point at LAN addresses that answer with 404 once the
+route is gone — but they are litter, and a stale record pointing at a Gateway
+that later serves something else is a genuine footgun.
+
+---
+
 ### 9c. Headlamp login — the `headlamp-admin` SA was DELETED 2026-08-03
 
 **Headlamp cannot be logged into right now, and that is expected.** Removed on

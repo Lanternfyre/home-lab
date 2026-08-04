@@ -990,17 +990,48 @@ but it needs its own policy, not the shared Google one.
 | otel, pyroscope-ingest | `proxy-body-size: 50m` | ❓ unresolved |
 | github-mcp | `auth-type: basic` | `SecurityPolicy.basicAuth` |
 
-❓ **The body-size question is genuinely OPEN, and an attempt to answer it
-failed.** nginx defaults to 1 MB, which is why these annotations exist at all;
-Envoy is believed to stream request bodies without a limit, which would make
-them unnecessary. **That was NOT verified.** Querying the Envoy config dump
-returned zero bytes — the proxy container is distroless (no shell, no curl) and
-its admin interface binds to 127.0.0.1 only. The controls (`oauth2`,
-`jwt_authn`) also returned 0, which is what exposed the empty result as a
-failed method rather than a real answer.
+✅ **The body-size question is ANSWERED: Envoy imposes no request body limit,
+so none of the `proxy-body-size` annotations need an equivalent.**
 
-**Do not migrate `photos` or `mealie` until this is settled with a real
-upload.** immich uploads are the highest-stakes case in the cluster.
+Measured 2026-08-04 by POSTing escalating payloads through the Gateway to a
+backend that accepts them:
+
+| payload | result |
+|---|---|
+| 5 MB | HTTP 200, fully uploaded |
+| 120 MB | HTTP 200, fully uploaded |
+| **400 MB** | **HTTP 200, fully uploaded** |
+
+Those annotations exist only because **nginx defaults to 1 MB**; Envoy streams
+request bodies instead of buffering them.
+
+⚠️ **The first attempt at this test was misleading and nearly became a wrong
+answer.** POSTing 120 MB at Grafana returned `HTTP 401` after **262 KB** —
+Grafana rejected the request early and closed the connection, so the body limit
+was never exercised. It looked like a result. The fix was routing to a backend
+that actually accepts the body. *(An earlier attempt to read Envoy's config
+dump was worse: it returned zero bytes because the proxy container is
+distroless with admin bound to localhost, and only the controls returning 0
+exposed it as a failed method rather than a finding.)*
+
+⚠️ **"Be conservative" does not mean "add a limit" here.** `photos` currently
+runs `proxy-body-size: 0`, i.e. **unlimited** — imposing a limit would break
+immich uploads, which are the largest in the cluster. Preserving behaviour
+means setting **nothing**. Migrating simply relaxes `mealie` (100 MB) and
+`otel`/`pyroscope-ingest` (50 MB) to unlimited, which is accepted knowingly:
+these are LAN-only. Envoy Gateway offers no simple body-size cap to restore
+them with — it would take an `EnvoyPatchPolicy`.
+
+⚠️ **`faro` also carries `limit-rps: 50` and `limit-connections: 20`.** Those
+are a real DoS guard and DO have an equivalent —
+`BackendTrafficPolicy.rateLimit` / `.connection`. Do not drop them silently
+when migrating it.
+
+⚠️ **`external-dns.alpha.kubernetes.io/exclude: "true"` DOES NOT WORK on an
+HTTPRoute here.** A throwaway `bodytest.lab.techyon.dev` route carried it and
+external-dns published the record anyway — and `--policy=upsert-only` means
+deleting the route does not remove it. Any temporary hostname leaves permanent
+DNS behind; plan the manual cleanup instead of relying on that annotation.
 
 ⚠️ **Native EG `oidc` needs ONE REDIRECT URI PER HOSTNAME**, because the OAuth
 callback has to land on the host being browsed. That is 6 manual Google Console
