@@ -917,6 +917,41 @@ API support (it is **not** enabled today — no `--enable-gateway-api` flag) or
 keep issuing Certificates and referencing the Secrets from the Gateway. The
 DNS01 wildcard finding makes the second option perfectly workable.
 
+#### ✅ MIGRATION STATE 2026-08-04 — 13 of 15 hostnames moved
+
+ingress-nginx now serves **2**. Everything below was cut over one commit at a
+time, each individually revertible, with DNS following on external-dns's
+1-minute interval.
+
+| Gateway | apps |
+|---|---|
+| `homelab-gated` (192.168.32.19) | pihole (admin UI), homepage, headlamp, prometheus, pyroscope, goldilocks |
+| `homelab` (192.168.32.18) | argocd, grafana, immich, mealie, faro, otel, pyroscope-ingest |
+
+**Still on ingress-nginx:**
+- `github-mcp` — blocked on bcrypt vs SHA-1, see below. Operator deferred.
+- `oauth` — oauth2-proxy itself, and it is now **used by NOTHING**: no Ingress
+  or route references `auth-url` any more, because every gated host does its
+  own OIDC at the Envoy edge. It is a candidate for retirement, which is a
+  deliberate decision rather than a tidy-up.
+
+⚠️ **The spike has been torn down**, but its manifests are kept at
+`gitops/spikes/phase6-envoy-oidc/` as the record of what was proven.
+
+Notes worth keeping from the migration itself:
+- **ArgoCD's route is NOT managed by ArgoCD.** The argo-cd chart emits
+  `server.httproute` natively, so it lives in `gitops/argocd-values.yaml` and
+  needs `ansible-playbook playbooks/15-argocd.yml`. The Gateway it points at
+  *is* ArgoCD-managed, so a broken Gateway costs the UI — the controller and
+  kubectl keep working, which is the only reason that is acceptable.
+- **Pi-hole's DNS was never involved.** Its `.53` LoadBalancers are separate
+  from the admin UI; verified before and after, including that the `.home`
+  names Ansible resolves from still answer.
+- **Homepage's `allowedHosts` had to move with it** (nginx `.13` → gated
+  Gateway `.19`), because homepage validates the Host header itself. A stale
+  value there fails as "Host validation failed", which looks nothing like a
+  routing fault.
+
 #### Duplication: what a shared policy fixes, and what it cannot
 
 Asked 2026-08-04: can an ApplicationSet stop the same manifests being written
