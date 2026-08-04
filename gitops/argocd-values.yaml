@@ -117,25 +117,37 @@ server:
     type: LoadBalancer
     # Optional: pin an IP from your MetalLB pool (recommended)
     # loadBalancerIP: 192.168.32.50
+  # ── Migrated to Envoy Gateway (Phase 6) ────────────────────────────────────
+  # The argo-cd chart emits the HTTPRoute itself, so this stays here and is
+  # applied by `ansible-playbook playbooks/15-argocd.yml` -- ArgoCD is NOT one
+  # of its own Applications, deliberately, so its route cannot live in
+  # apps/*/manifests like every other migrated app.
   ingress:
-    enabled: true
-    ingressClassName: nginx
+    enabled: false
 
+  # OPEN Gateway: ArgoCD has its own login and its own RBAC, so the edge gate
+  # would stack a second unrelated auth in front of it. Its Ingress carried no
+  # oauth2-proxy annotation for the same reason.
+  #
+  # ⚠️ There is a bootstrap wrinkle worth knowing: the Gateway this points at
+  # is itself managed BY ArgoCD (apps/envoy-gateway). If the Gateway is ever
+  # broken, the ArgoCD UI becomes unreachable -- but the controller keeps
+  # reconciling and kubectl still works, so the repair path survives. That is
+  # why this is acceptable; it would not be if ArgoCD had no other entry point.
+  httproute:
+    enabled: true
+    parentRefs:
+      - name: homelab
+        namespace: gateway-envoy
+        sectionName: https
+    hostnames:
+      - argocd.lab.techyon.dev
     annotations:
-      kubernetes.io/ingress.class: nginx
-      cert-manager.io/cluster-issuer: cloudflare-ca
       gethomepage.dev/description: CD server
       gethomepage.dev/enabled: "true"
       gethomepage.dev/group: CI/CD
       gethomepage.dev/icon: argo-cd.png
       gethomepage.dev/name: ArgoCD
-
-
-    hostname: argocd.lab.techyon.dev
-    extraTls:
-      - hosts:
-        - argocd.lab.techyon.dev
-        secretName: argocd-tls
 
   # Optional quality-of-life if you later expose via ingress:
   # extraArgs:
