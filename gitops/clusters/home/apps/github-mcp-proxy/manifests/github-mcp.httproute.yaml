@@ -1,0 +1,44 @@
+# github-mcp on Envoy Gateway, keeping HTTP BASIC AUTH.
+#
+# ⚠️ This host is NOT open, despite an earlier survey classifying it that way.
+# That survey looked for oauth2-proxy's `auth-url` annotation, found none, and
+# concluded "no auth" -- while the Ingress actually carried
+# `nginx.ingress.kubernetes.io/auth-type: basic`. Migrating it as an open route
+# would have silently stripped authentication from an MCP proxy.
+#
+# Basic auth rather than the Google gate is deliberate and correct: this
+# endpoint is consumed by a MACHINE (the Claude Code agent), which cannot
+# complete an interactive OIDC browser redirect.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: github-mcp
+  namespace: mcp
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - github-mcp.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: github-mcp-proxy
+          port: 8080
+---
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: github-mcp-basic-auth
+  namespace: mcp
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: github-mcp
+  basicAuth:
+    # ⚠️ Envoy expects the htpasswd content under the key `.htpasswd`, whereas
+    # nginx reads it from `auth`. The ExternalSecret now emits BOTH from the
+    # same source so neither consumer needs its own copy of the credential.
+    users:
+      name: github-mcp-basic-auth

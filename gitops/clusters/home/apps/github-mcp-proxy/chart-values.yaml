@@ -19,20 +19,11 @@ service:
   type: ClusterIP
   port: 8080
 
+# ── Migrated to Envoy Gateway (Phase 6) ──────────────────────────────────────
+# Routing is manifests/github-mcp.httproute.yaml; basic auth is now an Envoy
+# Gateway SecurityPolicy rather than an nginx annotation.
 ingress:
-  enabled: true
-  className: nginx
-  host: github-mcp.lab.techyon.dev
-  clusterIssuer: cloudflare-ca
-  tlsSecretName: github-mcp-tls
-  # Basic-auth at the ingress edge. Snippet annotations are disabled
-  # cluster-wide (CVE-2022-4886). The Secret `github-mcp-basic-auth` is
-  # rendered by github-mcp-basic-auth.external-secret.yaml in this dir
-  # (sources username + password from 1Password item GH_MCP_BASIC_AUTH).
-  basicAuth:
-    enabled: true
-    secretName: github-mcp-basic-auth
-    realm: "MCP"
+  enabled: false
 
 # Probes target /status (returns 200) instead of /sse — the SSE stream never
 # completes within the probe timeout, so the default /sse path leaves the pod
