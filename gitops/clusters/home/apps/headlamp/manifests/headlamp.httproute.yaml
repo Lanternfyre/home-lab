@@ -1,0 +1,44 @@
+# Headlamp on Envoy Gateway. Replaces headlamp.ingress.yaml.
+#
+# Attached to `homelab-gated` — an explicit operator decision (2026-08-04) to
+# KEEP the edge gate rather than rely on Headlamp's own login, preserving the
+# posture its Ingress had behind oauth2-proxy.
+#
+# ⚠️ This means TWO OIDC flows on one hostname, and that is intentional:
+#
+#   1. Envoy Gateway gates the hostname   -> proves you are in the Workspace
+#   2. Headlamp runs its OWN Google OIDC  -> mints the token the API server
+#                                            checks for RBAC
+#
+# Step 2 cannot be removed: it is what produces the per-user identity the
+# ClusterRoleBinding matches. Step 1 is defence in depth for a full cluster UI.
+# Both use the same Google client, so the second flow should be a silent SSO
+# re-auth rather than a second password prompt.
+#
+# ⚠️ WATCH FOR: Envoy Gateway claims `/logout` (its `logoutPath`) on every
+# gated host. If Headlamp uses that path too, the edge intercepts it and
+# Headlamp's own logout never runs. Harmless day to day; confusing if logout
+# behaves oddly. The callback paths do NOT collide — EG uses
+# `/oauth2/callback`, Headlamp uses `/oidc-callback`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: headlamp
+  namespace: headlamp
+  annotations:
+    gethomepage.dev/description: Kubernetes Dashboard
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/icon: kubernetes.png
+    gethomepage.dev/name: Headlamp
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - headlamp.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: headlamp
+          port: 80
