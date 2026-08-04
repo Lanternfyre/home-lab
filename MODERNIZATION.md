@@ -917,6 +917,42 @@ API support (it is **not** enabled today — no `--enable-gateway-api` flag) or
 keep issuing Certificates and referencing the Secrets from the Gateway. The
 DNS01 wildcard finding makes the second option perfectly workable.
 
+#### Duplication: what a shared policy fixes, and what it cannot
+
+Asked 2026-08-04: can an ApplicationSet stop the same manifests being written
+over and over? Surveyed rather than guessed — **one 1Password item
+(`GoogleOauthClient`) feeds SIX ExternalSecrets, and every one produces a
+DIFFERENT key shape**, because each upstream chart reads credentials its own
+way:
+
+| namespace | secret | keys it must produce |
+|---|---|---|
+| `gateway-envoy` | gateway-oidc | `client-secret` |
+| `auth` | oauth2-proxy-creds | `client-id`, `client-secret`, `cookie-secret` |
+| `argocd` | argocd-google-oidc | `clientID`, `clientSecret` |
+| `monitoring` | grafana-google-oidc | `GF_AUTH_GOOGLE_CLIENT_ID/SECRET` |
+| `headlamp` | headlamp-oidc | `OIDC_CLIENT_ID`, `OIDC_*` |
+| `immich` | immich-config | a whole `immich-config.yaml` |
+
+- **ApplicationSet cannot help.** It generates *Applications*, not the
+  manifests inside one, so it has no reach into `manifests/`.
+- **`ClusterExternalSecret` is installed** and is the right tool for fanning
+  **one** shape into many namespaces by label — but it cannot emit six
+  different shapes from one definition.
+- What is actually repeated is ~4 lines of `remoteRef` per consumer. Unifying
+  them means changing how four charts consume credentials: more risk than the
+  duplication costs. **Left alone deliberately.**
+
+✅ **What the Gateway design DID fix** is the duplication that was about to get
+much worse: a per-app SecurityPolicy plus a per-namespace OIDC secret, copied
+**six times** as the migration proceeded. Attaching one policy to the
+`homelab-gated` Gateway cascades it to every route from any namespace, so it is
+1 and 1. goldilocks dropped from ~140 lines to 44.
+
+Minor inconsistency, recorded not fixed: three of those ExternalSecrets live
+centrally in `external-secrets/manifests/`, three live in their own app dirs.
+Same job, two conventions.
+
 #### The migration is smaller than "15 Ingresses" suggests
 
 Surveyed live 2026-08-04. Only **6 of 15** hostnames are auth-gated today; the
@@ -934,6 +970,37 @@ browser flow. They must stay open.
 `argocd`, `grafana`, `mealie` and `photos` are "open" only at the ingress —
 each authenticates its own users. Do not add a second login in front of them
 without deciding that deliberately.
+
+⚠️ **CORRECTION to the table above: `github-mcp` is NOT open.** It carries
+`nginx.ingress.kubernetes.io/auth-type: basic` with
+`auth-secret: github-mcp-basic-auth`. The first pass classified it as open
+because it has no `auth-url` annotation — i.e. it looked for oauth2-proxy and
+concluded "no auth" when it found none. Migrating it as an open route would
+have **silently removed HTTP basic auth from an internet-adjacent MCP proxy.**
+Envoy Gateway's SecurityPolicy has a `basicAuth` block, so it is translatable —
+but it needs its own policy, not the shared Google one.
+
+#### nginx annotations that need translating, surveyed 2026-08-04
+
+| host | annotation | Gateway API equivalent |
+|---|---|---|
+| mealie | `proxy-body-size: 100m` | ❓ unresolved, see below |
+| photos | `proxy-body-size: 0` (unlimited) | ❓ unresolved |
+| faro | `proxy-body-size: 10m` + `limit-rps: 50` + `limit-connections: 20` | `BackendTrafficPolicy.rateLimit` / `.connection` |
+| otel, pyroscope-ingest | `proxy-body-size: 50m` | ❓ unresolved |
+| github-mcp | `auth-type: basic` | `SecurityPolicy.basicAuth` |
+
+❓ **The body-size question is genuinely OPEN, and an attempt to answer it
+failed.** nginx defaults to 1 MB, which is why these annotations exist at all;
+Envoy is believed to stream request bodies without a limit, which would make
+them unnecessary. **That was NOT verified.** Querying the Envoy config dump
+returned zero bytes — the proxy container is distroless (no shell, no curl) and
+its admin interface binds to 127.0.0.1 only. The controls (`oauth2`,
+`jwt_authn`) also returned 0, which is what exposed the empty result as a
+failed method rather than a real answer.
+
+**Do not migrate `photos` or `mealie` until this is settled with a real
+upload.** immich uploads are the highest-stakes case in the cluster.
 
 ⚠️ **Native EG `oidc` needs ONE REDIRECT URI PER HOSTNAME**, because the OAuth
 callback has to land on the host being browsed. That is 6 manual Google Console
