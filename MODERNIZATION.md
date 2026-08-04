@@ -857,6 +857,69 @@ policy would rewrite objects after ArgoCD applies them and the two would fight
 indefinitely.
 
 ### Phase 6 — ingress-nginx → Envoy Gateway
+
+### ✅ THE SPIKE PASSED 2026-08-03/04 — the blocking unknown is answered
+
+**Envoy Gateway v1.8.3 does compose `oidc` + `jwt` + `authorization` on a
+single SecurityPolicy.** This was the one thing the whole phase rested on, and
+the doc's own note was that *no upstream e2e test covers it*. Manifests kept at
+`gitops/spikes/phase6-envoy-oidc/` — deliberately outside any ApplicationSet,
+so nothing syncs them.
+
+**The evidence, and the order it had to be gathered in:**
+
+1. `hd = techyon.dev` → sign in → **503**. That is a *pass*: the backend is a
+   Service with **no endpoints on purpose**, so 503 means the request traversed
+   oidc redirect → Google → callback → cookie → JWT extracted *from that
+   cookie* → claim matched → allowed. Nothing is served, so the spike leaks
+   nothing even if the policy had failed to attach.
+2. Flip to `hd = nonexistent.example`, **same cookie, no re-login** →
+   **403 `rbac: access denied`** (Envoy's RBAC filter body). Only the rule
+   changed, so the rule is genuinely *evaluated* rather than absent-and-ignored.
+
+⚠️ **Doing those in the other order would have proved nothing.** A 403 is also
+what a completely broken JWT filter produces, since no claims means no match
+means `defaultAction: Deny`. Only 503-then-403 distinguishes "the rule works"
+from "nothing works".
+
+⚠️ **The acceptance test this document specified could not be run, and would
+have given a false pass.** It said: log in with a `@gmail.com` account, expect
+403. But the consent screen is `orgInternalOnly`, so a gmail account never
+completes the flow — Google refuses before any token exists, the authorization
+rule is never reached, and a *missing* rule looks identical to a working one.
+The inversion above needs one account and is deterministic.
+
+**Configuration details that are load-bearing, all confirmed live:**
+
+- `oidc.cookieNames.idToken` **must be pinned**. The jwt provider reads the
+  token from a cookie via `extractFrom.cookies`, and cannot address it unless
+  the name is fixed — otherwise the token is present, unreadable, and
+  everything 403s with nothing reporting why.
+- `jwt` is not optional: `oidc` alone does **not** verify the ID token
+  signature (EG #5414), so without it the claim check is decorative.
+- `authorization.defaultAction: Deny` makes a typo in a rule fail **closed**.
+- Envoy Gateway uses **PKCE** on the authorization request (observed
+  `code_challenge_method=S256`).
+
+**Two things this also settled, both of which de-risk the endgame:**
+
+- ✅ **`cloudflare-ca` solves DNS01 via the Cloudflare API, not HTTP01 through
+  ingress-nginx.** So retiring nginx will **not** break certificate renewal for
+  the 15 hostnames — the failure that would otherwise have surfaced at the very
+  end, when it is most expensive. It also means a wildcard `*.lab.techyon.dev`
+  is possible, turning 15 Certificates into 1.
+- ✅ **`external-dns-cloudflare` already watches HTTPRoutes** — the spike's DNS
+  record was created from the HTTPRoute with no extra configuration. Confirmed
+  in its log: `Endpoints generated from HTTPRoute gateway-envoy/spike`.
+
+**Still to decide before migrating:** whether to enable cert-manager's Gateway
+API support (it is **not** enabled today — no `--enable-gateway-api` flag) or
+keep issuing Certificates and referencing the Secrets from the Gateway. The
+DNS01 wildcard finding makes the second option perfectly workable.
+
+⚠️ **Spike cleanup:** deleting the manifests will **not** remove
+`spike.lab.techyon.dev` from Cloudflare — `external-dns` runs
+`--policy=upsert-only`. Remove that record by hand.
 `ingress-nginx` was **archived 2026-03-24**; no further CVE fixes. Exposure is
 LAN-only (RFC1918, no tunnel), so this is unhurried but not optional.
 

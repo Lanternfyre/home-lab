@@ -168,6 +168,10 @@ spec:
               - name: hd
                 valueType: String
                 values:
-                  # STEP 2 OF THE TEST: change this to nonexistent.example,
-                  # re-apply, clear cookies, sign in again, expect 403.
+                  # ✅ BOTH STEPS PASSED 2026-08-03/04.
+                  #   step 1, hd=techyon.dev        -> 503 (reached the backend)
+                  #   step 2, hd=nonexistent.example -> 403 "rbac: access denied"
+                  # Same cookie, same token, only the rule changed -- so the
+                  # authorization rule is genuinely evaluated against a claim
+                  # read out of the OIDC cookie, not absent-and-ignored.
                   - techyon.dev
