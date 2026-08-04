@@ -17,9 +17,13 @@ extraEnvFrom: []
 config:
   # -- List of allowed hosts (sometimes with the port) that can host your homepage install
   # -- see https://gethomepage.dev/installation/#homepage_allowed_hosts
-  # The chart already appends the ingress domain (home.lab.techyon.dev) and the
-  # in-cluster Service names, so this list only needs the RAW IP anyone might
-  # browse directly. Chart 4.14.0 also appends `$(POD_IP):3000` itself, which
+  # ⚠️ THE HOSTNAME MUST BE LISTED EXPLICITLY NOW. The chart derives the
+  # allowed hosts from `ingress.hosts`, so disabling the Ingress for the
+  # Gateway migration silently DROPPED home.lab.techyon.dev from this list and
+  # every request started failing "Host validation failed" -- a breakage with
+  # nothing to do with routing, caused by turning off a block that looked
+  # unrelated. Migrating to an HTTPRoute gives the chart nothing to derive
+  # from, so it is spelled out here. Chart 4.14.0 also appends `$(POD_IP):3000` itself, which
   # is what lets the kubelet's health probes past this check -- before that,
   # probing by pod IP hit "Host validation failed".
   #
@@ -28,7 +32,9 @@ config:
   # Host header, so leaving the old IP here would have made direct-by-IP access
   # fail with "Host validation failed" -- a silent breakage that has nothing to
   # do with routing and would have been hunted for in the wrong place.
-  allowedHosts: ['192.168.32.19']
+  allowedHosts:
+    - home.lab.techyon.dev
+    - 192.168.32.19
 
 serviceAccount:
   # -- Specifies whether a service account should be created
