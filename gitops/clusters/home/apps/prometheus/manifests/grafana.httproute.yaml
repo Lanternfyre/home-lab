@@ -1,0 +1,38 @@
+# Grafana on Envoy Gateway. Replaces grafana.ingress.yaml.
+#
+# ⚠️ Attached to `homelab`, the OPEN Gateway — deliberately, and it is not an
+# oversight. Grafana authenticates its own users via Google OIDC
+# (GF_AUTH_GOOGLE_* from the grafana-google-oidc Secret), so putting the shared
+# workspace SecurityPolicy in front of it would stack a second, separate login
+# on top of one that already works. Its Ingress carried no auth-url annotation
+# for exactly the same reason.
+#
+# The security decision for any app in this repo is now just which Gateway its
+# route names:
+#   homelab        -> reachable on the LAN, app handles its own auth (or needs none)
+#   homelab-gated  -> Google sign-in enforced at the edge, techyon.dev only
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: monitoring
+  annotations:
+    # Carried over from the Ingress verbatim. Dropping these silently removes
+    # the app from the homepage dashboard -- that happened to goldilocks and
+    # nothing reported it.
+    gethomepage.dev/description: Grafana
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Monitoring
+    gethomepage.dev/icon: grafana.png
+    gethomepage.dev/name: Grafana
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - grafana.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: prometheus-operator-grafana
+          port: 80
