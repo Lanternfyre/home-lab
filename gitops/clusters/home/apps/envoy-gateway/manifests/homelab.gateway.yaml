@@ -1,0 +1,99 @@
+# The shared Gateway that replaces ingress-nginx, one hostname at a time.
+#
+# ⚠️ Creating this changes NOTHING on its own. It has no routes attached, so it
+# serves nothing and ingress-nginx keeps every one of the 15 Ingresses on
+# 192.168.32.13. Traffic only moves when an app's Ingress is swapped for an
+# HTTPRoute, one commit at a time, each individually revertible.
+#
+# The design rests on the Phase 6 spike (gitops/spikes/phase6-envoy-oidc/),
+# which proved Envoy Gateway v1.8.3 composes oidc + jwt + authorization -- the
+# one unknown the whole phase depended on.
+---
+# ONE wildcard certificate instead of 15 per-host ones.
+#
+# Possible only because `cloudflare-ca` solves DNS01 through the Cloudflare
+# API. That was checked before committing to this design, and it is the fact
+# that de-risks the endgame: an HTTP01 issuer would have solved challenges
+# THROUGH ingress-nginx, so retiring nginx would have broken certificate
+# renewal for every hostname -- a gate placed before its own remedy, which this
+# repo has already been bitten by four times.
+#
+# It also means cert-manager's Gateway API support (`--enable-gateway-api`,
+# currently NOT enabled) is unnecessary: cert-manager writes a Secret, and the
+# Gateway below references it directly.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-lab-techyon-dev
+  namespace: gateway-envoy
+spec:
+  secretName: wildcard-lab-techyon-dev-tls
+  issuerRef:
+    name: cloudflare-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.lab.techyon.dev"
+    # The apex is NOT covered by the wildcard -- `*.lab` matches one label, so
+    # `lab.techyon.dev` itself would not validate. Listed explicitly in case a
+    # route ever needs it.
+    - "lab.techyon.dev"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab
+  namespace: gateway-envoy
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.lab.techyon.dev"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: wildcard-lab-techyon-dev-tls
+      # Routes live in the APP's namespace, next to the app they expose, which
+      # is how every Ingress here is already organised. Without this the
+      # Gateway would only accept routes from gateway-envoy.
+      allowedRoutes:
+        namespaces:
+          from: All
+
+    # Plain HTTP exists only to bounce to HTTPS. ingress-nginx does this by
+    # default (`ssl-redirect`), so without it, migrating an app would silently
+    # drop the redirect and anything using a bare http:// link would break.
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "*.lab.techyon.dev"
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+# The listener above only opens the port. Without this route, plain HTTP would
+# return 404 rather than redirecting -- a listener with no route attached
+# serves nothing, which is exactly the "it exists so it must work" trap.
+#
+# One route covers every hostname, so migrated apps inherit the redirect
+# without each needing its own copy.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: https-redirect
+  namespace: gateway-envoy
+spec:
+  parentRefs:
+    - name: homelab
+      # Pinned to the HTTP listener by name. Without sectionName this would
+      # also attach to the HTTPS listener and redirect HTTPS to itself, which
+      # is an infinite loop rather than an error.
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
