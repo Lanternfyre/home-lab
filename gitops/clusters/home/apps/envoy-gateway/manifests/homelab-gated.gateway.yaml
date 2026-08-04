@@ -121,6 +121,24 @@ spec:
     - group: gateway.networking.k8s.io
       kind: Gateway
       name: homelab-gated
+      # ⚠️ `sectionName: https` is LOAD-BEARING, and its absence is a bug that
+      # only shows up end to end.
+      #
+      # Without it the policy attaches to the whole Gateway, INCLUDING the
+      # plain-HTTP listener. A request to http:// then hits the OIDC filter
+      # before it ever reaches the redirect route, and Envoy derives the
+      # callback from `x-forwarded-proto`, which is `http` — producing
+      #   redirect_uri=http://<host>/oauth2/callback
+      # Google rejects that (it is neither registered nor https), so plain HTTP
+      # breaks instead of redirecting.
+      #
+      # Observed exactly that: `curl http://goldilocks...` returned 302 to
+      # Google with an http:// callback, where the open Gateway correctly
+      # returned 301 to https://.
+      #
+      # Pinned to the HTTPS listener, HTTP is left alone to do its one job —
+      # redirect — and OIDC happens only once the connection is already TLS.
+      sectionName: https
 
   oidc:
     provider:
