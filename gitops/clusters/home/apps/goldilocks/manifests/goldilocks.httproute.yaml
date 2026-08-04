@@ -1,45 +1,31 @@
-# goldilocks moved from ingress-nginx to Envoy Gateway. FIRST app migrated in
-# Phase 6 -- chosen because it is the newest and least load-bearing thing here,
-# so the pattern gets proven where a mistake costs nothing.
+# goldilocks on Envoy Gateway. FIRST app migrated in Phase 6 — chosen because
+# it is the newest and least load-bearing thing here, so the pattern gets
+# proven where a mistake costs nothing.
 #
-# Replaces goldilocks.ingress.yaml (deleted in the same commit) and, with it,
-# the oauth2-proxy hop: Envoy Gateway performs the OIDC flow itself. That is
-# what the Phase 6 spike proved -- oidc + jwt + authorization compose on one
-# SecurityPolicy.
+# ── This file used to be ~140 lines ──────────────────────────────────────────
+# It carried its own SecurityPolicy (oidc + jwt + authorization) and its own
+# ExternalSecret copy of the OIDC client secret. Both are gone: the policy now
+# lives ONCE on the `homelab-gated` Gateway and cascades to every route
+# attached to it.
 #
-# ⚠️ Rollback is reverting this one commit. external-dns publishes with
-# `ttl=1`, so the record points back at ingress-nginx within seconds.
----
-# The OIDC client secret must live in the SAME namespace as the SecurityPolicy
-# that references it -- Gateway API policy attachment is namespace-local, so
-# there is no way to point at a Secret in gateway-envoy. One of these is needed
-# per gated namespace (6 in total when the migration finishes).
-apiVersion: external-secrets.io/v1
-kind: ExternalSecret
-metadata:
-  name: goldilocks-oidc
-  namespace: goldilocks
-spec:
-  refreshInterval: 1h
-  secretStoreRef:
-    kind: ClusterSecretStore
-    name: one-password
-  target:
-    name: goldilocks-oidc
-    creationPolicy: Owner
-    deletionPolicy: Retain
-    template:
-      engineVersion: v2
-      mergePolicy: Replace
-      data:
-        # Envoy Gateway reads the client secret from this fixed key name.
-        client-secret: '{{ .rawClientSecret | trim }}'
-  data:
-    - secretKey: rawClientSecret
-      remoteRef:
-        key: GoogleOauthClient
-        property: GoogleOauthSecretId.txt
----
+# So the entire security decision for an app is now WHICH GATEWAY IT NAMES:
+#
+#   parentRefs: homelab         -> reachable by anything on the LAN
+#   parentRefs: homelab-gated   -> Google sign-in, restricted to techyon.dev
+#
+# That is the whole point. A one-line difference, impossible to get subtly
+# wrong, and changing the auth rules is one edit rather than six.
+#
+# ⚠️ Goldilocks MUST be gated: it has no authentication of its own and renders
+# a complete inventory of every workload in the cluster with its resource
+# usage — a reconnaissance map.
+#
+# ⚠️ Google Console still needs `https://goldilocks.lab.techyon.dev/oauth2/callback`
+# registered on the OAuth client. The shared policy removes duplicated YAML,
+# not Google's exact-match requirement on redirect URIs.
+#
+# Rollback is reverting the commit that deleted goldilocks.ingress.yaml.
+# external-dns retargets the record on its 1-minute interval.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -47,7 +33,7 @@ metadata:
   namespace: goldilocks
 spec:
   parentRefs:
-    - name: homelab
+    - name: homelab-gated
       namespace: gateway-envoy
       sectionName: https
   hostnames:
@@ -56,74 +42,3 @@ spec:
     - backendRefs:
         - name: goldilocks-dashboard
           port: 80
----
-# The security model, and it is not optional here: Goldilocks has NO
-# authentication of its own and renders a complete inventory of every workload
-# in the cluster with its resource usage -- a reconnaissance map.
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
-metadata:
-  name: goldilocks
-  namespace: goldilocks
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: HTTPRoute
-      name: goldilocks
-
-  oidc:
-    provider:
-      issuer: "https://accounts.google.com"
-    clientID: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
-    clientSecret:
-      name: goldilocks-oidc
-    # ⚠️ Native EG oidc needs one redirect URI PER HOSTNAME, because the OAuth
-    # callback must land on the host being browsed. This exact string has to be
-    # registered on the Google client or the flow dies with
-    # redirect_uri_mismatch before the cluster is involved.
-    redirectURL: "https://goldilocks.lab.techyon.dev/oauth2/callback"
-    logoutPath: "/logout"
-    scopes:
-      - openid
-      - email
-      - profile
-    # ⚠️ LOAD-BEARING, proven by the spike. The jwt provider below reads the ID
-    # token out of a cookie, and can only do so if the name is pinned. Left
-    # unset, Envoy Gateway appends a random suffix and the token becomes
-    # present-but-unreadable -- every request 403s and nothing reports why.
-    cookieNames:
-      idToken: "IdToken"
-      accessToken: "AccessToken"
-
-  # ⚠️ `oidc` alone does NOT verify the ID token signature (envoy gateway
-  # #5414, open). Without this the cookie is trusted on its face and the claim
-  # check below is decorative.
-  jwt:
-    providers:
-      - name: google
-        issuer: "https://accounts.google.com"
-        audiences:
-          - "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
-        remoteJWKS:
-          uri: "https://www.googleapis.com/oauth2/v3/certs"
-        extractFrom:
-          cookies:
-            - "IdToken"
-
-  authorization:
-    # A typo in the rule below fails CLOSED (403) rather than open.
-    defaultAction: Deny
-    rules:
-      - name: workspace-only
-        action: Allow
-        principal:
-          jwt:
-            provider: google
-            claims:
-              # `hd` is the Google Workspace domain claim. Verified during the
-              # spike by inverting this value and confirming the SAME cookie
-              # was then rejected with 403 "rbac: access denied".
-              - name: hd
-                valueType: String
-                values:
-                  - techyon.dev

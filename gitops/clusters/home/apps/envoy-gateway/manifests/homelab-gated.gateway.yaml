@@ -1,0 +1,190 @@
+# A SECOND Gateway, identical to `homelab` except that everything routed
+# through it is behind Google sign-in — enforced by ONE SecurityPolicy below,
+# not by a copy per app.
+#
+# ── Why two Gateways rather than one ─────────────────────────────────────────
+# The obvious approach is a SecurityPolicy per HTTPRoute. That means 6 copies
+# of ~90 lines of identical policy, and changing the cookie name or adding a
+# claim becomes a 6-file edit where 5 of them can silently drift.
+#
+# Three tidier-looking alternatives were checked and rejected on facts:
+#
+#   * ONE policy with 6 `targetRefs` — `targetRefs` really is a list, but
+#     policy attachment is NAMESPACE-LOCAL, and the 6 routes live in 6
+#     different namespaces next to their apps. Same for `targetSelectors`.
+#   * ONE policy pinned to a listener via `targetRefs[].sectionName` (which is
+#     supported) — but two HTTPS listeners on the same Gateway would both need
+#     port 443 and the same `*.lab.techyon.dev` hostname, and Gateway API
+#     requires listeners on a port to be distinguishable. They collide.
+#   * Templating it away with a shared Helm chart or ApplicationSet generator —
+#     that removes the TYPING but keeps 6 rendered policies, so it is more
+#     machinery for the same runtime object count.
+#
+# Attaching the policy to a GATEWAY cascades it to every route attached from
+# any namespace, which is the one construct that genuinely deduplicates. The
+# cost is a second Envoy deployment and a second MetalLB IP — cheap here, where
+# the pool is 192.168.32.10-250 and Envoy is small.
+#
+# Choosing per app is then a one-line decision: `sectionName` and which Gateway
+# the HTTPRoute names in `parentRefs`.
+---
+# ONE copy of the OIDC client secret, in the Gateway's namespace, because the
+# policy that reads it also lives here. The per-app copies this replaces would
+# have been 6 identical ExternalSecrets in 6 namespaces.
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: gateway-oidc
+  namespace: gateway-envoy
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    kind: ClusterSecretStore
+    name: one-password
+  target:
+    name: gateway-oidc
+    creationPolicy: Owner
+    deletionPolicy: Retain
+    template:
+      engineVersion: v2
+      mergePolicy: Replace
+      data:
+        client-secret: '{{ .rawClientSecret | trim }}'
+  data:
+    - secretKey: rawClientSecret
+      remoteRef:
+        key: GoogleOauthClient
+        property: GoogleOauthSecretId.txt
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-gated
+  namespace: gateway-envoy
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.lab.techyon.dev"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            # The same wildcard Secret as the open Gateway. cert-manager
+            # renews one Certificate; both Gateways read it.
+            name: wildcard-lab-techyon-dev-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: "*.lab.techyon.dev"
+      allowedRoutes:
+        namespaces:
+          from: All
+---
+# ⚠️ Name must differ from the open Gateway's redirect route. Both live in
+# gateway-envoy, so reusing `https-redirect` makes the two files declare the
+# SAME object — the second silently overwrites the first and one Gateway ends
+# up with no redirect at all. Caught by a server-side dry-run reporting
+# "configured" instead of "created" for a supposedly new object.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: https-redirect-gated
+  namespace: gateway-envoy
+spec:
+  parentRefs:
+    - name: homelab-gated
+      sectionName: http
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+# THE shared policy. Every route attached to homelab-gated inherits it.
+#
+# Each setting here is load-bearing and was established by the Phase 6 spike
+# (gitops/spikes/phase6-envoy-oidc/), not by reading documentation.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: google-workspace-only
+  namespace: gateway-envoy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: homelab-gated
+
+  oidc:
+    provider:
+      issuer: "https://accounts.google.com"
+    clientID: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+    clientSecret:
+      name: gateway-oidc
+
+    # ⚠️ `redirectURL` is deliberately OMITTED, and that is what makes ONE
+    # policy able to serve many hostnames. Envoy Gateway then derives
+    #   %REQ(x-forwarded-proto)%://%REQ(:authority)%/oauth2/callback
+    # i.e. the callback follows whichever host was requested.
+    #
+    # VERIFIED, not assumed: removing it from the spike policy and re-issuing
+    # an unauthenticated request produced
+    # `redirect_uri=https://spike.lab.techyon.dev/oauth2/callback` — correct
+    # scheme and correct host. A hardcoded value here would force one policy
+    # per hostname and defeat the entire design.
+    #
+    # ⚠️ This does NOT remove the Google Console work: every hostname still
+    # needs its own authorised redirect URI registered on the client, because
+    # Google matches them exactly. What it removes is duplicated YAML.
+    logoutPath: "/logout"
+    scopes:
+      - openid
+      - email
+      - profile
+
+    # ⚠️ LOAD-BEARING. The jwt provider below reads the ID token out of a
+    # cookie and can only address it if the name is pinned. Left unset, Envoy
+    # Gateway appends a random per-policy suffix and the token becomes
+    # present-but-unreadable — every request 403s and nothing says why.
+    cookieNames:
+      idToken: "IdToken"
+      accessToken: "AccessToken"
+
+  # ⚠️ `oidc` alone does NOT verify the ID token signature (envoy gateway
+  # #5414, open). Without this block the cookie is trusted on its face and the
+  # claim check below is decorative.
+  jwt:
+    providers:
+      - name: google
+        issuer: "https://accounts.google.com"
+        audiences:
+          - "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+        remoteJWKS:
+          uri: "https://www.googleapis.com/oauth2/v3/certs"
+        extractFrom:
+          cookies:
+            - "IdToken"
+
+  authorization:
+    # A typo in the rule below fails CLOSED (403) rather than open.
+    defaultAction: Deny
+    rules:
+      - name: workspace-only
+        action: Allow
+        principal:
+          jwt:
+            provider: google
+            claims:
+              # Proven during the spike by inverting this value: the SAME
+              # cookie was then rejected with 403 "rbac: access denied".
+              - name: hd
+                valueType: String
+                values:
+                  - techyon.dev
