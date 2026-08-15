@@ -1,0 +1,128 @@
+# The probe that would have caught the 2026-08-08 incident on day one.
+#
+# What it reads: /sys/fs/ext4/<dev>/errors_count. The kernel bumps this when a
+# filesystem hits an error, and it is PERSISTENT -- it stays non-zero until an
+# e2fsck clears it. That property is the whole point. Every other signal in
+# this cluster was transient or lied:
+#
+#   pods 1/1 Running · iSCSI LOGGED_IN · Trident healthy · ArgoCD Synced ·
+#   CNPG "healthy: [1,2,3]" -- while no instance could serve a connection.
+#
+# errors_count is what actually found all six wedged volumes, by hand, on
+# 2026-08-15. This turns that one-off command into a metric.
+#
+# Why a DaemonSet writing a textfile rather than a real exporter: node-exporter
+# is already a privileged DaemonSet on every node with the scrape, the
+# ServiceMonitor and the Prometheus wiring solved. Writing a .prom file into
+# its textfile directory inherits all of that, and gets staleness detection for
+# free via node_textfile_mtime_seconds. A second exporter would need a Service,
+# a ServiceMonitor and its own relabeling to reproduce what already exists.
+#
+# Reads only. It has no kubeconfig, no ServiceAccount token, and no ability to
+# act on anything it finds -- see MODERNIZATION.md on why remediation is a
+# separate decision.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: volume-health-exporter
+  namespace: monitoring
+data:
+  probe.sh: |
+    #!/bin/sh
+    # Emit one series per ext4 filesystem, INCLUDING the healthy ones.
+    #
+    # Emitting zeros matters: it is what makes `absent()` mean "the probe died"
+    # rather than "nothing is wrong". A rule that only produces series when
+    # something is broken is indistinguishable from a broken rule, and this
+    # repo has shipped three things that existed and never worked.
+    set -u
+
+    OUT_DIR=/textfile
+    OUT="${OUT_DIR}/volume-health.prom"
+    INTERVAL="${INTERVAL:-60}"
+    NODE="${NODE_NAME:-unknown}"
+
+    # dm-8 -> mpathp, by walking the symlinks in the host's /dev/mapper.
+    dm_to_mpath() {
+      _dev="$1"
+      for _l in /host/dev/mapper/*; do
+        [ -L "$_l" ] || continue
+        _t=$(readlink "$_l")
+        if [ "${_t##*/}" = "$_dev" ]; then
+          basename "$_l"
+          return
+        fi
+      done
+    }
+
+    # /dev/mapper/mpathp -> the per-pod mount path, which embeds the PV name:
+    #   /var/lib/kubelet/pods/<uid>/volumes/kubernetes.io~csi/pvc-<uuid>/mount
+    #
+    # Reads /host/proc/1/mounts, NOT /proc/mounts. /proc/mounts resolves through
+    # /proc/self and would show this container's namespace, which does not
+    # contain the host's PVC mounts at all. PID 1 is the host's init, so its
+    # entry is the host mount table.
+    src_to_mount() {
+      awk -v s="$1" '$1 == s && $2 ~ /volumes\/kubernetes\.io~csi\// { print $2; exit }' \
+        /host/proc/1/mounts 2>/dev/null
+    }
+
+    # Fall back to any mount of the device if there is no CSI pod mount --
+    # a staged-but-unpublished volume, or a plain host filesystem.
+    src_to_any_mount() {
+      awk -v s="$1" '$1 == s { print $2; exit }' /host/proc/1/mounts 2>/dev/null
+    }
+
+    while :; do
+      tmp="${OUT}.$$"
+      {
+        echo '# HELP homelab_volume_ext4_errors ext4 on-disk error counter. Non-zero means the journal aborted and the filesystem is in permanent error state; it does NOT clear when the network recovers.'
+        echo '# TYPE homelab_volume_ext4_errors gauge'
+
+        for f in /host/sys/fs/ext4/*/errors_count; do
+          [ -e "$f" ] || continue
+          dev=$(basename "$(dirname "$f")")
+          cnt=$(cat "$f" 2>/dev/null) || cnt=0
+          case "$cnt" in ''|*[!0-9]*) cnt=0 ;; esac
+
+          mpath=""
+          case "$dev" in
+            dm-*) mpath=$(dm_to_mpath "$dev") ;;
+          esac
+
+          if [ -n "$mpath" ]; then
+            src="/dev/mapper/${mpath}"
+          else
+            src="/dev/${dev}"
+          fi
+
+          mnt=$(src_to_mount "$src")
+          [ -n "$mnt" ] || mnt=$(src_to_any_mount "$src")
+
+          # Pull pvc-<uuid> out of the mount path when it is a CSI volume.
+          pv=""
+          case "$mnt" in
+            */kubernetes.io~csi/pvc-*)
+              pv=${mnt##*/kubernetes.io~csi/}
+              pv=${pv%%/*}
+              ;;
+          esac
+
+          printf 'homelab_volume_ext4_errors{node="%s",device="%s",mpath="%s",persistentvolume="%s",mountpoint="%s"} %s\n' \
+            "$NODE" "$dev" "$mpath" "$pv" "$mnt" "$cnt"
+        done
+
+        # Heartbeat. node_textfile_mtime_seconds also covers staleness, but an
+        # explicit series makes the "is the probe alive" alert readable.
+        echo '# HELP homelab_volume_health_probe_timestamp_seconds Unix time of the last completed probe run.'
+        echo '# TYPE homelab_volume_health_probe_timestamp_seconds gauge'
+        printf 'homelab_volume_health_probe_timestamp_seconds{node="%s"} %s\n' "$NODE" "$(date +%s)"
+      } > "$tmp" 2>/dev/null
+
+      # Atomic swap. node-exporter reads this directory on its own schedule and
+      # would otherwise be able to read a half-written file.
+      chmod 0644 "$tmp" 2>/dev/null
+      mv -f "$tmp" "$OUT" 2>/dev/null
+
+      sleep "$INTERVAL"
+    done

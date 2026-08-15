@@ -38,6 +38,65 @@ defaultRules:
     kubeControllerManager: false
     kubeProxy: false
 
+# ── node-exporter: see PVC filesystems, and read the textfile collector ──────
+#
+# BOTH changes here exist because of the 2026-08-08 storage incident, in which
+# six PVC filesystems sat in permanent ext4 error state for SEVEN DAYS and this
+# monitoring stack said nothing. That was not bad luck — it was configuration:
+#
+#   --collector.filesystem.mount-points-exclude=...|var/lib/kubelet/.+|...
+#
+# Every PVC in this cluster mounts under /var/lib/kubelet/pods/..., so the
+# filesystem collector was explicitly told to ignore every volume that matters.
+# node-exporter was watching the five root disks and nothing else. There was no
+# `node_filesystem_readonly` series for a wedged Postgres volume to be 1 on,
+# and no `node_filesystem_device_error` for a statfs that was returning EIO.
+#
+# ⚠️ `extraArgs` REPLACES the chart's defaults rather than appending, so both
+# original args are restated below verbatim except for the one change. Drop
+# either and you silently lose the fs-type exclusions or re-break this.
+#
+# The exclusion now keeps `var/lib/kubelet/plugins/...` (the CSI globalmount
+# staging path) out while admitting `var/lib/kubelet/pods/...` (the per-pod
+# mount). Both point at the same filesystem, so collecting both would double
+# every series for no information. The pod path is the one that carries the
+# PVC name in the mountpoint label, which is what makes an alert readable.
+#
+# Cardinality is bounded and small: ~20 PVCs across 5 nodes, one mount each.
+#
+# Second change: `--collector.textfile.directory`. The textfile collector is
+# compiled in and ALREADY RUNNING (node_textfile_scrape_error exists on all
+# five nodes) but points at nothing, so it contributes no series. It reads
+# through the existing read-only host-root mount at /host/root, so this needs
+# no new volume — only somewhere to look. manifests/volume-health-exporter.*
+# is what writes there.
+prometheus-node-exporter:
+  # ── Make node alerts say WHICH NODE ──────────────────────────────────────
+  # node-exporter series carry no `node` label -- only `instance`, which is
+  # "192.168.33.22:9100". Every built-in node alert inherits that, and the
+  # Pushover message template in the alertmanager block below ends with
+  #
+  #     {{ if .Labels.node }}node: {{ .Labels.node }}{{ end }}
+  #
+  # which therefore renders EMPTY for all ~15 of them (NodeCPUHighUsage,
+  # NodeMemoryHighUtilization, NodeSystemSaturation, NodeFilesystem*, ...).
+  # The notification arrives naming an IP and a port, or nothing at all.
+  #
+  # The endpoints role exposes the pod's node, so promote it to a real label --
+  # the same fix, for the same reason, as smartctl-exporter's chart-values.yaml.
+  # This is a relabeling, not a metric relabeling: it applies at scrape time to
+  # every series from this job at once.
+  prometheus:
+    monitor:
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+  extraArgs:
+    - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/containerd/.+|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/plugins/.+)($|/)
+    - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|erofs)$
+    - --collector.textfile.directory=/host/root/var/lib/node-exporter/textfile_collector
+
 # Accept Prometheus remote_write pushes on the main instance. OTLP metrics from
 # external apps (e.g. the Necronia dev server) are relayed by alloy-gateway via
 # prometheus.remote_write and now land here, the same instance Grafana queries by

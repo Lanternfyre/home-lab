@@ -1,0 +1,89 @@
+# Writes the ext4 error counters into node-exporter's textfile directory.
+# Script and rationale: volume-health-exporter.configmap.yaml.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: volume-health-exporter
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/name: volume-health-exporter
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: volume-health-exporter
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: volume-health-exporter
+      annotations:
+        # Roll the pods when the script changes. Without this a ConfigMap edit
+        # syncs cleanly in ArgoCD and changes nothing that is running --
+        # the same "it landed but did not take effect" failure this repo keeps
+        # hitting. `reloader` is deployed and watches this annotation.
+        configmap.reloader.stakater.com/reload: "volume-health-exporter"
+    spec:
+      # No API access of any kind. This component observes; it cannot act.
+      automountServiceAccountToken: false
+      # All five nodes are control-plane and currently untainted. The blanket
+      # toleration is deliberate: a node that acquires a taint later must not
+      # silently drop out of storage monitoring, which is precisely the class
+      # of blind spot this exporter exists to close.
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+      # Needs root to read /host/proc/1/mounts (the host mount table).
+      # /sys/fs/ext4/*/errors_count is world-readable and does not.
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      containers:
+        - name: probe
+          image: busybox:1.37.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/script/probe.sh"]
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: INTERVAL
+              value: "60"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - { name: script,   mountPath: /script,    readOnly: true }
+            - { name: hostsys,  mountPath: /host/sys,  readOnly: true }
+            - { name: hostproc, mountPath: /host/proc, readOnly: true }
+            - { name: hostdev,  mountPath: /host/dev,  readOnly: true }
+            - { name: textfile, mountPath: /textfile }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { memory: 64Mi }
+      volumes:
+        - name: script
+          configMap:
+            name: volume-health-exporter
+            defaultMode: 0555
+        - { name: hostsys,  hostPath: { path: /sys,  type: Directory } }
+        - { name: hostproc, hostPath: { path: /proc, type: Directory } }
+        - { name: hostdev,  hostPath: { path: /dev,  type: Directory } }
+        # The handoff to node-exporter. It reads this same host directory
+        # through its existing read-only /host/root mount, so nothing about the
+        # node-exporter DaemonSet changes -- only the --collector.textfile.directory
+        # argument in chart-values.yaml.
+        #
+        # On local disk, deliberately and non-negotiably. Putting the storage
+        # probe's own output on QNAP storage is the one way to make this
+        # genuinely circular: the partition it exists to report would take the
+        # report with it.
+        - name: textfile
+          hostPath:
+            path: /var/lib/node-exporter/textfile_collector
+            type: DirectoryOrCreate

@@ -1,0 +1,156 @@
+# Storage alerts. Written because on 2026-08-08 a partition to the QNAP left
+# six PVC filesystems in permanent ext4 error state and this monitoring stack
+# produced NOT ONE alert for seven days. See MODERNIZATION.md.
+#
+# Three independent signals, deliberately. The incident's real lesson was not
+# "we lacked a rule", it was that every signal being consulted was a proxy for
+# health rather than health itself -- pods Running, sessions LOGGED_IN, Trident
+# green, ArgoCD Synced, CNPG reporting healthy while serving no connections.
+# One more proxy would not have helped. So:
+#
+#   1. homelab_volume_ext4_errors  -- the kernel's own persistent error counter.
+#      PROVEN: this is the signal that actually located all six volumes by hand
+#      on 2026-08-15. Written by manifests/volume-health-exporter.*.
+#   2. node_filesystem_readonly    -- an aborted journal remounts read-only.
+#   3. node_filesystem_device_error -- node-exporter's statfs() returning an
+#      error, which is what an EIO-ing mount does.
+#
+# (2) and (3) are UNVERIFIED for this specific failure -- the incident was over
+# before they could be observed, because they were not being collected at all
+# (see the mount-points-exclude note in chart-values.yaml). They are cheap and
+# they fail in a different place than (1), so they are worth having; but (1) is
+# the one that is known to work, and it is the critical rule.
+#
+# Every expression below was run against live Prometheus before commit, and
+# each returned empty. Since an expression that matches nothing also returns
+# empty, each was ALSO checked in the shape that proves it selects real series:
+#   - node_filesystem_readonly       131 series exist, 0 currently 1.
+#   - node_filesystem_device_error   131 series exist; 106 were 1, ALL of them
+#     tmpfs under /run/k3s/containerd (transient pod shm that cannot be
+#     statfs'd). The chart's exclusion regex covers `run/containerd/` but k3s
+#     puts them under `run/k3s/containerd/`, so they leaked in. That gap is
+#     closed in chart-values.yaml; without closing it this rule would have
+#     fired on 106 series the moment it landed.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: volume-health
+  namespace: monitoring
+  labels:
+    # kube-prometheus-stack's Prometheus selects PrometheusRules with this
+    # label (verified against the live Prometheus CR's ruleSelector). Without
+    # it the object exists, looks correct, and is loaded by nobody.
+    release: prometheus-operator
+spec:
+  groups:
+    - name: volume-health
+      rules:
+        # --- the flagship -------------------------------------------------
+        # Non-zero errors_count means ext4 hit an error and aborted its
+        # journal. It is PERSISTENT: it does not clear when the NAS comes back,
+        # only an unmount/remount (or e2fsck) resolves it. That is precisely
+        # why a week could pass with everything else reporting green.
+        #
+        # The join adds the human-readable claim ("databases/postgres-ha-3")
+        # to the PV UUID. The `or` arm is not decoration: without it, a volume
+        # whose PV is missing from kube-state-metrics -- or KSM being down --
+        # would silently drop the alert. The failure mode of an enrichment
+        # join is a MISSING page, so the un-enriched form must survive.
+        - alert: VolumeFilesystemWedged
+          expr: |
+            (
+              (homelab_volume_ext4_errors > 0)
+                * on (persistentvolume) group_left (claim_namespace, claim)
+                  label_replace(kube_persistentvolume_claim_ref, "claim", "$1", "name", "(.+)")
+            )
+            or
+            (
+              (homelab_volume_ext4_errors > 0)
+                unless on (persistentvolume) kube_persistentvolume_claim_ref
+            )
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Filesystem WEDGED on {{ $labels.node }}: {{ if $labels.claim }}{{ $labels.claim_namespace }}/{{ $labels.claim }}{{ else }}{{ $labels.device }}{{ end }}"
+            description: >-
+              ext4 error counter is {{ $value }} on {{ $labels.device }}
+              ({{ $labels.mpath }}, {{ $labels.persistentvolume }}) at
+              {{ $labels.mountpoint }}. Every I/O to this volume returns
+              EIO and it will NOT recover on its own -- restarting the pod
+              does not help, because the aborted state lives in the node-level
+              mount. Recovery: scale the workload to 0, CONFIRM the unmount on
+              {{ $labels.node }}, then scale back up. A Deployment cannot do
+              this by itself; its rolling update hands the same wedged mount to
+              the new pod. Full procedure in MODERNIZATION.md "Hard-won
+              findings"; CNPG needs all broken pods deleted, not one.
+
+        # --- second signal, different mechanism ---------------------------
+        # Scoped to per-pod PVC mounts. The CSI staging path under
+        # /var/lib/kubelet/plugins is the same filesystem and is excluded from
+        # collection, so this cannot double-report.
+        - alert: VolumeFilesystemReadOnly
+          expr: |
+            node_filesystem_readonly{mountpoint=~"/var/lib/kubelet/pods/.+"} == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "PVC filesystem remounted READ-ONLY on {{ $labels.node }}"
+            description: >-
+              {{ $labels.mountpoint }} ({{ $labels.device }}) is mounted
+              read-only. ext4 does this to itself when it hits an error, so
+              treat it as the same incident class as VolumeFilesystemWedged
+              even if that alert has not fired.
+
+        - alert: VolumeFilesystemDeviceError
+          expr: |
+            node_filesystem_device_error{mountpoint=~"/var/lib/kubelet/pods/.+"} == 1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "statfs() failing on a PVC mount on {{ $labels.node }}"
+            description: >-
+              node-exporter cannot stat {{ $labels.mountpoint }}. The volume is
+              mounted but not answering, which is what an EIO-ing filesystem
+              looks like from outside. 10m rather than 5m deliberately: a
+              volume genuinely mid-unmount can look like this briefly.
+
+        # --- the probe must prove it is alive -----------------------------
+        # A storage probe that dies silently recreates the exact failure it
+        # exists to prevent, and this repo has shipped three things that
+        # "existed and had never worked". Two rules, because they fail
+        # differently: absent() catches the DaemonSet being gone cluster-wide,
+        # the timestamp catches a single node's script wedging while the file
+        # it already wrote keeps being served.
+        #
+        # NodeTextFileCollectorScrapeError ships with kube-prometheus-stack and
+        # already covers the third case: a malformed .prom file.
+        - alert: VolumeHealthProbeAbsent
+          expr: absent(homelab_volume_ext4_errors)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The volume-health probe is reporting nothing, cluster-wide"
+            description: >-
+              No homelab_volume_ext4_errors series exist. Storage is now
+              unmonitored for the failure that took Postgres down for a week.
+              Check the volume-health-exporter DaemonSet in monitoring and
+              that node-exporter still has
+              --collector.textfile.directory set.
+
+        - alert: VolumeHealthProbeStale
+          expr: |
+            time() - homelab_volume_health_probe_timestamp_seconds > 600
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "volume-health probe stale on {{ $labels.node }} ({{ $value | humanizeDuration }} old)"
+            description: >-
+              The probe writes every 60s. This node's output has stopped
+              updating while remaining readable, so its ext4 counters are
+              frozen at their last-known values and a new fault there would
+              not be seen.

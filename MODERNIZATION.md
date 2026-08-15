@@ -69,11 +69,10 @@ What is **not** done — this is the resume point:
    including the 2026-08-07 pre-incident dump and the 2026-08-15 post-recovery
    one. Do not delete those PVCs until Velero has a *proven restore* — they are
    the only copies that exist.
-3. 🟡 **Alert on this failure mode.** Nothing detected a week of total database
-   unavailability. A Prometheus rule on ext4 `errors_count` (node-exporter does
-   not expose it; needs a textfile-collector script) plus a real write-probe
-   against a canary PVC would both have caught it on day one. `smartctl-exporter`
-   already establishes the textfile-collector pattern.
+3. ✅ **Alert on this failure mode — BUILT 2026-08-15, lands on push.** Three
+   independent signals, all validated against live Prometheus before commit;
+   see `prometheus/manifests/volume-health*`. Detection is deliberately
+   separate from remediation — nothing added here can act on the cluster.
 
 #### Do these, in this order
 
@@ -1494,6 +1493,51 @@ cd ansible && ansible k3s_servers -e ansible_become=false -m shell \
 ```
 Nonzero `errors_count` = aborted journal. `90-preflight.yml` now reports this
 as `wedged ext4`, alongside `mpath queueing`.
+
+**Monitoring was configured not to look at any volume that matters.** The
+reason a week of dead filesystems produced no alert is one line of
+kube-prometheus-stack default values:
+
+```
+--collector.filesystem.mount-points-exclude=^/(...|var/lib/kubelet/.+)($|/)
+```
+
+Every PVC mounts under `/var/lib/kubelet/pods/...`, so node-exporter's
+filesystem collector was explicitly told to skip all of them. There was no
+`node_filesystem_readonly` series for a wedged volume to be 1 on. It watched
+the five root disks and nothing else. Narrowed to `var/lib/kubelet/plugins/.+`
+(the CSI staging path, which is the same filesystem seen twice) so per-pod
+mounts are now collected.
+
+Two things found while fixing it, both worth keeping:
+- **`node_filesystem_device_error` was 1 on 106 series** — all `tmpfs` under
+  `/run/k3s/containerd/.../shm`. The stock exclusion covers `run/containerd/`
+  but k3s puts them under `run/**k3s**/containerd/`, so they leak in. An alert
+  on device_error would have fired on 106 series the moment it landed. Now
+  excluded, which makes device_error a usable signal for the first time.
+- **node-exporter series carry no `node` label**, only `instance`
+  (`192.168.33.22:9100`). The Pushover template ends with
+  `{{ if .Labels.node }}node: {{ .Labels.node }}{{ end }}` — so that field
+  rendered empty for all ~15 built-in node alerts. Fixed with a ServiceMonitor
+  relabeling, same as smartctl-exporter already does.
+
+**The node-health alerts you want already exist — don't write them.**
+kube-prometheus-stack ships them and they are all inactive today, measured
+2026-08-15 (load15/core 0.14–0.29, CPU 14–24%, memory 12–24%):
+
+| alert | expression | severity |
+|---|---|---|
+| `NodeSystemSaturation` | `node_load1 / cores > 2` for 15m | warning |
+| `NodeCPUHighUsage` | non-idle CPU `> 90%` for 15m | info |
+| `NodeMemoryHighUtilization` | `> 90%` used for 15m | warning |
+| `NodeDiskIOSaturation` | weighted IO time `> 10` for 30m | warning |
+| `NodeMemoryMajorPagesFaults` | `> 500/s` for 15m | warning |
+| `NodeTextFileCollectorScrapeError` | textfile collector broken | warning |
+
+All severities route to Pushover — the default route has no severity filter,
+only Watchdog and InfoInhibitor go to `"null"`. So the gap was never the rules
+or the routing; it was that node-exporter was not collecting the volumes, and
+that the alerts could not name the node they were about.
 
 **CNPG reported the cluster healthy while all three instances were dead.** It
 polls the instance manager, and the instance manager answered — the *database*
