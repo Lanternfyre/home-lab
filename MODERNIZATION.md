@@ -74,6 +74,44 @@ What is **not** done — this is the resume point:
    see `prometheus/manifests/volume-health*`. Detection is deliberately
    separate from remediation — nothing added here can act on the cluster.
 
+#### 📌 Decided 2026-08-15 — no auto-remediation, and Prometheus stays ephemeral
+
+**Automatic recovery: DECIDED AGAINST for now.** Not because it is infeasible —
+it was checked and it is not chicken-and-egg. The detection path has no
+dependency on the thing that breaks: Prometheus and Alertmanager are
+`emptyDir`, node-exporter and the probe read `/sys` and `/proc` from the host,
+etcd is on local disk and the API is reached by VIP IP. Three real
+circularities exist and are all avoided:
+
+  1. **Loki was one of the six wedged volumes** — never build this detection on
+     logs. Metrics only. This is the one that would actually bite.
+  2. Any state the probe writes on QNAP storage. Its textfile output is pinned
+     to node-local disk specifically for this.
+  3. Pi-hole DNS lives on a QNAP volume, but node resolvers are pinned to
+     1.1.1.1/8.8.8.8, so Pushover delivery survives it.
+
+It is parked because the ordering makes it low-value: once `no_path_retry` is
+applied, `errors_count` stays 0 *during* a partition (I/O queues rather than
+erroring), so a remediator only earns its keep for outages beyond the ~10
+minute window. Prevention first, then see whether it ever recurs.
+
+The wrinkle to remember if this is ever revisited: **a generic remediator gets
+the worst case wrong.** Scale-to-0 recovers Deployments, delete-pod recovers a
+plain StatefulSet, but CNPG rebuilt nothing until *all three* broken pods were
+deleted, because its reconcile loop was stuck on status extraction. A
+per-volume controller would have poked `postgres-ha-1` forever while the
+cluster stayed down. Any remediator needs: one volume per run, a per-PVC
+cooldown, a hard refusal to retry a PVC that did not recover (that is the
+`e2fsck` case, not a restart case), and CNPG handled explicitly or excluded.
+
+**Prometheus has no persistence, and that stays.** `prometheusSpec` declares no
+`storageSpec`, so the TSDB is `emptyDir` — every restart loses all history.
+The upside is not theoretical: it is exactly why the alerting path was
+unaffected while six volumes were dead, and moving it onto `qnap-iscsi` would
+put the storage alarm on the storage it is alarming about. `local-path` would
+keep it node-local but pins Prometheus to one node. Reviewed 2026-08-15 and
+kept as-is; recorded so it reads as a decision rather than an oversight.
+
 #### Do these, in this order
 
 1. ~~**SMART disk monitoring (Phase 7).**~~ ✅ **DONE 2026-08-03** — see
