@@ -5,7 +5,7 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-01
+Last updated: 2026-08-15
 
 ---
 
@@ -40,6 +40,65 @@ Accepted knowingly; the mitigation is that the upgrade gates are strict and
 each hop is verified before the next.
 
 ---
+
+## 🔴 Do this next — the storage fix is written but NOT applied
+
+### 0. Converge `no_path_retry` onto the nodes (needs your sudo password)
+
+**Why this is red.** On 2026-08-08 a partition to the QNAP permanently wedged
+six filesystems — all three `postgres-ha` instances, loki, mealie and
+pihole-data — and they stayed dead for seven days while every dashboard showed
+green. They are recovered now. **The cause is not.** Until this runs, another
+NAS blip does the same thing again; the window before a filesystem is destroyed
+is roughly *five seconds*.
+
+```bash
+cd ansible
+ansible-playbook site.yml --tags storage --ask-become-pass
+```
+
+**What it changes:** adds `no_path_retry 120` + `polling_interval 5` to
+`/etc/multipath.conf`, so I/O to a QNAP LUN **queues for ~10 minutes** when the
+NAS is unreachable instead of erroring immediately and taking the ext4 journal
+down with it.
+
+**Is it disruptive?** No. It applies with `multipathd reconfigure`, which
+re-reads the config in place — no unit restart, no map teardown, no I/O
+interruption — and the role then asserts the value is live rather than trusting
+the exit code. The `multipath_force_restart` path is only for a sick multipathd
+and still wants a drained node.
+
+**The trade-off, stated plainly:** during a partition, pods touching these
+volumes now **hang** instead of erroring. A process in uninterruptible sleep
+cannot be killed, so an outage longer than ~10 minutes can leave pods stuck
+until the node reboots. That is the better failure here — a ten-minute freeze
+is recoverable; an aborted journal cost a week. Bounded at 120 rather than
+`queue` (infinite) precisely so a NAS that never comes back degrades the node
+instead of wedging kubelet on it forever.
+
+**Verify it took** — asserts behaviour, not file contents:
+
+```bash
+ansible-playbook playbooks/90-preflight.yml     # no sudo needed
+# "mpath queueing:" must read mpathX|120 for every LUN.
+# "-" means NOT protected. "wedged ext4:" must be empty.
+```
+
+### 0b. 🟢 If a volume ever returns EIO after a confirmed unmount+remount
+
+The recovery in MODERNIZATION.md (scale to 0, confirm unmount, scale up) fixed
+all six volumes on 2026-08-15 and needs no sudo. If a future one is still
+`Input/output error` *after* `journalctl -k` shows a real unmount and remount,
+the on-disk filesystem is damaged and needs a repair pass, which does need root
+and the volume detached:
+
+```bash
+# with the workload scaled to 0 and the volume confirmed unmounted:
+ssh <node> sudo e2fsck -fy /dev/mapper/<mpathX>
+```
+
+Get `<mpathX>` from `findmnt -rno SOURCE,TARGET | grep <pvc-uid>` *before*
+scaling down. Never run this against a mounted filesystem.
 
 ## 🔴 Blocks the k3s upgrade (Phase 2)
 

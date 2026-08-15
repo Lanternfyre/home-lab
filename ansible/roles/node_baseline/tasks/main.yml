@@ -27,8 +27,15 @@
 # repo: something that looked correct and had never worked.
 
 # ─────────────────────────── DETECT ───────────────────────────
+#
+# ⚠️ Every detect task is tagged `always`, and that is load-bearing. They carry
+# no other tag, so `--tags storage` would SKIP them -- leaving needs_multipath
+# and has_luns undefined and blowing up the first `when:` that reads them. The
+# documented storage-only converge in MANUAL-STEPS.md runs exactly that way.
+# Tasks here are read-only, so running them unconditionally costs nothing.
 
 - name: "detect | can this node resolve public DNS?"
+  tags: [always]
   ansible.builtin.command: getent ahostsv4 registry.k8s.io
   register: t_dns
   changed_when: false
@@ -36,6 +43,7 @@
   check_mode: false
 
 - name: "detect | current multipath.conf"
+  tags: [always]
   ansible.builtin.slurp:
     src: /etc/multipath.conf
   register: t_multipath
@@ -43,6 +51,7 @@
   check_mode: false
 
 - name: "detect | live iSCSI sessions"
+  tags: [always]
   ansible.builtin.command: ls /sys/class/iscsi_session
   register: t_iscsi
   changed_when: false
@@ -50,6 +59,7 @@
   check_mode: false
 
 - name: "detect | effective sysctl values"
+  tags: [always]
   ansible.builtin.command: "sysctl -n {{ item.key }}"
   register: t_sysctl
   changed_when: false
@@ -60,6 +70,7 @@
     label: "{{ item.key }}"
 
 - name: "detect | service states"
+  tags: [always]
   ansible.builtin.command: "systemctl is-active {{ item }}"
   register: t_svc
   changed_when: false
@@ -68,11 +79,22 @@
   loop: [iscsid, multipathd]
 
 - name: "detect | summarise"
+  tags: [always]
   ansible.builtin.set_fact:
     needs_dns: "{{ t_dns.rc != 0 }}"
+    # Three separate assertions, not one. Checking only find_multipaths meant
+    # that once a node passed that check its multipath.conf was frozen -- the
+    # no_path_retry settings added after the 2026-08-08 partition would never
+    # have reached lab1/2/3, which are exactly the nodes that were damaged.
+    # Every setting the template writes must appear in the gate, or adding a
+    # setting silently becomes a no-op on the nodes that need it.
     needs_multipath: >-
       {{ (t_multipath.content | default('') | b64decode)
-         is not search('find_multipaths\s+' ~ node_multipath_find_multipaths) }}
+         is not search('find_multipaths\s+' ~ node_multipath_find_multipaths)
+         or (t_multipath.content | default('') | b64decode)
+            is not search('no_path_retry\s+' ~ node_multipath_no_path_retry)
+         or (t_multipath.content | default('') | b64decode)
+            is not search('polling_interval\s+' ~ node_multipath_polling_interval) }}
     needs_sysctl: >-
       {{ t_sysctl.results | selectattr('stdout', 'defined')
          | selectattr('stdout', 'ne', '')
@@ -83,6 +105,7 @@
     has_luns: "{{ (t_iscsi.stdout | default('') | trim | length) > 0 }}"
 
 - name: "detect | report"
+  tags: [always]
   ansible.builtin.debug:
     msg: >-
       {{ inventory_hostname }}:
@@ -207,9 +230,18 @@
       # 0.9.4 defaults it to "strict", under which a single-path LUN gets no
       # device-mapper entry and Trident fails to stage the volume with
       #   "multipath device not found when it is expected"
+      # no_path_retry is what stops a partition to the NAS from destroying
+      # filesystems. Without it the SCSI layer returns EIO the moment iscsid
+      # gives up, ext4 aborts its journal, and the volume stays dead after the
+      # network returns -- see the 2026-08-08 incident in MODERNIZATION.md.
+      # With it, I/O queues for polling_interval * no_path_retry (~10 min) and
+      # the pods that touch the volume hang instead. See group_vars/all.yml for
+      # why bounded and not `queue`.
       defaults {
           find_multipaths {{ node_multipath_find_multipaths }}
           user_friendly_names yes
+          polling_interval {{ node_multipath_polling_interval }}
+          no_path_retry {{ node_multipath_no_path_retry }}
       }
       blacklist {
           devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)[0-9]*"
@@ -229,6 +261,37 @@
 # stayed undefined, and the restart was skipped EVEN WITH the force flag set.
 # The documented lab5 recovery command was a no-op that reported success.
 #
+# On a node WITH LUNs the config still has to land -- deferring it to "the next
+# reboot" is what left no_path_retry inert on exactly the nodes that need it.
+# `multipathd reconfigure` re-reads multipath.conf in place: no unit restart, no
+# teardown of existing maps, no I/O interruption. That is the documented way to
+# apply a config change to a live multipathd, and it is what should run here in
+# the normal case. The restart below stays for the case where multipathd itself
+# is in a bad state.
+- name: "fix | reconfigure multipathd in place"
+  tags: [storage]
+  when:
+    - multipath_written.changed | default(false)
+    - has_luns
+    - not (multipath_force_restart | default(false) | bool)
+  ansible.builtin.command: multipathd reconfigure
+  register: multipath_reconfigured
+  changed_when: true
+
+# Assert the value actually loaded rather than trusting that the command
+# returned 0 -- `multipathd reconfigure` reports success even when it has
+# silently kept a previous value, and this repo has been burned three times by
+# checking for a file instead of a behaviour.
+- name: "verify | no_path_retry is live in the running config"
+  tags: [storage]
+  when: multipath_reconfigured is not skipped
+  ansible.builtin.shell: >-
+    multipathd show config | tr -s ' ' |
+    grep -E "no_path_retry {{ node_multipath_no_path_retry }}"
+  register: multipath_live
+  changed_when: false
+  failed_when: multipath_live.rc != 0
+
 # Restart when: forced, OR (we just rewrote the file AND no LUNs are at risk).
 - name: "fix | restart multipathd"
   tags: [storage]
@@ -248,10 +311,16 @@
   ansible.builtin.debug:
     msg: >-
       multipath.conf updated on {{ inventory_hostname }}, which has
-      {{ t_iscsi.stdout_lines | default([]) | length }} attached LUN(s), so
-      multipathd was NOT restarted. The file is on disk and takes effect at the
-      next restart or reboot -- which the k3s upgrade provides. To force it
-      sooner, drain the node and re-run with -e multipath_force_restart=true.
+      {{ t_iscsi.stdout_lines | default([]) | length }} attached LUN(s). The new
+      config was applied in place with `multipathd reconfigure` and verified
+      live, so it is ALREADY in effect -- multipathd itself was not restarted
+      and no I/O was interrupted. A full restart is only needed if multipathd is
+      unhealthy: drain the node and re-run with -e multipath_force_restart=true.
+
+# NOT touching iscsid's replacement_timeout. The live sessions already run
+# recovery_tmo=5, which is the correct pairing with no_path_retry: fail the
+# path fast, then let multipath hold the I/O. Raising it would only slow
+# failover without protecting anything. See group_vars/all.yml.
 
 # --- services: enable/start only where not already active. ---
 - name: "fix | enable and start storage services"

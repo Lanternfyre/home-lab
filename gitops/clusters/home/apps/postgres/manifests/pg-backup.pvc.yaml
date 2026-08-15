@@ -9,6 +9,14 @@
 #
 # It is also browsable directly from the QNAP GUI, so a restore does not
 # depend on the cluster being healthy.
+#
+# ⚠️ The pg-backup CronJob that wrote here was REMOVED 2026-08-15 in favour of
+# Velero. This PVC is deliberately kept: it holds the only dumps that exist,
+# including postgres-ha-20260807 (the last one before the storage incident) and
+# postgres-ha-20260815 (taken by hand once the cluster was recovered). Nothing
+# writes to it now. Do not delete it until Velero has a proven restore --
+# reclaimPolicy is Retain, so removing the PVC leaks the PV *and* the QNAP
+# volume, and `tridentctl delete volume` is then the only cleanup.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

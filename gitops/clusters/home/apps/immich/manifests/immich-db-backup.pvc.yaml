@@ -9,6 +9,11 @@
 # SMB (so immune to that same bug) and carries delete-protection, and a second
 # copy on the same NAS would not survive the failure that actually threatens
 # it. It needs a genuine off-site copy -- tracked separately.
+#
+# ⚠️ The immich-db-backup CronJob that wrote here was REMOVED 2026-08-15 in
+# favour of Velero. This PVC is kept so the existing dumps stay reachable;
+# nothing writes to it now. reclaimPolicy is Retain, so deleting it leaks the
+# PV and the QNAP volume -- `tridentctl delete volume` is the only cleanup.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

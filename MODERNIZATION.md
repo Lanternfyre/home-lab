@@ -47,6 +47,34 @@ working tree clean, both repos level with origin.**
 **Resumed later the same day: Phase 7 item 1 (SMART) is now complete.** The
 next item is #2 below, and it is the one that needs a human at a keyboard.
 
+#### 🔴 2026-08-15 — storage incident recovered, prevention NOT yet applied
+
+A NAS partition on 2026-08-08 left six filesystems permanently wedged for a
+week, including all three `postgres-ha` instances. **All six are recovered and
+verified writable**; a fresh `pg_dumpall` succeeded
+(`postgres-ha-20260815T165534Z.sql.gz`). Full mechanism in "Hard-won findings".
+
+What is **not** done — this is the resume point:
+
+1. 🔴 **Apply `no_path_retry` to the nodes.** The git change is in
+   (`node_baseline`, `group_vars/all.yml`), but converging needs a sudo
+   password, so it has not run. **Until it does, the cluster is exactly as
+   fragile as it was on 2026-08-08** — `90-preflight.yml` reports
+   `mpath queueing: mpathX|-` on all 12 LUNs across lab2/3/4/5. See
+   MANUAL-STEPS.md. The role applies it with `multipathd reconfigure`, in
+   place, no restart and no I/O interruption, and then asserts it went live.
+2. 🟡 **Velero.** The three ad-hoc backup CronJobs were removed on 2026-08-15
+   at your request, so **there is currently no automated backup of anything**.
+   The PVCs and their existing dumps are deliberately kept (`Prune=false`),
+   including the 2026-08-07 pre-incident dump and the 2026-08-15 post-recovery
+   one. Do not delete those PVCs until Velero has a *proven restore* — they are
+   the only copies that exist.
+3. 🟡 **Alert on this failure mode.** Nothing detected a week of total database
+   unavailability. A Prometheus rule on ext4 `errors_count` (node-exporter does
+   not expose it; needs a textfile-collector script) plus a real write-probe
+   against a canary PVC would both have caught it on day one. `smartctl-exporter`
+   already establishes the textfile-collector pattern.
+
 #### Do these, in this order
 
 1. ~~**SMART disk monitoring (Phase 7).**~~ ✅ **DONE 2026-08-03** — see
@@ -1435,6 +1463,83 @@ The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
 ---
 
 ## Hard-won findings — do not re-derive these
+
+**A partition to the QNAP does not degrade volumes, it destroys them — and
+nothing reports it.** On 2026-08-08 00:25 UTC the NAS went away. The chain is
+entirely default behaviour: path fails → **no multipath queueing** → EIO →
+ext4 aborts its journal → filesystem in permanent error state. The last step
+does not heal when the network returns. Six volumes stayed dead for **seven
+days**: all three `postgres-ha` instances, `storage-loki-0`, `qnap-mealie`,
+`pihole-data`. Found on 2026-08-15 while investigating "failing backup jobs".
+
+The reason it went unnoticed for a week is that **every health signal said
+green**:
+
+| signal | what it said | truth |
+|---|---|---|
+| `kubectl get pods` | all `1/1 Running` | writes returning EIO |
+| CNPG `status.instancesStatus` | `healthy: [1,2,3]` | no instance could accept a connection |
+| iSCSI sessions | all `LOGGED_IN` | correct, and irrelevant |
+| Trident | all volumes healthy | correct, and irrelevant |
+| ArgoCD | Synced / Healthy | correct, and irrelevant |
+
+Nothing was wrong at the storage layer by then, so everything that *checks* the
+storage layer reported fine. The only honest probe is **write to the volume**:
+
+```bash
+# per-node inventory of aborted filesystems -- needs no root, no sudo
+cd ansible && ansible k3s_servers -e ansible_become=false -m shell \
+  -a "for d in /sys/fs/ext4/*/errors_count; do c=\$(cat \$d); \
+      [ \"\$c\" != 0 ] && echo \"WEDGED \$d=\$c\"; done; echo done"
+```
+Nonzero `errors_count` = aborted journal. `90-preflight.yml` now reports this
+as `wedged ext4`, alongside `mpath queueing`.
+
+**CNPG reported the cluster healthy while all three instances were dead.** It
+polls the instance manager, and the instance manager answered — the *database*
+behind it could not open `global/pg_filenode.map`. Its own reconcile loop was
+stuck on `Failed to extract instance status from ready instances`, requeuing
+forever without progressing to pod reconciliation. Consequence for recovery:
+deleting one broken pod does nothing, because the operator never reaches the
+recreate step while other broken pods still exist. **All** the broken pods have
+to go before CNPG will rebuild any of them. Do not read this as "delete the
+whole cluster" — the PVCs are `Retain` and untouched; CNPG re-creates the pods
+against the existing volumes and replays WAL. Recovery took ~60s per instance.
+
+**Restarting a pod does NOT recover a wedged volume — and a Deployment cannot
+do it at all.** The aborted state lives in the node-level mount, not the pod.
+It clears only on a genuine unmount, which needs the volume's refcount on that
+node to reach zero. A Deployment's default RollingUpdate starts the replacement
+pod *before* the old one releases the volume, so the refcount never hits zero
+and the same wedged mount is handed straight to the new pod. `pihole` looked
+recovered — new pod, `1/1 Running`, new pod UID in the mount path — and was
+still returning EIO. `journalctl -k` proved it: no `EXT4-fs (dm-8): unmounting`
+line at all, while loki and postgres both logged unmount + mount and recovered.
+
+Working recovery, in order of preference:
+1. `kubectl scale --replicas=0`, **wait for the unmount**, then scale back up.
+   Verify the unmount rather than assuming it:
+   `ansible <node> -e ansible_become=false -m shell -a "findmnt -rno TARGET | grep <pvc>"`
+   must return nothing before scaling up.
+2. StatefulSet/CNPG: delete the pod (one at a time, and see the CNPG caveat).
+3. If it still returns EIO after a confirmed unmount+remount, the on-disk fs
+   is genuinely damaged and needs `e2fsck` — needs sudo, see MANUAL-STEPS.md.
+
+**`multipathd show config | grep no_path_retry` lies.** It prints the built-in
+hwtable for dozens of other vendors' arrays, so it happily reported
+`no_path_retry 18` on nodes where every QNAP LUN was set to fail. The first
+draft of the preflight check did exactly this and read as protected. The honest
+probe is the per-map queueing state:
+
+```bash
+multipathd show maps format '%n|%Q'    # "-" = no queueing = a 5s blip kills the fs
+```
+
+Related: `recovery_tmo` is already **5s** on every session, not the 120s
+`replacement_timeout` default you would expect. That is *correct* — fail the
+path fast, let multipath queue — but it means the window before EIO was about
+five seconds, not two minutes. A brief blip was always enough. Do not "fix"
+`replacement_timeout`; `no_path_retry` is the setting that was missing.
 
 **ServiceLB's klipper claimed hostPort 53 with an *unconditional* DNAT**
 (`--dport 53 -j DNAT --to <podIP>:53`, no destination match). It captured

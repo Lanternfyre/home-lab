@@ -22,6 +22,24 @@
         echo "find_multipaths: $(grep -oE 'find_multipaths\s+\S+' /etc/multipath.conf 2>/dev/null || echo 'NOT SET  <-- QNAP volumes will NOT stage')"
         echo "iscsi sessions: $(ls /sys/class/iscsi_session 2>/dev/null | wc -l)"
         echo "mpath devices:  $(ls /dev/mapper 2>/dev/null | grep -c mpath)"
+        # Partition survival, read off the LIVE MAPS. Deliberately not
+        # `multipathd show config | grep no_path_retry`: that hits dozens of
+        # built-in hwtable entries for other vendors and happily reports "18"
+        # on a node where every QNAP LUN is actually set to fail. %Q is the
+        # per-map queueing state and is the only honest answer.
+        #   "-"    = no queueing. A ~5s NAS blip returns EIO, ext4 aborts its
+        #            journal, and the volume is dead until unmount/remount.
+        #            This is what destroyed six filesystems on 2026-08-08.
+        #   "120"  = queueing for ~10 min. What node_baseline configures.
+        echo "mpath queueing: $(multipathd show maps format '%n|%Q' 2>/dev/null | tail -n +2 | tr '\n' ' ' || echo 'UNREADABLE')"
+        # Live kernel value per session, not iscsid.conf. 5 is correct and
+        # expected -- it is the fast path-failure that hands off to multipath.
+        echo "recovery_tmo:  $(cat /sys/class/iscsi_session/*/recovery_tmo 2>/dev/null | sort -u | tr '\n' ' ' || echo none)"
+        # Any nonzero value means an ext4 journal aborted and the filesystem is
+        # in permanent error state. Every I/O to it returns EIO, and it stays
+        # that way after the network recovers. Recovery = full unmount/remount:
+        # every pod using the volume off the node, then back.
+        echo "wedged ext4:   $(for d in /sys/fs/ext4/*/errors_count; do c=$(cat "$d" 2>/dev/null); [ "$c" != "0" ] && echo -n "$(basename "$(dirname "$d")")=$c "; done; echo)"
         echo "inotify watches: $(sysctl -n fs.inotify.max_user_watches)"
         echo "global DNS:    $(resolvectl status 2>/dev/null | sed -n '/^Global/,/^$/p' | grep -oP 'DNS Servers: \K.*' || echo 'NONE SET')"
         echo "resolves:      $(getent hosts registry.k8s.io >/dev/null 2>&1 && echo OK || echo 'FAIL  <-- cannot pull images')"

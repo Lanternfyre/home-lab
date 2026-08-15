@@ -70,6 +70,59 @@ node_dns_fallback: "8.8.4.4"
 # Proven on k8s-5.home on 2026-08-01.
 node_multipath_find_multipaths: "no"
 
+# ── Surviving a partition to the NAS ─────────────────────────────────────────
+#
+# On 2026-08-08 00:25 UTC the QNAP went away for longer than the iSCSI
+# replacement_timeout. The sequence, which is entirely default behaviour:
+#
+#   NAS unreachable -> iscsid gives up after replacement_timeout (120s default)
+#   -> the SCSI layer returns EIO -> ext4 sees a write error on its journal
+#   -> the journal ABORTS -> the filesystem enters permanent error state.
+#
+# The last step is the one that hurts: it does not heal when the network comes
+# back. Six volumes stayed dead for a week -- all three postgres-ha instances,
+# loki, mealie and pihole-data -- while iSCSI reported every session LOGGED_IN
+# and Trident reported every volume healthy. Nothing was wrong at the storage
+# layer by then. Only the in-kernel ext4 state was wedged, and only a full
+# unmount/remount cleared it.
+#
+# So the fix is not "detect it faster", it is "never let EIO reach ext4".
+#
+# ⚠️ MEASURED, not assumed -- the first draft of this got it wrong. The obvious
+# suspect is iscsid's replacement_timeout sitting at its 120s default, and it
+# is NOT the problem here:
+#
+#   multipathd show maps format "%n|%Q"   ->  queueing = "-" on every LUN
+#   cat /sys/class/iscsi_session/*/recovery_tmo  ->  5
+#
+# recovery_tmo is already 5s, so paths fail FAST, and no map has queueing at
+# all. The `defaults {}` block carries no no_path_retry, and the QNAP LUNs
+# match no built-in device entry, so they get the built-in default of "fail".
+# (`multipathd show config | grep no_path_retry` is misleading here -- it hits
+# dozens of hwtable entries for other vendors' arrays. Read %Q on the actual
+# maps.) Net effect: I/O errors ~5 SECONDS after the NAS becomes unreachable.
+# A brief blip is enough to destroy a filesystem.
+#
+# So the one setting that matters is no_path_retry, and 5s path failure is
+# correct to KEEP -- fail the path fast, then let multipath hold the I/O.
+# replacement_timeout is deliberately left alone.
+#
+#   * no_path_retry 120 -- with polling_interval 5, queue I/O for ~10 minutes
+#     with no usable path before returning an error.
+#
+# ⚠️ The trade-off is real and deliberate: during a partition, pods that touch
+# these volumes HANG instead of erroring. A hung process in uninterruptible
+# sleep cannot be killed, so a partition longer than the queue window can leave
+# pods stuck until the node reboots. That is the better failure for this
+# cluster -- a ten-minute freeze is recoverable, an aborted journal is a week
+# of downtime and a hand-driven recovery.
+#
+# Bounded (120) rather than infinite (`queue`) on purpose. `no_path_retry
+# queue` never gives up, so a NAS that stays down does not degrade the node,
+# it wedges kubelet on it permanently.
+node_multipath_no_path_retry: 120
+node_multipath_polling_interval: 5
+
 # k3s and Trident both need generous inotify limits.
 # NOTE: the pre-existing /etc/sysctl.d/99-inotify.conf on ALL five nodes has the
 # value split across two lines, so max_user_watches has never actually applied

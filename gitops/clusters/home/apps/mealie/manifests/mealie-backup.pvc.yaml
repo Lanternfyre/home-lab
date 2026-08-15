@@ -4,6 +4,11 @@
 # are never formatted, so the backup does not share the mkfs failure mode of
 # the iSCSI volume it protects. Mealie's data IS on qnap-iscsi, so it is
 # genuinely exposed to the QNAP CSI v1.6.0 bug that v1.6.1 fixed.
+#
+# ⚠️ The mealie-backup CronJob that wrote here was REMOVED 2026-08-15 in favour
+# of Velero. This PVC is kept so the existing backups stay reachable; nothing
+# writes to it now. reclaimPolicy is Retain, so deleting it leaks the PV and
+# the QNAP volume -- `tridentctl delete volume` is the only cleanup.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
