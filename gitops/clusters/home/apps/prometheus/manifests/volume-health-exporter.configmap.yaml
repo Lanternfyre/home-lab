@@ -73,6 +73,9 @@ data:
       awk -v s="$1" '$1 == s { print $2; exit }' /host/proc/1/mounts 2>/dev/null
     }
 
+    # Escape a label value for the Prometheus text format.
+    esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+
     while :; do
       tmp="${OUT}.$$"
       {
@@ -110,6 +113,86 @@ data:
 
           printf 'homelab_volume_ext4_errors{node="%s",device="%s",mpath="%s",persistentvolume="%s",mountpoint="%s"} %s\n' \
             "$NODE" "$dev" "$mpath" "$pv" "$mnt" "$cnt"
+        done
+
+        # ── Per-PVC liveness, read-only state and free space ──────────────
+        #
+        # This is the half that node-exporter cannot do. Its filesystem
+        # collector runs as uid 65534, and /var/lib/kubelet is 0750 root:root,
+        # so every statfs() under it returns EACCES. Admitting those mounts to
+        # the collector (2026-08-16) therefore did not produce a storage
+        # signal -- it produced 192 permanent false criticals, one per mount,
+        # on all five nodes, ext4 and tmpfs alike. Measured: ZERO mounts under
+        # /var/lib/kubelet/pods ever reported a size.
+        #
+        # Here the same call succeeds without any capability: the directories
+        # are root-OWNED, so uid 0 matches the owner and gets the owner bits.
+        # This container still runs with capabilities dropped: ALL.
+        #
+        # Two different failure shapes, and `timeout` only covers one:
+        #
+        #   ext4 in permanent error state returns EIO promptly -> statfs_ok=0,
+        #   which is the 2026-08-08 end state and what this catches directly.
+        #
+        #   Transport gone (the iSCSI session dropping, i.e. the START of that
+        #   incident) puts the caller in uninterruptible sleep. `timeout` sends
+        #   SIGTERM and a D-state process does not take signals, so the probe
+        #   BLOCKS here and stops emitting. That is not silent: the heartbeat
+        #   below stops advancing and VolumeHealthProbeStale fires within 10m.
+        #   Deliberately not worked around by backgrounding each df -- that
+        #   would leak one unkillable process per volume per minute for as long
+        #   as the outage lasts, to convert a page into a slightly better page.
+        echo '# HELP homelab_volume_statfs_ok 1 if statfs() on the PVC mount answered within 5s. 0 means it errored or hung, which is what an EIO-ing filesystem looks like from outside.'
+        echo '# TYPE homelab_volume_statfs_ok gauge'
+        echo '# HELP homelab_volume_readonly 1 if the PVC is mounted read-only. The kernel remounts ro on error when errors=remount-ro.'
+        echo '# TYPE homelab_volume_readonly gauge'
+        echo '# HELP homelab_volume_size_bytes Size of the PVC filesystem. node-exporter reports nothing for PVCs, so the built-in NodeFilesystemAlmostOutOfSpace rules do not cover them.'
+        echo '# TYPE homelab_volume_size_bytes gauge'
+        echo '# HELP homelab_volume_avail_bytes Free space on the PVC filesystem.'
+        echo '# TYPE homelab_volume_avail_bytes gauge'
+
+        # Field 1 = source, 2 = mountpoint, 3 = fstype, 4 = options. Only the
+        # published per-pod CSI mounts; the staging mounts under
+        # plugins/kubernetes.io/csi/ are the same filesystem seen twice.
+        awk '$2 ~ /\/volumes\/kubernetes\.io~csi\// && $2 ~ /\/mount$/ { print $1 "\t" $2 "\t" $3 "\t" $4 }' \
+          /host/proc/1/mounts 2>/dev/null |
+        while IFS="$(printf '\t')" read -r src mnt fstype opts; do
+          [ -n "$mnt" ] || continue
+
+          pv=${mnt##*/kubernetes.io~csi/}
+          pv=${pv%%/*}
+
+          case ",${opts}," in
+            *,ro,*) ro=1 ;;
+            *)      ro=0 ;;
+          esac
+
+          # /var/lib/kubelet/... as this container sees it.
+          probe_path="/host/kubelet${mnt#/var/lib/kubelet}"
+
+          size=0
+          avail=0
+          ok=0
+          if df_out=$(timeout 5 df -P "$probe_path" 2>/dev/null); then
+            set -- $(echo "$df_out" | awk 'NR==2 { print $2, $4 }')
+            if [ -n "${1:-}" ] && [ -n "${2:-}" ]; then
+              ok=1
+              size=$(( $1 * 1024 ))
+              avail=$(( $2 * 1024 ))
+            fi
+          fi
+
+          l=$(printf 'node="%s",persistentvolume="%s",device="%s",fstype="%s",mountpoint="%s"' \
+                "$(esc "$NODE")" "$(esc "$pv")" "$(esc "$src")" "$(esc "$fstype")" "$(esc "$mnt")")
+
+          printf 'homelab_volume_statfs_ok{%s} %s\n' "$l" "$ok"
+          printf 'homelab_volume_readonly{%s} %s\n'  "$l" "$ro"
+          # Size/avail only when statfs answered -- emitting 0 for a hung
+          # volume would read as "disk full" and fire the wrong alert.
+          if [ "$ok" = "1" ]; then
+            printf 'homelab_volume_size_bytes{%s} %s\n'  "$l" "$size"
+            printf 'homelab_volume_avail_bytes{%s} %s\n' "$l" "$avail"
+          fi
         done
 
         # Heartbeat. node_textfile_mtime_seconds also covers staleness, but an

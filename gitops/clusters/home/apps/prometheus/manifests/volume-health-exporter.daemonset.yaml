@@ -33,8 +33,14 @@ spec:
           operator: Exists
         - effect: NoExecute
           operator: Exists
-      # Needs root to read /host/proc/1/mounts (the host mount table).
-      # /sys/fs/ext4/*/errors_count is world-readable and does not.
+      # Needs root to read /host/proc/1/mounts (the host mount table), and to
+      # traverse /var/lib/kubelet, which is 0750 root:root. Note NO capability
+      # is added for that second one and none is needed: those directories are
+      # root-OWNED, so uid 0 matches the owner and gets the owner bits without
+      # CAP_DAC_OVERRIDE. `capabilities: drop: [ALL]` below is intact and
+      # load-bearing -- this is root with no capabilities, not root.
+      #
+      # /sys/fs/ext4/*/errors_count is world-readable and needs neither.
       securityContext:
         runAsUser: 0
         runAsGroup: 0
@@ -62,6 +68,13 @@ spec:
             - { name: hostsys,  mountPath: /host/sys,  readOnly: true }
             - { name: hostproc, mountPath: /host/proc, readOnly: true }
             - { name: hostdev,  mountPath: /host/dev,  readOnly: true }
+            # mountPropagation is load-bearing, not boilerplate. PVC mounts are
+            # created by kubelet AFTER this container starts; without
+            # HostToContainer they never appear in this mount namespace and
+            # every df below would silently measure the PARENT filesystem
+            # instead -- reporting the node's root disk as though it were the
+            # PVC, which is worse than reporting nothing.
+            - { name: hostkubelet, mountPath: /host/kubelet, readOnly: true, mountPropagation: HostToContainer }
             - { name: textfile, mountPath: /textfile }
           resources:
             requests: { cpu: 5m, memory: 16Mi }
@@ -74,6 +87,11 @@ spec:
         - { name: hostsys,  hostPath: { path: /sys,  type: Directory } }
         - { name: hostproc, hostPath: { path: /proc, type: Directory } }
         - { name: hostdev,  hostPath: { path: /dev,  type: Directory } }
+        # Only /var/lib/kubelet, not the whole host root. node-exporter mounts
+        # `/` and that is the thing this change is moving away from: the
+        # component with the LAN-reachable :9100 listener no longer needs to
+        # see the node filesystem to answer the storage question.
+        - { name: hostkubelet, hostPath: { path: /var/lib/kubelet, type: Directory } }
         # The handoff to node-exporter. It reads this same host directory
         # through its existing read-only /host/root mount, so nothing about the
         # node-exporter DaemonSet changes -- only the --collector.textfile.directory

@@ -11,26 +11,27 @@
 #   1. homelab_volume_ext4_errors  -- the kernel's own persistent error counter.
 #      PROVEN: this is the signal that actually located all six volumes by hand
 #      on 2026-08-15. Written by manifests/volume-health-exporter.*.
-#   2. node_filesystem_readonly    -- an aborted journal remounts read-only.
-#   3. node_filesystem_device_error -- node-exporter's statfs() returning an
-#      error, which is what an EIO-ing mount does.
+#   2. homelab_volume_readonly     -- an aborted journal remounts read-only,
+#      read from the host mount table's options field.
+#   3. homelab_volume_statfs_ok    -- statfs() on the PVC mount erroring or not
+#      answering, which is what an EIO-ing mount does.
 #
-# (2) and (3) are UNVERIFIED for this specific failure -- the incident was over
-# before they could be observed, because they were not being collected at all
-# (see the mount-points-exclude note in chart-values.yaml). They are cheap and
-# they fail in a different place than (1), so they are worth having; but (1) is
-# the one that is known to work, and it is the critical rule.
+# All three now come from manifests/volume-health-exporter.*, which runs as
+# root (with capabilities dropped: ALL) and can therefore actually reach the
+# mounts. (2) and (3) were briefly node_filesystem_readonly /
+# node_filesystem_device_error; that could not work and was reverted the next
+# day -- the full account is in chart-values.yaml. (1) is still the one PROVEN
+# against the real incident.
+#
+# (2) and (3) remain UNVERIFIED against this specific failure: the incident was
+# over before either could be observed. They are cheap and they fail in a
+# different place than (1), so they are worth having; (1) is the load-bearing
+# rule.
 #
 # Every expression below was run against live Prometheus before commit, and
 # each returned empty. Since an expression that matches nothing also returns
-# empty, each was ALSO checked in the shape that proves it selects real series:
-#   - node_filesystem_readonly       131 series exist, 0 currently 1.
-#   - node_filesystem_device_error   131 series exist; 106 were 1, ALL of them
-#     tmpfs under /run/k3s/containerd (transient pod shm that cannot be
-#     statfs'd). The chart's exclusion regex covers `run/containerd/` but k3s
-#     puts them under `run/k3s/containerd/`, so they leaked in. That gap is
-#     closed in chart-values.yaml; without closing it this rule would have
-#     fired on 106 series the moment it landed.
+# empty, each was ALSO run in the shape that proves it selects real series --
+# see the verification notes in the commit.
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
@@ -86,36 +87,49 @@ spec:
               findings"; CNPG needs all broken pods deleted, not one.
 
         # --- second signal, different mechanism ---------------------------
-        # Scoped to per-pod PVC mounts. The CSI staging path under
-        # /var/lib/kubelet/plugins is the same filesystem and is excluded from
-        # collection, so this cannot double-report.
+        # Both of these read the mount table and statfs() PVC mounts from
+        # volume-health-exporter, NOT node-exporter's filesystem collector.
+        #
+        # They were node_filesystem_readonly / node_filesystem_device_error for
+        # one day, 2026-08-16 to 2026-08-17, and in that shape they were not
+        # merely unverified but incapable of working: node-exporter runs as uid
+        # 65534, /var/lib/kubelet is 0750 root:root, so every statfs under it
+        # returns EACCES. device_error was 1 on 100% of those mounts on all five
+        # nodes -- 192 permanent criticals, 167 of them secret and SA-token
+        # tmpfs -- while not one mount reported a size. See chart-values.yaml.
         - alert: VolumeFilesystemReadOnly
           expr: |
-            node_filesystem_readonly{mountpoint=~"/var/lib/kubelet/pods/.+"} == 1
+            homelab_volume_readonly == 1
           for: 5m
           labels:
             severity: critical
           annotations:
             summary: "PVC filesystem remounted READ-ONLY on {{ $labels.node }}"
             description: >-
-              {{ $labels.mountpoint }} ({{ $labels.device }}) is mounted
-              read-only. ext4 does this to itself when it hits an error, so
-              treat it as the same incident class as VolumeFilesystemWedged
-              even if that alert has not fired.
+              {{ $labels.mountpoint }} ({{ $labels.device }},
+              {{ $labels.persistentvolume }}) is mounted read-only. ext4 does
+              this to itself when it hits an error, so treat it as the same
+              incident class as VolumeFilesystemWedged even if that alert has
+              not fired.
 
-        - alert: VolumeFilesystemDeviceError
+        - alert: VolumeFilesystemStatfsFailing
           expr: |
-            node_filesystem_device_error{mountpoint=~"/var/lib/kubelet/pods/.+"} == 1
+            homelab_volume_statfs_ok == 0
           for: 10m
           labels:
             severity: critical
           annotations:
             summary: "statfs() failing on a PVC mount on {{ $labels.node }}"
             description: >-
-              node-exporter cannot stat {{ $labels.mountpoint }}. The volume is
-              mounted but not answering, which is what an EIO-ing filesystem
-              looks like from outside. 10m rather than 5m deliberately: a
-              volume genuinely mid-unmount can look like this briefly.
+              statfs on {{ $labels.mountpoint }}
+              ({{ $labels.persistentvolume }}) errored or did not answer within
+              5s. The volume is mounted but not responding, which is what an
+              EIO-ing filesystem looks like from outside. 10m rather than 5m
+              deliberately: a volume genuinely mid-unmount looks like this
+              briefly. Note the OTHER shape of this failure -- a dead transport
+              putting the probe in uninterruptible sleep -- surfaces as
+              VolumeHealthProbeStale instead, because a D-state process cannot
+              be timed out.
 
         # --- the probe must prove it is alive -----------------------------
         # A storage probe that dies silently recreates the exact failure it

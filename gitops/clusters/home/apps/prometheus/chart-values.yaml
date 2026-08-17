@@ -56,13 +56,26 @@ defaultRules:
 # original args are restated below verbatim except for the one change. Drop
 # either and you silently lose the fs-type exclusions or re-break this.
 #
-# The exclusion now keeps `var/lib/kubelet/plugins/...` (the CSI globalmount
-# staging path) out while admitting `var/lib/kubelet/pods/...` (the per-pod
-# mount). Both point at the same filesystem, so collecting both would double
-# every series for no information. The pod path is the one that carries the
-# PVC name in the mountpoint label, which is what makes an alert readable.
+# ⚠️ THAT ATTEMPT WAS REVERTED 2026-08-17, and the exclusion is back. Admitting
+# the kubelet mounts here CANNOT work, for a reason nothing in the config makes
+# visible: node-exporter runs as uid 65534 and /var/lib/kubelet is 0750
+# root:root, so every statfs() beneath it returns EACCES. What the collector
+# produced was not a storage signal but 192 permanent false criticals — one per
+# mount, on all five nodes, 167 of them not even volumes but service-account
+# token and secret tmpfs. Measured before reverting: of every mount under
+# /var/lib/kubelet/pods, ZERO reported a size and 100% reported device_error=1,
+# on nodes rebuilt 17 days ago as much as on the originals. Uniform totality is
+# what a permission boundary looks like; a storage fault is never that tidy.
 #
-# Cardinality is bounded and small: ~20 PVCs across 5 nodes, one mount each.
+# `node_filesystem_readonly` and `node_filesystem_device_error` on PVCs are
+# therefore not "unverified" any more, as the original commit labelled them —
+# they are unavailable to this exporter at this uid. The signal moved to
+# manifests/volume-health-exporter.*, which already runs as root for the mount
+# table, has no network listener, no Service and no ServiceAccount token, and
+# now emits homelab_volume_{statfs_ok,readonly,size_bytes,avail_bytes} per PVC.
+# Making node-exporter root instead was considered and rejected: it mounts the
+# whole host root and listens on <nodeIP>:9100 unauthenticated, so it is the
+# one component on the node where added privilege costs the most.
 #
 # Second change: `--collector.textfile.directory`. The textfile collector is
 # compiled in and ALREADY RUNNING (node_textfile_scrape_error exists on all
@@ -93,7 +106,11 @@ prometheus-node-exporter:
           targetLabel: node
           action: replace
   extraArgs:
-    - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/containerd/.+|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/plugins/.+)($|/)
+    # var/lib/kubelet/.+ is excluded again -- see the reversion note above.
+    # run/k3s/containerd/.+ is NOT stock and must stay: k3s puts its shm mounts
+    # there while the upstream default only lists run/containerd/, which left
+    # device_error=1 on 106 tmpfs series.
+    - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/containerd/.+|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
     - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|erofs)$
     - --collector.textfile.directory=/host/root/var/lib/node-exporter/textfile_collector
 

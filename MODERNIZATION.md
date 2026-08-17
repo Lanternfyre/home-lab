@@ -2025,6 +2025,38 @@ existed, was documented, and had never told the truth.
 **`Retain` means test PVCs leak.** Deleting a test PVC leaves the PV *and* the
 backend volume. Clean up with `tridentctl delete volume` after any storage test.
 
+**node-exporter cannot see inside PVCs, and no amount of collector config
+changes that.** The 2026-08-16 fix admitted `/var/lib/kubelet/pods/...` to the
+filesystem collector so `node_filesystem_readonly` and
+`node_filesystem_device_error` would finally cover PVCs. It could not work:
+node-exporter runs as **uid 65534** and `/var/lib/kubelet` is **0750
+root:root**, so every `statfs()` beneath it returns EACCES. The result was 192
+permanent `critical` alerts — one per mount, on all five nodes — of which 167
+were not volumes at all but service-account-token and secret tmpfs. Reverted
+2026-08-17.
+
+The diagnostic that settles this class in one query: **of every mount under
+`/var/lib/kubelet/pods`, ZERO reported `node_filesystem_size_bytes` and 100%
+reported `device_error=1`** — on 17-day-old nodes exactly as on 226-day-old
+ones. Uniform totality is what a permission boundary looks like. A storage
+fault is never that tidy, and never that evenly distributed.
+
+The signal moved into `volume-health-exporter`, which already runs as root for
+the host mount table and now also emits
+`homelab_volume_{statfs_ok,readonly,size_bytes,avail_bytes}` per PVC. Two things
+about that placement are deliberate: it needs **no added capability** (those
+directories are root-*owned*, so uid 0 gets the owner bits and
+`capabilities: drop: [ALL]` stays intact), and it has **no network listener, no
+Service and no ServiceAccount token** — whereas node-exporter mounts the entire
+host root and serves unauthenticated HTTP on `<nodeIP>:9100`. Making *that*
+process root was the obvious fix and the wrong one.
+
+Also: `statfs` has two failure shapes and only one is catchable. ext4 in
+permanent error state returns EIO promptly → `statfs_ok=0`. A dead transport
+puts the caller in uninterruptible sleep, where `timeout` cannot help because
+D-state ignores signals — that surfaces as `VolumeHealthProbeStale` instead.
+Both page; know which is which.
+
 **A dashboard is a query, and nobody was checking the queries.** The four
 `Necronia — *` dashboards were applied, Synced, imported by the sidecar and
 rendered — with a large share of their panels querying metrics that have never
