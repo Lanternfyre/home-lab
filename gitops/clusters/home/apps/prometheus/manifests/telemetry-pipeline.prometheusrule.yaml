@@ -1,0 +1,159 @@
+# Alerts for the telemetry pipeline itself.
+#
+# Every other alert in this cluster depends on data arriving. Nothing watched
+# whether it did. Until 2026-08-17 there were ZERO alloy_* series in Prometheus
+# because neither Alloy chart enabled its ServiceMonitor, so the DaemonSet
+# shipping every pod log into Loki and the gateway receiving all of Necronia's
+# OTLP could both have stopped without a single symptom beyond dashboards going
+# quiet -- and for Necronia, quiet is its normal state, since the server runs on
+# a workstation that is off most of the time.
+#
+# That is the 2026-08-08 shape restated: the component that would tell you is
+# the component that is down.
+#
+# ── Every metric name below was read off the live /metrics endpoints ────────
+# ...before the rule was written, not after. `alloy` (DaemonSet) and
+# `alloy-gateway` expose different subsets, so the scoping matters:
+#
+#   both        alloy_build_info, alloy_config_last_load_successful,
+#               alloy_component_controller_running_components
+#   DaemonSet   loki_write_{sent,dropped}_entries_total   (Loki push API)
+#   gateway     otelcol_receiver_*, otelcol_exporter_send_failed_log_records_total,
+#               prometheus_remote_storage_samples_{total,failed_total}
+#
+# Deliberately NOT alerted on: otelcol_exporter_send_failed_spans_total, which
+# does not exist yet because no span export has ever failed. A rule against an
+# unincremented counter is a rule that has never been evaluated against real
+# data, and this repo has shipped enough of those.
+#
+# ⚠️ All of these are RATES, never raw counters. The first hand-scrape of the
+# DaemonSet found loki_write_dropped_entries_total at 7.2 MILLION on every node
+# -- a historical replay of entries older than Loki's 14d retention ("timestamp
+# too old"), correctly refused, and NOT current loss: the counter did not move
+# in 60 seconds while sent climbed by ~1,200. A rule on the total would have
+# fired permanently on day one and been muted within a week.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: telemetry-pipeline
+  namespace: monitoring
+  labels:
+    # The Prometheus CR's ruleSelector matches this. Without it the object
+    # exists, reads correctly, and is loaded by nobody.
+    release: prometheus-operator
+spec:
+  groups:
+    - name: telemetry-pipeline
+      rules:
+        # --- the meta-alert -----------------------------------------------
+        # Mirrors VolumeHealthProbeAbsent. If the ServiceMonitor is removed, the
+        # chart flag regresses, or the scrape breaks, every other rule in this
+        # file silently stops evaluating -- absent() is the only thing that can
+        # notice its own blindness.
+        - alert: AlloyMetricsAbsent
+          expr: absent(alloy_build_info)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No Alloy metrics at all — the telemetry pipeline is unmonitored"
+            description: >-
+              alloy_build_info has no series, so neither the log-shipping
+              DaemonSet nor the OTLP ingest gateway is being scraped. Every
+              other rule in the telemetry-pipeline group is inert while this is
+              true. Check serviceMonitor.enabled in apps/alloy and
+              apps/alloy-gateway chart-values.yaml, and that both carry
+              release: prometheus-operator.
+
+        - alert: AlloyConfigLoadFailing
+          expr: alloy_config_last_load_successful == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Alloy on {{ $labels.node }} is running a stale config"
+            description: >-
+              This Alloy failed to load its configuration, so it is still
+              running whatever it had before -- a River syntax error or a
+              missing env var (alloy-gateway CrashLoops without FARO_API_KEY).
+              A GitOps change to the pipeline can appear Synced in ArgoCD and
+              not be in effect here.
+
+        - alert: AlloyComponentUnhealthy
+          expr: alloy_component_controller_running_components{health_type!="healthy"} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{ $value }} unhealthy Alloy component(s) on {{ $labels.node }}"
+            description: >-
+              A component in the pipeline graph is unhealthy while the process
+              itself is up and its config loaded. One dead receiver or exporter
+              loses one signal type silently -- the pod stays 1/1 Running.
+
+        # --- log path: DaemonSet -> Loki ----------------------------------
+        - alert: AlloyLogDeliveryFailing
+          expr: |
+            sum by (node, reason) (rate(loki_write_dropped_entries_total[5m])) > 0
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Alloy is dropping logs on {{ $labels.node }} ({{ $labels.reason }})"
+            description: >-
+              {{ $value | printf "%.2f" }} entries/s are being dropped on the way
+              into Loki. `reason` distinguishes the cases that matter:
+              rate_limited and stream_limited mean Loki's limits need raising;
+              queue_is_full means Alloy cannot keep up; ingester_error is
+              usually "timestamp too old", which is a replay of pre-retention
+              history rather than live loss. 15m so a restart replay does not
+              page.
+
+        # --- OTLP path: external senders -> gateway -> Tempo/Loki/Prometheus
+        - alert: AlloyOtlpIngestRefusing
+          expr: |
+            sum by (node) (
+              rate(otelcol_receiver_refused_spans_total[5m])
+              + rate(otelcol_receiver_refused_log_records_total[5m])
+              + rate(otelcol_receiver_refused_metric_points_total[5m])
+            ) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "alloy-gateway is refusing OTLP data"
+            description: >-
+              The gateway is rejecting what external senders push to
+              otel.lab.techyon.dev — backpressure from Tempo/Loki/Prometheus, or
+              a payload the receiver will not take. The sender sees errors; this
+              is the only place the cluster sees them.
+
+        - alert: AlloyOtlpExportFailing
+          expr: |
+            sum by (node) (rate(otelcol_exporter_send_failed_log_records_total[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "alloy-gateway cannot deliver OTLP logs to Loki"
+            description: >-
+              Accepted from the sender and then lost on the way out, which is
+              worse than refusing them: the sender believes they were
+              delivered. Check Loki's health and
+              limits_config.allow_structured_metadata, which the /otlp endpoint
+              requires.
+
+        # --- metrics path: gateway -> Prometheus remote_write --------------
+        - alert: AlloyRemoteWriteFailing
+          expr: |
+            sum by (node) (rate(prometheus_remote_storage_samples_failed_total[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "alloy-gateway remote_write to Prometheus is failing"
+            description: >-
+              Samples are being dropped on the way into Prometheus. This is the
+              path every Necronia metric takes; it previously pointed at a
+              receiver-less instance and 404'd every push, which is exactly the
+              failure this rule exists to make visible.
