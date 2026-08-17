@@ -48,15 +48,15 @@ data:
           "gridPos": { "x": 0, "y": 1, "w": 12, "h": 6 },
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket[$interval])))",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
               "legendFormat": "p99"
             },
             {
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket[$interval])))",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
               "legendFormat": "p50"
             },
             {
-              "expr": "histogram_quantile(1.00, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket[$interval])))",
+              "expr": "histogram_quantile(1.00, sum by (le) (rate(necronia_grains_combat_tick_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
               "legendFormat": "max"
             }
           ],
@@ -79,11 +79,11 @@ data:
           "gridPos": { "x": 12, "y": 1, "w": 12, "h": 6 },
           "targets": [
             {
-              "expr": "rate(necronia_grains_ecs_tick_overruns_total[$interval]) * 60",
+              "expr": "(sum(rate(necronia_grains_ecs_tick_overruns_total{job=\"necronia-server\"}[$interval])) or vector(0)) * 60",
               "legendFormat": "Overruns/min"
             },
             {
-              "expr": "sum(necronia_grains_ecs_posttick_queue_depth)",
+              "expr": "sum(necronia_grains_ecs_posttick_queue_depth{job=\"necronia-server\"})",
               "legendFormat": "Post-tick queue"
             }
           ],
@@ -103,7 +103,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 0, "y": 8, "w": 12, "h": 6 },
           "targets": [{
-            "expr": "histogram_quantile(0.99, sum by (system, le) (rate(necronia_grains_ecs_system_duration_milliseconds_bucket[$interval])))",
+            "expr": "histogram_quantile(0.99, sum by (system, le) (rate(necronia_grains_ecs_system_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
             "legendFormat": "{{system}} p99"
           }],
           "fieldConfig": { "defaults": { "unit": "ms" } }
@@ -114,7 +114,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 12, "y": 8, "w": 12, "h": 6 },
           "targets": [{
-            "expr": "histogram_quantile(0.50, sum by (system, le) (rate(necronia_grains_ecs_system_duration_milliseconds_bucket[$interval])))",
+            "expr": "histogram_quantile(0.50, sum by (system, le) (rate(necronia_grains_ecs_system_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
             "legendFormat": "{{system}} p50"
           }],
           "fieldConfig": { "defaults": { "unit": "ms" } }
@@ -128,11 +128,11 @@ data:
           "gridPos": { "x": 0, "y": 15, "w": 8, "h": 5 },
           "targets": [
             {
-              "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_monster_pathfind_duration_milliseconds_bucket[$interval])))",
+              "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_monster_pathfind_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
               "legendFormat": "Pathfind p99"
             },
             {
-              "expr": "histogram_quantile(0.50, sum by (le) (rate(necronia_grains_monster_pathfind_duration_milliseconds_bucket[$interval])))",
+              "expr": "histogram_quantile(0.50, sum by (le) (rate(necronia_grains_monster_pathfind_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
               "legendFormat": "Pathfind p50"
             }
           ],
@@ -144,7 +144,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 8, "y": 15, "w": 8, "h": 5 },
           "targets": [{
-            "expr": "rate(necronia_grains_pathfind_failures_total[$interval])",
+            "expr": "sum(rate(necronia_grains_pathfind_failures_total{job=\"necronia-server\"}[$interval]))",
             "legendFormat": "Failures/s"
           }],
           "fieldConfig": {
@@ -164,9 +164,9 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 16, "y": 15, "w": 8, "h": 5 },
           "targets": [
-            { "expr": "rate(necronia_grains_monsters_processed_total[$interval])", "legendFormat": "Processed/s" },
-            { "expr": "rate(necronia_grains_monsters_spawned_total[$interval])", "legendFormat": "Spawned/s" },
-            { "expr": "rate(necronia_grains_npcs_processed_total[$interval])", "legendFormat": "NPCs/s" }
+            { "expr": "sum(rate(necronia_grains_monsters_processed_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Processed/s" },
+            { "expr": "sum(rate(necronia_grains_monsters_spawned_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Spawned/s" },
+            { "expr": "sum(rate(necronia_grains_npcs_processed_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "NPCs/s" }
           ],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
@@ -178,7 +178,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 0, "y": 21, "w": 8, "h": 5 },
           "targets": [{
-            "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_ground_items_bucket[$interval])))",
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_ground_items_bucket{job=\"necronia-server\"}[$interval])))",
             "legendFormat": "Ground items p99"
           }],
           "fieldConfig": { "defaults": { "unit": "short" } }
@@ -189,7 +189,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 8, "y": 21, "w": 8, "h": 5 },
           "targets": [{
-            "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_conditions_active_bucket[$interval])))",
+            "expr": "histogram_quantile(0.99, sum by (le) (rate(necronia_grains_conditions_active_bucket{job=\"necronia-server\"}[$interval])))",
             "legendFormat": "Conditions p99"
           }],
           "fieldConfig": { "defaults": { "unit": "short" } }
@@ -200,7 +200,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 16, "y": 21, "w": 8, "h": 5 },
           "targets": [{
-            "expr": "rate(necronia_grains_move_events_total[$interval])",
+            "expr": "sum(rate(necronia_grains_move_events_total{job=\"necronia-server\"}[$interval]))",
             "legendFormat": "Move events/s"
           }],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
@@ -213,8 +213,8 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 0, "y": 27, "w": 6, "h": 5 },
           "targets": [{
-            "expr": "rate(necronia_scripting_invocations_total[$interval])",
-            "legendFormat": "{{handler.type}}"
+            "expr": "sum by (handler_type) (rate(necronia_scripting_invocations_total{job=\"necronia-server\"}[$interval]))",
+            "legendFormat": "{{handler_type}}"
           }],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
@@ -224,7 +224,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 6, "y": 27, "w": 6, "h": 5 },
           "targets": [{
-            "expr": "100 * rate(necronia_scripting_errors_total[$interval]) / (rate(necronia_scripting_invocations_total[$interval]) + 0.001)",
+            "expr": "100 * (sum(rate(necronia_scripting_errors_total{job=\"necronia-server\"}[$interval])) or vector(0)) / clamp_min(sum(rate(necronia_scripting_invocations_total{job=\"necronia-server\"}[$interval])), 0.001)",
             "legendFormat": "Error %"
           }],
           "fieldConfig": {
@@ -244,7 +244,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 12, "y": 27, "w": 6, "h": 5 },
           "targets": [{
-            "expr": "histogram_quantile(0.99, sum by (handler_type, le) (rate(necronia_scripting_duration_milliseconds_bucket[$interval])))",
+            "expr": "histogram_quantile(0.99, sum by (handler_type, le) (rate(necronia_scripting_duration_milliseconds_bucket{job=\"necronia-server\"}[$interval])))",
             "legendFormat": "{{handler_type}} p99"
           }],
           "fieldConfig": {
@@ -264,7 +264,7 @@ data:
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 18, "y": 27, "w": 6, "h": 5 },
           "targets": [{
-            "expr": "rate(necronia_scripting_timeouts_total[$interval])",
+            "expr": "sum(rate(necronia_scripting_timeouts_total{job=\"necronia-server\"}[$interval]))",
             "legendFormat": "Timeouts/s"
           }],
           "fieldConfig": {

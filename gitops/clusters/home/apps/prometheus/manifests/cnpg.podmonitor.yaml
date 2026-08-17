@@ -1,0 +1,57 @@
+# CloudNativePG instance metrics.
+#
+# Every CNPG instance pod runs a built-in exporter on the named port `metrics`
+# (9187) -- verified by curling postgres-ha-1:9187 directly. Both Cluster CRs
+# set `monitoring.enablePodMonitor: true` for 132 days and NOT ONE SAMPLE was
+# ever collected: the operator-generated PodMonitor carries only CNPG's own
+# labels, while this cluster's Prometheus CR selects on
+# `podMonitorSelector: {matchLabels: {release: prometheus-operator}}`, and CNPG
+# offers no way to add that label. The object existed, read correctly, and was
+# loaded by nobody -- the same class as the goldilocks recommender and the
+# smartctl exporter before it.
+#
+# So the monitor is owned here instead, and `enablePodMonitor` is switched off
+# on both Cluster CRs so no orphaned copy is left behind looking functional.
+#
+# One monitor covers both clusters: the selector matches the CNPG pod role
+# rather than a cluster name, and namespaceSelector lists where clusters live.
+# A new CNPG cluster in a new namespace needs its namespace added here.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cnpg-instances
+  namespace: monitoring
+  labels:
+    # Mandatory. Without it this file is decoration -- see above.
+    release: prometheus-operator
+spec:
+  namespaceSelector:
+    matchNames:
+      - databases
+      - immich
+  selector:
+    matchLabels:
+      # Set by the operator on instance pods only, so the -join / -initdb
+      # bootstrap Jobs (which have no exporter) are never scraped.
+      cnpg.io/podRole: instance
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 60s
+      scrapeTimeout: 30s
+      relabelings:
+        # The exporter already emits its own `cluster` label on some series
+        # (e.g. cnpg_collector_up{cluster="postgres-ha"}), and honorLabels
+        # defaults to false, so the target label set here WINS and the
+        # exporter's copy is renamed to `exported_cluster`. That duplicate is
+        # expected, not a bug. Promoting it here is what makes `cluster` present
+        # on EVERY series rather than only the handful the exporter tags.
+        - sourceLabels: [__meta_kubernetes_pod_label_cnpg_io_cluster]
+          targetLabel: cluster
+          action: replace
+        # primary | replica -- lets a panel separate write load from read load.
+        - sourceLabels: [__meta_kubernetes_pod_label_cnpg_io_instanceRole]
+          targetLabel: role
+          action: replace
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace

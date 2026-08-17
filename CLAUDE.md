@@ -21,6 +21,7 @@ gitops/clusters/home/apps/<name>/    app.yaml (flat 5 keys) + chart-values.yaml 
 gitops/clusters/home/bootstrap/      the two ApplicationSets and the root Application
 ansible/                             site.yml converges; playbooks/ for deliberate ops
 scripts/audit-protected-volumes.py   read-only; verifies PV protection + Trident drift
+scripts/audit-dashboard-queries.py   read-only; every dashboard expr parsed + metric names checked
 scripts/diagnose-node-dns.sh         read-only; diagnoses node DNS, prints a verdict
 ```
 

@@ -22,7 +22,13 @@ spec:
       shared_buffers: "128MB"
 
   monitoring:
-    enablePodMonitor: true
+    # Off deliberately -- NOT "monitoring disabled". The instance exporter on
+    # :9187 keeps running; only the operator's PodMonitor is suppressed. That
+    # object cannot carry `release: prometheus-operator`, which is what this
+    # cluster's Prometheus CR selects on, so it collected nothing for 132 days.
+    # The working monitor is
+    # ../../prometheus/manifests/cnpg.podmonitor.yaml.
+    enablePodMonitor: false
 
   managed:
     roles:

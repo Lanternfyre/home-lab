@@ -1,3 +1,37 @@
+# Necronia — Infrastructure.
+#
+# The Necronia server runs on the dev machine, NOT in this cluster. Its local
+# Alloy relays OTLP to otel.lab.techyon.dev → alloy-gateway → Tempo / Loki /
+# Prometheus remote_write. So there is no `up` series and no scrape target for
+# it: everything here arrives by push, under job="necronia-server".
+#
+# ── Every expression here was run against the live Prometheus API before it was
+# committed. That is not ceremony. The previous revision of this dashboard
+# queried FOUR .NET metrics that do not exist, a GC label that does not exist
+# (`generation`; it is `gc_heap_generation`), five Orleans series that do not
+# exist, and an entire PostgreSQL row against `pg_stat_*` when nothing in this
+# cluster has ever emitted a `pg_` series. It rendered perfectly and showed
+# nothing. Re-verify after editing; "the panel is empty" is the failure mode
+# this dashboard is recovering from.
+#
+# Two rules that fall out of the push topology:
+#
+#  1. ALWAYS aggregate. service.instance.id is a fresh GUID on every server
+#     restart, so `instance` churns and raw metric references accumulate one
+#     dead series per restart across the 10d retention. Every expr is wrapped in
+#     sum()/sum by(). Necronia's ADR-077 states this requirement directly.
+#
+#  2. A counter that has never been incremented DOES NOT EXIST. OpenTelemetry
+#     does not export it until first observation, so panels for rare events
+#     (packet drops, contained faults, write-behind rejections) are empty until
+#     the game exercises the path. Empty there is expected; empty anywhere else
+#     is a bug.
+#
+# The Trace Topology row is the payoff of Necronia PHASE-110, which replaced one
+# connection-lifetime trace per player with bounded per-command / per-tick roots.
+# It reads Tempo's metrics-generator span-metrics (remote-written into this same
+# Prometheus, label service="necronia-server"), so it stays empty until traces
+# are actually flowing.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -10,11 +44,11 @@ data:
     {
       "uid": "necronia-infrastructure",
       "title": "Necronia — Infrastructure",
-      "description": "Orleans cluster, .NET runtime, network gateway (DDoS signals), PostgreSQL.",
+      "description": "Orleans cluster, .NET runtime, network gateway (DDoS signals), PHASE-110 trace topology, PostgreSQL (CNPG).",
       "tags": ["necronia", "infra"],
       "timezone": "utc",
       "schemaVersion": 39,
-      "version": 1,
+      "version": 2,
       "refresh": "10s",
       "time": { "from": "now-1h", "to": "now" },
       "liveNow": true,
@@ -35,18 +69,40 @@ data:
             "current": { "text": "5m", "value": "5m" },
             "hide": 0,
             "label": "Rate interval"
+          },
+          {
+            "name": "root",
+            "type": "custom",
+            "label": "Trace root",
+            "query": "player.command,zone.tick,causal.restore,tcp.connection",
+            "multi": true,
+            "includeAll": true,
+            "allValue": ".*",
+            "current": { "text": "All", "value": "$__all" },
+            "description": "The bounded trace roots PHASE-110 shipped. player.session and async.delivery are contract names with no producer — deliberately absent."
+          },
+          {
+            "name": "datname",
+            "type": "query",
+            "label": "Database",
+            "datasource": { "type": "prometheus", "uid": "${datasource}" },
+            "query": "label_values(cnpg_pg_database_size_bytes{cluster=\"postgres-ha\"}, datname)",
+            "current": { "text": "necronia", "value": "necronia" },
+            "refresh": 1,
+            "includeAll": false
           }
         ]
       },
       "panels": [
-    
+
         { "id": 100, "title": "Orleans", "type": "row", "gridPos": { "x": 0, "y": 0, "w": 24, "h": 1 }, "collapsed": false },
-    
+
         {
           "id": 1, "title": "Server Up", "type": "stat",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 1, "w": 4, "h": 3 },
-          "targets": [{ "expr": "clamp_max(count(target_info{job=\"necronia-server\"}), 1) or vector(0)", "legendFormat": "Up" }],
+          "gridPos": { "x": 0, "y": 1, "w": 4, "h": 5 },
+          "description": "Push-liveness, not a scrape: there is no `up` series for a job that arrives by remote-write. target_info is the right series to read (alloy-gateway emits it from the OTLP resource attributes), but a bare count() of it depends on remote-write staleness to go empty — several minutes after the server stops. present_over_time() makes the liveness window explicit and short instead.",
+          "targets": [{ "expr": "clamp_max(count(present_over_time(target_info{job=\"necronia-server\"}[2m])), 1) or vector(0)", "legendFormat": "Up" }],
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "thresholds" },
@@ -59,12 +115,12 @@ data:
           },
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
         },
-    
+
         {
           "id": 2, "title": "Dispatcher Activation Queue Depth", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 4, "y": 1, "w": 10, "h": 5 },
-          "targets": [{ "expr": "orleans_messaging_processing_activation_data", "legendFormat": "Activation queue" }],
+          "targets": [{ "expr": "sum(orleans_messaging_processing_activation_data{job=\"necronia-server\"})", "legendFormat": "Activation queue" }],
           "fieldConfig": {
             "defaults": {
               "unit": "short",
@@ -77,91 +133,126 @@ data:
             }
           }
         },
-    
+
         {
           "id": 3, "title": "Dispatcher Throughput (received / processed)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 14, "y": 1, "w": 10, "h": 5 },
           "targets": [
-            { "expr": "rate(orleans_messaging_processing_dispatcher_received_total[$interval])", "legendFormat": "Received/s" },
-            { "expr": "rate(orleans_messaging_processing_dispatcher_processed_total[$interval])", "legendFormat": "Processed/s" },
-            { "expr": "rate(orleans_messaging_processing_dispatcher_forwarded_total[$interval])", "legendFormat": "Forwarded/s" }
+            { "expr": "sum(rate(orleans_messaging_processing_dispatcher_received_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Received/s" },
+            { "expr": "sum(rate(orleans_messaging_processing_dispatcher_processed_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Processed/s" },
+            { "expr": "sum(rate(orleans_messaging_processing_dispatcher_forwarded_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Forwarded/s" },
+            { "expr": "sum(rate(orleans_messaging_processing_ima_enqueued_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "IMA enqueued/s" }
           ],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
-    
+
         {
-          "id": 4, "title": "Dropped / Failed / Rejected Messages", "type": "timeseries",
+          "id": 4, "title": "Silo Health Signals", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 0, "y": 6, "w": 8, "h": 5 },
+          "description": "Replaces a panel that charted orleans_messaging_sent_dropped/_sent_failed/_rejected/_expired — none of which this Orleans version emits. These three do. A long-running turn means a grain call blocked the scheduler; activation collections are the runtime evicting idle grains.",
           "targets": [
-            { "expr": "rate(orleans_messaging_sent_dropped_total[$interval])", "legendFormat": "Dropped/s" },
-            { "expr": "rate(orleans_messaging_sent_failed_total[$interval])", "legendFormat": "Failed/s" },
-            { "expr": "rate(orleans_messaging_rejected_total[$interval])", "legendFormat": "Rejected/s" },
-            { "expr": "rate(orleans_messaging_expired_total[$interval])", "legendFormat": "Expired/s" }
+            { "expr": "sum(rate(orleans_scheduler_long_running_turns_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Long-running turns/s" },
+            { "expr": "sum(rate(orleans_catalog_activation_collections_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Activation collections/s" },
+            { "expr": "sum(rate(orleans_catalog_activation_shutdown_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Activation shutdowns/s" },
+            { "expr": "sum(rate(orleans_watchdog_health_checks_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Watchdog checks/s" }
           ],
           "fieldConfig": {
             "defaults": {
               "unit": "reqps",
               "thresholds": { "steps": [
                 { "value": null, "color": "green" },
-                { "value": 0.01, "color": "red" }
+                { "value": 0.01, "color": "yellow" }
               ] }
             }
           }
         },
-    
+
         {
-          "id": 5, "title": "Gateway Connected Clients", "type": "timeseries",
+          "id": 5, "title": "Grain Storage Latency p99", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 8, "y": 6, "w": 8, "h": 5 },
-          "targets": [{ "expr": "orleans_gateway_connected_clients", "legendFormat": "Connected clients" }],
-          "fieldConfig": { "defaults": { "unit": "short" } }
+          "description": "Replaces a dead orleans_gateway_connected_clients panel. A real Prometheus histogram (le buckets), unlike the app-requests one below.",
+          "targets": [
+            { "expr": "histogram_quantile(0.99, sum by (le) (rate(orleans_storage_read_latency_milliseconds_bucket{job=\"necronia-server\"}[$interval])))", "legendFormat": "Read p99" },
+            { "expr": "histogram_quantile(0.99, sum by (le) (rate(orleans_storage_write_latency_milliseconds_bucket{job=\"necronia-server\"}[$interval])))", "legendFormat": "Write p99" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "ms" } }
         },
-    
+
         {
           "id": 6, "title": "Active Grain Instances (by type)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "gridPos": { "x": 16, "y": 6, "w": 8, "h": 5 },
-          "targets": [{ "expr": "orleans_grains", "legendFormat": "{{grain_type}}" }],
+          "targets": [{ "expr": "sum by (grain_type) (orleans_grains{job=\"necronia-server\"})", "legendFormat": "{{grain_type}}" }],
           "fieldConfig": { "defaults": { "unit": "short" } }
         },
-    
-        { "id": 200, "title": ".NET Runtime", "type": "row", "gridPos": { "x": 0, "y": 11, "w": 24, "h": 1 }, "collapsed": false },
-    
+
+        {
+          "id": 7, "title": "Grain Call Latency Distribution", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 11, "w": 8, "h": 5 },
+          "description": "orleans_app_requests_latency_bucket_total is NOT a Prometheus histogram — it has a `duration` label, no `le`, so histogram_quantile silently returns nothing on it. Rendered as a stacked rate per bucket instead. The 9223372036854775807ms series is Orleans' +Inf bucket.",
+          "targets": [{ "expr": "sum by (duration) (rate(orleans_app_requests_latency_bucket_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "{{duration}}" }],
+          "fieldConfig": { "defaults": { "unit": "reqps", "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 40 } } }
+        },
+
+        {
+          "id": 8, "title": "Activations & Working Set", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 11, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(orleans_catalog_activations{job=\"necronia-server\"})", "legendFormat": "Activations" },
+            { "expr": "sum(orleans_catalog_activation_working_set{job=\"necronia-server\"})", "legendFormat": "Working set" },
+            { "expr": "sum(orleans_system_targets{job=\"necronia-server\"})", "legendFormat": "System targets" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "short" } }
+        },
+
+        {
+          "id": 9, "title": "Silo Memory & Reminders", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 16, "y": 11, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(orleans_runtime_available_memory_MB_total{job=\"necronia-server\"})", "legendFormat": "Available memory (MB)" },
+            { "expr": "sum(orleans_runtime_physical_memory_MB_total{job=\"necronia-server\"})", "legendFormat": "Physical memory (MB)" },
+            { "expr": "sum(orleans_reminders_active{job=\"necronia-server\"})", "legendFormat": "Active reminders" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "decmbytes" },
+            "overrides": [{
+              "matcher": { "id": "byName", "options": "Active reminders" },
+              "properties": [{ "id": "unit", "value": "short" }]
+            }]
+          }
+        },
+
+        { "id": 200, "title": ".NET Runtime", "type": "row", "gridPos": { "x": 0, "y": 16, "w": 24, "h": 1 }, "collapsed": false },
+
         {
           "id": 10, "title": "GC Heap Size by Generation", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 12, "w": 8, "h": 5 },
-          "targets": [
-            { "expr": "dotnet_gc_heap_size_bytes{generation='gen0'}", "legendFormat": "Gen 0" },
-            { "expr": "dotnet_gc_heap_size_bytes{generation='gen1'}", "legendFormat": "Gen 1" },
-            { "expr": "dotnet_gc_heap_size_bytes{generation='gen2'}", "legendFormat": "Gen 2" },
-            { "expr": "dotnet_gc_heap_size_bytes{generation='loh'}", "legendFormat": "LOH" }
-          ],
+          "gridPos": { "x": 0, "y": 17, "w": 8, "h": 5 },
+          "description": "Was dotnet_gc_heap_size_bytes{generation=...}. Both halves were wrong: the metric is dotnet_gc_last_collection_heap_size_bytes and the label is gc_heap_generation. It also has a `poh` (pinned object heap) generation the old panel had no series for.",
+          "targets": [{ "expr": "sum by (gc_heap_generation) (dotnet_gc_last_collection_heap_size_bytes{job=\"necronia-server\"})", "legendFormat": "{{gc_heap_generation}}" }],
           "fieldConfig": { "defaults": { "unit": "bytes" } }
         },
-    
+
         {
           "id": 11, "title": "GC Collections / sec (by generation)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 8, "y": 12, "w": 8, "h": 5 },
-          "targets": [
-            { "expr": "rate(dotnet_gc_collections_total{generation='gen0'}[$interval])", "legendFormat": "Gen 0/s" },
-            { "expr": "rate(dotnet_gc_collections_total{generation='gen1'}[$interval])", "legendFormat": "Gen 1/s" },
-            { "expr": "rate(dotnet_gc_collections_total{generation='gen2'}[$interval])", "legendFormat": "Gen 2/s" }
-          ],
+          "gridPos": { "x": 8, "y": 17, "w": 8, "h": 5 },
+          "targets": [{ "expr": "sum by (gc_heap_generation) (rate(dotnet_gc_collections_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "{{gc_heap_generation}}/s" }],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
-    
+
         {
           "id": 12, "title": "GC Pause Time Ratio", "type": "gauge",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 16, "y": 12, "w": 4, "h": 5 },
-          "targets": [{
-            "expr": "dotnet_gc_pause_time_ratio * 100",
-            "legendFormat": "GC pause %"
-          }],
+          "gridPos": { "x": 16, "y": 17, "w": 4, "h": 5 },
+          "description": "There is no dotnet_gc_pause_time_ratio. Derived from the pause-time counter instead: seconds of pause per second of wall clock, as a percentage.",
+          "targets": [{ "expr": "sum(rate(dotnet_gc_pause_time_seconds_total{job=\"necronia-server\"}[$interval])) * 100", "legendFormat": "GC pause %" }],
           "fieldConfig": {
             "defaults": {
               "unit": "percent", "min": 0, "max": 20,
@@ -174,12 +265,13 @@ data:
           },
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
         },
-    
+
         {
           "id": 13, "title": "ThreadPool Queue Length", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 20, "y": 12, "w": 4, "h": 5 },
-          "targets": [{ "expr": "dotnet_thread_pool_queue_length", "legendFormat": "Queue" }],
+          "gridPos": { "x": 20, "y": 17, "w": 4, "h": 5 },
+          "description": "The live name carries a _total suffix even though it is a gauge (an OTLP naming artefact). Without it the panel was empty.",
+          "targets": [{ "expr": "sum(dotnet_thread_pool_queue_length_total{job=\"necronia-server\"})", "legendFormat": "Queue" }],
           "fieldConfig": {
             "defaults": {
               "unit": "short",
@@ -191,62 +283,103 @@ data:
             }
           }
         },
-    
+
         {
           "id": 14, "title": "Process Memory (Working Set)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 17, "w": 8, "h": 5 },
-          "targets": [
-            { "expr": "dotnet_process_memory_working_set_bytes", "legendFormat": "Working set" }
-          ],
+          "gridPos": { "x": 0, "y": 22, "w": 8, "h": 5 },
+          "targets": [{ "expr": "sum(dotnet_process_memory_working_set_bytes{job=\"necronia-server\"})", "legendFormat": "Working set" }],
           "fieldConfig": { "defaults": { "unit": "bytes" } }
         },
-    
+
         {
           "id": 15, "title": "CPU Usage", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 8, "y": 17, "w": 8, "h": 5 },
+          "gridPos": { "x": 8, "y": 22, "w": 8, "h": 5 },
+          "description": "Divided by core count, so 100% means the box is saturated rather than one core is. The old panel omitted the divisor and could read 1600% on a 16-core host while claiming unit `percent`.",
           "targets": [{
-            "expr": "rate(dotnet_process_cpu_time_seconds_total[$interval]) * 100",
+            "expr": "100 * sum(rate(dotnet_process_cpu_time_seconds_total{job=\"necronia-server\"}[$interval])) / sum(dotnet_process_cpu_count{job=\"necronia-server\"})",
             "legendFormat": "CPU %"
           }],
-          "fieldConfig": { "defaults": { "unit": "percent" } }
+          "fieldConfig": { "defaults": { "unit": "percent", "max": 100 } }
         },
-    
+
         {
           "id": 16, "title": "Heap Allocations / sec", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 16, "y": 17, "w": 8, "h": 5 },
+          "gridPos": { "x": 16, "y": 22, "w": 8, "h": 5 },
+          "description": "Was dotnet_gc_heap_total_allocated_bytes_total; the live name has no `total_` infix.",
           "targets": [{
-            "expr": "rate(dotnet_gc_heap_total_allocated_bytes_total[$interval])",
+            "expr": "sum(rate(dotnet_gc_heap_allocated_bytes_total{job=\"necronia-server\"}[$interval]))",
             "legendFormat": "Alloc bytes/s"
           }],
           "fieldConfig": { "defaults": { "unit": "Bps" } }
         },
-    
-        { "id": 300, "title": "Network & Gateway", "type": "row", "gridPos": { "x": 0, "y": 22, "w": 24, "h": 1 }, "collapsed": false },
-    
+
         {
-          "id": 20, "title": "Player Connections / sec", "type": "timeseries",
+          "id": 17, "title": "Exceptions & Lock Contention / sec", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 23, "w": 8, "h": 5 },
+          "gridPos": { "x": 0, "y": 27, "w": 8, "h": 5 },
+          "description": "Both are ambient .NET health signals the dashboard never surfaced. Lock contention rising alongside long-running Orleans turns is the classic silo stall.",
           "targets": [
-            { "expr": "rate(necronia_player_connections_total[$interval])", "legendFormat": "Connections/s" }
+            { "expr": "sum(rate(dotnet_exceptions_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Exceptions/s" },
+            { "expr": "sum(rate(dotnet_monitor_lock_contentions_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Lock contentions/s" }
           ],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
-    
+
+        {
+          "id": 18, "title": "Heap Fragmentation & Committed", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 27, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(dotnet_gc_last_collection_heap_fragmentation_size_bytes{job=\"necronia-server\"})", "legendFormat": "Fragmentation" },
+            { "expr": "sum(dotnet_gc_last_collection_memory_committed_size_bytes{job=\"necronia-server\"})", "legendFormat": "Committed" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+
+        {
+          "id": 19, "title": "ThreadPool Threads & Work Items", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 16, "y": 27, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(dotnet_thread_pool_thread_count_total{job=\"necronia-server\"})", "legendFormat": "Threads" },
+            { "expr": "sum(rate(dotnet_thread_pool_work_item_count_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Work items/s" }
+          ],
+          "fieldConfig": {
+            "defaults": { "unit": "short" },
+            "overrides": [{
+              "matcher": { "id": "byName", "options": "Work items/s" },
+              "properties": [{ "id": "unit", "value": "reqps" }]
+            }]
+          }
+        },
+
+        { "id": 300, "title": "Network & Gateway", "type": "row", "gridPos": { "x": 0, "y": 32, "w": 24, "h": 1 }, "collapsed": false },
+
+        {
+          "id": 20, "title": "Player Connections / sec", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 33, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(rate(necronia_player_connections_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Connections/s" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+
         {
           "id": 21, "title": "Invalid & Dropped Packets / sec (DDoS signal)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 8, "y": 23, "w": 8, "h": 5 },
+          "gridPos": { "x": 8, "y": 33, "w": 8, "h": 5 },
+          "description": "Both counters are absent until the first bad packet — OpenTelemetry does not export an unincremented counter. Empty here means 'nothing malformed has arrived', not 'broken'. The legend previously read {{error.reason}}; a Prometheus label cannot contain a dot, so it rendered literally.",
           "targets": [
             {
-              "expr": "rate(necronia_gateway_packets_invalid_total[$interval])",
-              "legendFormat": "Invalid ({{error.reason}})"
+              "expr": "sum by (reason) (rate(necronia_gateway_packets_invalid_total{job=\"necronia-server\"}[$interval]))",
+              "legendFormat": "Invalid ({{reason}})"
             },
             {
-              "expr": "rate(necronia_gateway_packets_dropped_total[$interval])",
+              "expr": "sum by (reason) (rate(necronia_gateway_packets_dropped_total{job=\"necronia-server\"}[$interval]))",
               "legendFormat": "Dropped ({{reason}})"
             }
           ],
@@ -261,13 +394,14 @@ data:
             }
           }
         },
-    
+
         {
           "id": 22, "title": "Gateway Pipeline Backpressure / sec", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 16, "y": 23, "w": 8, "h": 5 },
+          "gridPos": { "x": 16, "y": 33, "w": 8, "h": 5 },
+          "description": "Another never-yet-incremented counter — absent until the pipeline first pushes back, not broken.",
           "targets": [{
-            "expr": "rate(necronia_gateway_pipeline_backpressure_total[$interval])",
+            "expr": "sum(rate(necronia_gateway_pipeline_backpressure_total{job=\"necronia-server\"}[$interval]))",
             "legendFormat": "Backpressure/s"
           }],
           "fieldConfig": {
@@ -281,44 +415,285 @@ data:
             }
           }
         },
-    
-        { "id": 400, "title": "PostgreSQL", "type": "row", "gridPos": { "x": 0, "y": 28, "w": 24, "h": 1 }, "collapsed": false },
-    
+
         {
-          "id": 30, "title": "Active Connections", "type": "stat",
+          "id": 23, "title": "Gateway Drains / sec (by outcome)", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 29, "w": 4, "h": 4 },
-          "targets": [{ "expr": "pg_stat_activity_count", "legendFormat": "Connections" }],
+          "gridPos": { "x": 0, "y": 38, "w": 8, "h": 5 },
+          "description": "PHASE-110 planned to suppress spans for empty drains and could not: Orleans AddActivityPropagation() mints those spans caller-side, before the grain body can decline. This counter shipped instead. It is the only view of how much of the 16 ms poll does nothing.",
+          "targets": [{
+            "expr": "sum by (outcome) (rate(necronia_gateway_drains_total{job=\"necronia-server\"}[$interval]))",
+            "legendFormat": "{{outcome}}/s"
+          }],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+
+        {
+          "id": 24, "title": "Empty-Drain Ratio", "type": "gauge",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 38, "w": 4, "h": 5 },
+          "description": "Share of pump wake-ups that found nothing. High is not an incident — it is the poll design ADR-101's signal-driven pump is meant to delete. Track it so that change has a before/after.",
+          "targets": [{
+            "expr": "100 * sum(rate(necronia_gateway_drains_total{job=\"necronia-server\", outcome=\"empty\"}[$interval])) / clamp_min(sum(rate(necronia_gateway_drains_total{job=\"necronia-server\"}[$interval])), 0.001)",
+            "legendFormat": "Empty %"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent", "min": 0, "max": 100,
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 80, "color": "yellow" },
+                { "value": 95, "color": "orange" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
+        },
+
+        {
+          "id": 25, "title": "Contained Faults & Clipped Drains / sec", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 12, "y": 38, "w": 6, "h": 5 },
+          "description": "A contained fault is an error the gateway swallowed rather than propagated — invisible in logs by design, so this counter is the only signal. A clipped drain means the scheduler hit its per-tick budget and left work behind.",
+          "targets": [
+            { "expr": "sum(rate(necronia_gateway_contained_faults_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Contained faults/s" },
+            { "expr": "sum(rate(necronia_grains_scheduler_drain_clipped_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Clipped drains/s" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 0.01, "color": "red" }
+              ] }
+            }
+          }
+        },
+
+        {
+          "id": 26, "title": "Write-Behind Persistence / sec", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 18, "y": 38, "w": 6, "h": 5 },
+          "description": "Rejections are the one to watch: the write-behind queue refused a player save, which means state loss on disconnect. Pairs with the CNPG row below.",
+          "targets": [
+            { "expr": "sum(rate(necronia_persistence_writebehind_writes_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Writes/s" },
+            { "expr": "sum(rate(necronia_persistence_writebehind_rejections_total{job=\"necronia-server\"}[$interval]))", "legendFormat": "Rejections/s" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 0.001, "color": "red" }
+              ] }
+            }
+          }
+        },
+
+        { "id": 350, "title": "Trace Topology (PHASE-110)", "type": "row", "gridPos": { "x": 0, "y": 43, "w": 24, "h": 1 }, "collapsed": false },
+
+        {
+          "id": 30, "title": "Root Span Rate", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 44, "w": 8, "h": 5 },
+          "description": "Fed by Tempo's metrics-generator (span-metrics), remote-written into this Prometheus with source=\"tempo\". Before PHASE-110 there was one connection-lifetime trace per player and this panel could not have existed.",
+          "targets": [{
+            "expr": "sum by (span_name) (rate(traces_spanmetrics_calls_total{service=\"necronia-server\", span_name=~\"$root\"}[$interval]))",
+            "legendFormat": "{{span_name}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+
+        {
+          "id": 31, "title": "Root Span Latency p99", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 44, "w": 8, "h": 5 },
+          "description": "zone.tick p99 is the one that matters for simulation health — a tick root that runs long is the trace-side view of necronia_grains_ecs_tick_overruns_total.",
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.99, sum by (span_name, le) (rate(traces_spanmetrics_latency_bucket{service=\"necronia-server\", span_name=~\"$root\"}[$interval])))",
+              "legendFormat": "{{span_name}} p99"
+            }
+          ],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+
+        {
+          "id": 32, "title": "Root Span Errors / sec", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 16, "y": 44, "w": 8, "h": 5 },
+          "description": "Empty while nothing is failing. ADR-077 notes errors are meant to be kept at 100% via collector-side tail sampling — not configured yet, so at reduced sampling rates this panel will under-report.",
+          "targets": [{
+            "expr": "sum by (span_name) (rate(traces_spanmetrics_calls_total{service=\"necronia-server\", span_name=~\"$root\", status_code=\"STATUS_CODE_ERROR\"}[$interval]))",
+            "legendFormat": "{{span_name}}"
+          }],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 0.01, "color": "red" }
+              ] }
+            }
+          }
+        },
+
+        {
+          "id": 33, "title": "Slowest Grain Calls (p99, client spans)", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 49, "w": 12, "h": 6 },
+          "description": "The Orleans fan-out underneath each root — what a slow player.command or zone.tick is actually waiting on. Top 10 only; span_name here is one series per grain interface method.",
+          "targets": [{
+            "expr": "topk(10, histogram_quantile(0.99, sum by (span_name, le) (rate(traces_spanmetrics_latency_bucket{service=\"necronia-server\", span_kind=\"SPAN_KIND_CLIENT\"}[$interval]))))",
+            "legendFormat": "{{span_name}}"
+          }],
+          "fieldConfig": { "defaults": { "unit": "s" } }
+        },
+
+        {
+          "id": 34, "title": "Recent Bounded Traces", "type": "table",
+          "datasource": { "type": "tempo", "uid": "tempo" },
+          "gridPos": { "x": 12, "y": 49, "w": 12, "h": 6 },
+          "description": "TraceQL against the shipped root names. Correlation attributes were renamed to the necronia.* namespace in PHASE-110 as a HARD cut — no dual-write, no alias — so any query using the old session_id / player.id / chunk.id spellings returns empty rather than degrading. Useful follow-ons, per ADR-077: { span.\"necronia.session_id\" = \"<sid>\" } for one connection's whole story, { span.\"necronia.causal_root_id\" = \"<sid>:<opid>\" } for a cascade across command, tick and delivery traces.",
+          "targets": [{
+            "refId": "A",
+            "queryType": "traceql",
+            "query": "{ name =~ \"player.command|zone.tick|causal.restore\" }",
+            "limit": 20,
+            "tableType": "traces"
+          }]
+        },
+
+        { "id": 400, "title": "PostgreSQL (CNPG)", "type": "row", "gridPos": { "x": 0, "y": 55, "w": 24, "h": 1 }, "collapsed": false },
+
+        {
+          "id": 40, "title": "Instances Up", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 56, "w": 4, "h": 4 },
+          "description": "Everything in this row was previously queried as pg_stat_* — a metric family nothing in this cluster has ever emitted. CNPG's built-in exporter uses cnpg_* names on port 9187, and until cnpg.podmonitor.yaml was added it was not scraped at all.",
+          "targets": [{ "expr": "sum(cnpg_collector_up{cluster=\"postgres-ha\"})", "legendFormat": "Up" }],
           "fieldConfig": {
             "defaults": {
               "color": { "mode": "thresholds" },
               "thresholds": { "steps": [
-                { "value": null, "color": "green" },
-                { "value": 30, "color": "yellow" },
-                { "value": 40, "color": "red" }
+                { "value": null, "color": "red" },
+                { "value": 2, "color": "yellow" },
+                { "value": 3, "color": "green" }
               ] }
             }
           },
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
         },
-    
+
         {
-          "id": 31, "title": "Transaction Rate", "type": "timeseries",
+          "id": 41, "title": "Replication Lag", "type": "stat",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 4, "y": 29, "w": 10, "h": 5 },
+          "gridPos": { "x": 4, "y": 56, "w": 4, "h": 4 },
+          "targets": [{ "expr": "max(cnpg_pg_replication_lag{cluster=\"postgres-ha\"})", "legendFormat": "Lag" }],
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 5, "color": "yellow" },
+                { "value": 30, "color": "red" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+        },
+
+        {
+          "id": 42, "title": "Streaming Replicas", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 56, "w": 4, "h": 4 },
+          "targets": [{ "expr": "max(cnpg_pg_replication_streaming_replicas{cluster=\"postgres-ha\"})", "legendFormat": "Replicas" }],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [
+                { "value": null, "color": "red" },
+                { "value": 2, "color": "green" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+        },
+
+        {
+          "id": 43, "title": "Nodes Used", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 12, "y": 56, "w": 4, "h": 4 },
+          "description": "Distinct nodes hosting the three instances. 1 means all three landed on one node and the HA is nominal only. -1 means the metric is unavailable.",
+          "targets": [{ "expr": "max(cnpg_collector_nodes_used{cluster=\"postgres-ha\"})", "legendFormat": "Nodes" }],
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": { "steps": [
+                { "value": null, "color": "red" },
+                { "value": 2, "color": "yellow" },
+                { "value": 3, "color": "green" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+        },
+
+        {
+          "id": 44, "title": "Backends", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 16, "y": 56, "w": 4, "h": 4 },
+          "description": "max_connections is 100 (postgress.pg-cluster.yaml).",
           "targets": [
-            { "expr": "rate(pg_stat_database_xact_commit[$interval])", "legendFormat": "Commits/s" },
-            { "expr": "rate(pg_stat_database_xact_rollback[$interval])", "legendFormat": "Rollbacks/s" }
+            { "expr": "sum(cnpg_backends_total{cluster=\"postgres-ha\", datname=\"$datname\"})", "legendFormat": "Total" },
+            { "expr": "sum(cnpg_backends_waiting_total{cluster=\"postgres-ha\"})", "legendFormat": "Waiting" }
+          ],
+          "fieldConfig": {
+            "defaults": {
+              "color": { "mode": "thresholds" },
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 60, "color": "yellow" },
+                { "value": 85, "color": "red" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+        },
+
+        {
+          "id": 45, "title": "Collection Errors", "type": "stat",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 20, "y": 56, "w": 4, "h": 4 },
+          "description": "1 if the exporter's own last scrape of Postgres failed. A dead exporter reads as missing data everywhere else in this row, which is exactly the ambiguity that hid the previous outage.",
+          "targets": [{ "expr": "max(cnpg_collector_last_collection_error{cluster=\"postgres-ha\"})", "legendFormat": "Error" }],
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [{ "type": "value", "options": { "0": { "text": "OK", "color": "green" }, "1": { "text": "ERROR", "color": "red" } } }],
+              "thresholds": { "steps": [
+                { "value": null, "color": "green" },
+                { "value": 1, "color": "red" }
+              ] }
+            }
+          },
+          "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" }
+        },
+
+        {
+          "id": 46, "title": "Transaction Rate", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 0, "y": 60, "w": 8, "h": 5 },
+          "targets": [
+            { "expr": "sum(rate(cnpg_pg_stat_database_xact_commit{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Commits/s" },
+            { "expr": "sum(rate(cnpg_pg_stat_database_xact_rollback{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Rollbacks/s" }
           ],
           "fieldConfig": { "defaults": { "unit": "reqps" } }
         },
-    
+
         {
-          "id": 32, "title": "Buffer Cache Hit Ratio", "type": "gauge",
+          "id": 47, "title": "Buffer Cache Hit Ratio", "type": "gauge",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 14, "y": 29, "w": 5, "h": 5 },
+          "gridPos": { "x": 8, "y": 60, "w": 5, "h": 5 },
           "targets": [{
-            "expr": "100 * rate(pg_stat_database_blks_hit[$interval]) / (rate(pg_stat_database_blks_hit[$interval]) + rate(pg_stat_database_blks_read[$interval]) + 0.001)",
+            "expr": "100 * sum(rate(cnpg_pg_stat_database_blks_hit{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval])) / clamp_min(sum(rate(cnpg_pg_stat_database_blks_hit{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval])) + sum(rate(cnpg_pg_stat_database_blks_read{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval])), 0.001)",
             "legendFormat": "Cache hit %"
           }],
           "fieldConfig": {
@@ -333,14 +708,14 @@ data:
           },
           "options": { "reduceOptions": { "calcs": ["lastNotNull"] } }
         },
-    
+
         {
-          "id": 33, "title": "Deadlocks & Conflicts / sec", "type": "timeseries",
+          "id": 48, "title": "Deadlocks & Conflicts / sec", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 19, "y": 29, "w": 5, "h": 5 },
+          "gridPos": { "x": 13, "y": 60, "w": 5, "h": 5 },
           "targets": [
-            { "expr": "rate(pg_stat_database_deadlocks_total[$interval])", "legendFormat": "Deadlocks/s" },
-            { "expr": "rate(pg_stat_database_conflicts_total[$interval])", "legendFormat": "Conflicts/s" }
+            { "expr": "sum(rate(cnpg_pg_stat_database_deadlocks{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Deadlocks/s" },
+            { "expr": "sum(rate(cnpg_pg_stat_database_conflicts{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Conflicts/s" }
           ],
           "fieldConfig": {
             "defaults": {
@@ -352,53 +727,67 @@ data:
             }
           }
         },
-    
+
         {
-          "id": 34, "title": "Row Operations / sec", "type": "timeseries",
+          "id": 49, "title": "Longest Transaction", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 0, "y": 34, "w": 8, "h": 5 },
-          "targets": [
-            { "expr": "rate(pg_stat_database_tup_fetched[$interval])", "legendFormat": "Fetched/s" },
-            { "expr": "rate(pg_stat_database_tup_inserted[$interval])", "legendFormat": "Inserted/s" },
-            { "expr": "rate(pg_stat_database_tup_updated[$interval])", "legendFormat": "Updated/s" },
-            { "expr": "rate(pg_stat_database_tup_deleted[$interval])", "legendFormat": "Deleted/s" }
-          ],
-          "fieldConfig": { "defaults": { "unit": "reqps" } }
-        },
-    
-        {
-          "id": 35, "title": "Locks Waiting", "type": "timeseries",
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 8, "y": 34, "w": 8, "h": 5 },
-          "targets": [{ "expr": "pg_locks_count{granted='false'}", "legendFormat": "Waiting ({{mode}})" }],
+          "gridPos": { "x": 18, "y": 60, "w": 6, "h": 5 },
+          "description": "Replaces the old pg_locks_count{granted=false} panel, which has no CNPG equivalent. A transaction that will not end is what blocks autovacuum and pins the xid horizon — the same symptom from the other direction.",
+          "targets": [{ "expr": "max(cnpg_backends_max_tx_duration_seconds{cluster=\"postgres-ha\", datname=\"$datname\"})", "legendFormat": "Max tx duration" }],
           "fieldConfig": {
             "defaults": {
-              "unit": "short",
+              "unit": "s",
               "thresholds": { "steps": [
                 { "value": null, "color": "green" },
-                { "value": 1, "color": "yellow" },
-                { "value": 5, "color": "red" }
+                { "value": 60, "color": "yellow" },
+                { "value": 300, "color": "red" }
               ] }
             }
           }
         },
-    
+
         {
-          "id": 36, "title": "Autovacuum Activity & Database Size", "type": "timeseries",
+          "id": 50, "title": "Row Operations / sec", "type": "timeseries",
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "gridPos": { "x": 16, "y": 34, "w": 8, "h": 5 },
+          "gridPos": { "x": 0, "y": 65, "w": 8, "h": 5 },
           "targets": [
-            { "expr": "pg_database_size_bytes", "legendFormat": "DB size" },
-            { "expr": "increase(pg_stat_user_tables_autovacuum_count[$interval])", "legendFormat": "Autovacuums" }
+            { "expr": "sum(rate(cnpg_pg_stat_database_tup_fetched{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Fetched/s" },
+            { "expr": "sum(rate(cnpg_pg_stat_database_tup_inserted{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Inserted/s" },
+            { "expr": "sum(rate(cnpg_pg_stat_database_tup_updated{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Updated/s" },
+            { "expr": "sum(rate(cnpg_pg_stat_database_tup_deleted{cluster=\"postgres-ha\", datname=\"$datname\"}[$interval]))", "legendFormat": "Deleted/s" }
+          ],
+          "fieldConfig": { "defaults": { "unit": "reqps" } }
+        },
+
+        {
+          "id": 51, "title": "Database Size", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 8, "y": 65, "w": 8, "h": 5 },
+          "description": "All databases on the cluster, not just the selected one — the necronia volume is Retain-policy and marked not-reconstructible in protected-volumes.yaml, so growth is worth watching next to its neighbours.",
+          "targets": [{ "expr": "max by (datname) (cnpg_pg_database_size_bytes{cluster=\"postgres-ha\"})", "legendFormat": "{{datname}}" }],
+          "fieldConfig": { "defaults": { "unit": "bytes" } }
+        },
+
+        {
+          "id": 52, "title": "WAL Volume & Transaction-ID Age", "type": "timeseries",
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "gridPos": { "x": 16, "y": 65, "w": 8, "h": 5 },
+          "description": "Replaces the old autovacuum-count panel (no CNPG equivalent) with the thing autovacuum exists to prevent. xid age climbing without falling back means autovacuum is not keeping up; at ~2e9 Postgres refuses writes.",
+          "targets": [
+            { "expr": "max(cnpg_collector_pg_wal{cluster=\"postgres-ha\"})", "legendFormat": "WAL bytes" },
+            { "expr": "max(cnpg_pg_database_xid_age{cluster=\"postgres-ha\", datname=\"$datname\"})", "legendFormat": "xid age" }
           ],
           "fieldConfig": {
             "defaults": { "unit": "bytes" },
             "overrides": [{
-              "matcher": { "id": "byName", "options": "Autovacuums" },
-              "properties": [{ "id": "unit", "value": "short" }]
+              "matcher": { "id": "byName", "options": "xid age" },
+              "properties": [
+                { "id": "unit", "value": "short" },
+                { "id": "custom.axisPlacement", "value": "right" }
+              ]
             }]
           }
         }
-    
+
       ]
     }

@@ -45,7 +45,11 @@ spec:
       - "vchord.so"
 
   monitoring:
-    enablePodMonitor: true
+    # Off deliberately -- see the same note on postgres-ha. The exporter still
+    # runs; the operator's PodMonitor cannot carry the `release` label
+    # Prometheus selects on, so it was never scraped. This cluster is covered by
+    # ../../prometheus/manifests/cnpg.podmonitor.yaml instead.
+    enablePodMonitor: false
 
   resources:
     requests:

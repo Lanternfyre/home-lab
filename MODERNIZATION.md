@@ -2025,6 +2025,54 @@ existed, was documented, and had never told the truth.
 **`Retain` means test PVCs leak.** Deleting a test PVC leaves the PV *and* the
 backend volume. Clean up with `tridentctl delete volume` after any storage test.
 
+**A dashboard is a query, and nobody was checking the queries.** The four
+`Necronia — *` dashboards were applied, Synced, imported by the sidecar and
+rendered — with a large share of their panels querying metrics that have never
+existed. Audited 2026-08-17: four `dotnet_*` panels used pre-rename metric names
+*and* a GC label spelled `generation` when the live one is `gc_heap_generation`;
+five `orleans_messaging_*` / `orleans_gateway_*` series this Orleans version
+never emits; and an entire PostgreSQL row against `pg_stat_*` when this cluster
+has never produced a single `pg_` series. `scripts/audit-dashboard-queries.py` is the
+check that catches this class: it runs every `expr` in every dashboard through
+the Prometheus parser and asserts each metric name is in the live `__name__`
+index. Same rule as the alert rules — an expression returning nothing is not a
+passing test.
+
+**`enablePodMonitor: true` on a CNPG Cluster collects nothing here.** The
+operator generates the PodMonitor with its own labels, and this cluster's
+Prometheus CR selects on `podMonitorSelector: {release: prometheus-operator}` —
+a label CNPG offers no way to add. Both `postgres-ha` and `immich-db` had it set
+for 132 days and were never scraped once. The fix is the same shape as every
+other hand-written monitor in this repo: own the PodMonitor
+(`prometheus/manifests/cnpg.podmonitor.yaml`), carry the `release` label, and
+set `enablePodMonitor: false` so no orphaned copy is left looking functional.
+Note also that CNPG exports `cnpg_pg_stat_*`, **not** the `postgres_exporter`
+`pg_stat_*` names — fixing the scrape alone does not light up a `pg_stat_*`
+dashboard.
+
+**Two things must both be on for exemplars.** The metric→trace jump needs
+`prometheusSpec.enableFeatures: [exemplar-storage]` (or the remote-write
+receiver drops exemplars silently) **and**
+`grafana.sidecar.datasources.exemplarTraceIdDestinations` — which is a
+kube-prometheus-stack value with three scalar fields, not a `jsonData` list.
+Either half alone looks configured and links nowhere.
+
+**`service.instance.id` churns.** Necronia sets it to a fresh GUID per process,
+so every restart mints a new `instance` series. Dashboards over that data must
+aggregate (`sum`, `sum by (le)`) or they accumulate one dead series per restart
+across the retention window.
+
+**"The query returns nothing" and "the metric does not exist" are different
+things, and telling them apart needs a time range.** An instant query against a
+push-based job says nothing about whether a series exists — the Necronia dev
+server is off most of the time, so `target_info`, `orleans_grains` and most of
+the game counters all read empty at any given moment while being perfectly
+healthy. Distinguish with `/api/v1/series?match[]=<name>&start=&end=` over the
+retention window, or a `query_range`. The corollary is the useful half: run the
+OLD expression over the same range before believing a metric was renamed. Doing
+that here proved four `dotnet_*` renames real — and disproved a fifth suspected
+break, where `target_info` did exist and the panel was fine.
+
 ---
 
 ## Standing warnings

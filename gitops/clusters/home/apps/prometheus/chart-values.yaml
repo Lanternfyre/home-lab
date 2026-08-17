@@ -105,6 +105,16 @@ prometheus-node-exporter:
 prometheus:
   prometheusSpec:
     enableRemoteWriteReceiver: true
+    # Exemplars are the metric→trace jump: a spike on a latency histogram carries
+    # the trace id of one request that produced it. The Necronia server already
+    # emits them (OpenTelemetry ExemplarFilterType.TraceBased), but the
+    # remote_write receiver DISCARDS exemplars silently unless this feature flag
+    # is on — they do not error, they just never arrive. The view half is
+    # grafana.sidecar.datasources.exemplarTraceIdDestinations below; both halves
+    # are required, and both are what Necronia's ADR-077 lists as the home-lab
+    # follow-up it could not do from its own repo.
+    enableFeatures:
+      - exemplar-storage
 
 # ── Alerts actually reach a human ────────────────────────────────────────────
 # Until 2026-08-03 the ONLY receiver was `name: "null"`. Every alert the
@@ -191,6 +201,22 @@ grafana:
   # the environment and overrides the matching grafana.ini values — so we
   # intentionally omit literal client_id / client_secret in grafana.ini below.
   envFromSecret: grafana-google-oidc
+
+  sidecar:
+    datasources:
+      # The Prometheus datasource is created by the chart's sidecar, not by the
+      # additionalDataSources list below, so this is where its exemplar wiring
+      # goes. Note the shape: three SCALAR fields on a dedicated key — it is not
+      # a jsonData list of {name, datasourceUid} the way a hand-written Grafana
+      # datasource would be. Getting that wrong yields a datasource that looks
+      # configured and links nowhere.
+      #
+      # `traceIdLabelName` must match the exemplar label the OTLP→remote_write
+      # path attaches (trace_id). Pairs with prometheusSpec.enableFeatures above.
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        traceIdLabelName: trace_id
+        urlDisplayLabel: View trace
 
   grafana.ini:
     server:
