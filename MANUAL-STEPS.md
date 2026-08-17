@@ -5,7 +5,7 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-15
+Last updated: 2026-08-17
 
 ---
 
@@ -41,16 +41,31 @@ each hop is verified before the next.
 
 ---
 
-## 🔴 Do this next — the storage fix is written but NOT applied
+## ✅ Storage fix — APPLIED and verified 2026-08-17
 
-### 0. Converge `no_path_retry` onto the nodes (needs your sudo password)
+### 0. Converge `no_path_retry` onto the nodes — ✅ DONE
 
-**Why this is red.** On 2026-08-08 a partition to the QNAP permanently wedged
-six filesystems — all three `postgres-ha` instances, loki, mealie and
-pihole-data — and they stayed dead for seven days while every dashboard showed
-green. They are recovered now. **The cause is not.** Until this runs, another
-NAS blip does the same thing again; the window before a filesystem is destroyed
-is roughly *five seconds*.
+**This section read 🔴 "written but NOT applied" until 2026-08-17, when a
+preflight run showed all 12 LUNs already at `120`.** The sudo run had happened;
+nothing updated the docs. Both this file and MODERNIZATION.md were telling
+whoever picked the work up next that the cluster was still one NAS blip from
+another week-long outage. Recorded here rather than quietly deleted, because
+"the doc says it is broken and it is not" costs the same kind of time as the
+reverse.
+
+Verify any time — read-only, no sudo, asserts behaviour rather than file
+contents:
+
+```bash
+cd ansible
+ansible-playbook playbooks/90-preflight.yml
+```
+
+`mpath queueing:` must read `mpathX|120` for every LUN; `-` means that LUN is
+**not** protected. `wedged ext4:` must be empty. As of 2026-08-17: 12/12 LUNs
+at 120 across lab2/3/4/5 (lab1 has no PVCs scheduled), nothing wedged.
+
+If it ever needs re-applying — a rebuilt node, a reverted config:
 
 ```bash
 cd ansible
@@ -76,13 +91,12 @@ is recoverable; an aborted journal cost a week. Bounded at 120 rather than
 `queue` (infinite) precisely so a NAS that never comes back degrades the node
 instead of wedging kubelet on it forever.
 
-**Verify it took** — asserts behaviour, not file contents:
-
-```bash
-ansible-playbook playbooks/90-preflight.yml     # no sudo needed
-# "mpath queueing:" must read mpathX|120 for every LUN.
-# "-" means NOT protected. "wedged ext4:" must be empty.
-```
+This is **live behaviour now**, which changes what a future outage looks like
+from the monitoring side. `volume-health-exporter` statfs's every PVC mount, and
+during a partition those calls land in uninterruptible sleep rather than
+returning EIO — so expect `VolumeHealthProbeStale` (the probe blocked) rather
+than `VolumeFilesystemStatfsFailing`. Both page. See the note at the statfs loop
+in `prometheus/manifests/volume-health-exporter.configmap.yaml`.
 
 ### 0b. 🟢 If a volume ever returns EIO after a confirmed unmount+remount
 
@@ -123,8 +137,14 @@ to clear the port, set the flag, and **keep the MetalLB IP** — no delete and
 recreate, so the address does not move and the external-dns records do not
 churn:
 
+✅ **The four below were run on 2026-08-17 and verified.** All five LB addresses
+still answer; all five old NodePorts are closed on all five nodes (25/25);
+`argocd-server:32497`, deliberately left open at the time, still answered — the
+control that proves the probe was not simply returning CLOSED for everything.
+Kept here as the reference form for the remaining services and for any future
+Service.
+
 ```sh
-# After the repo is pushed and ArgoCD has synced, once per service:
 kubectl -n databases patch svc postgres-ha-lb --type=merge -p \
   '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
 

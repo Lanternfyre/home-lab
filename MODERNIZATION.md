@@ -47,22 +47,36 @@ working tree clean, both repos level with origin.**
 **Resumed later the same day: Phase 7 item 1 (SMART) is now complete.** The
 next item is #2 below, and it is the one that needs a human at a keyboard.
 
-#### 🔴 2026-08-15 — storage incident recovered, prevention NOT yet applied
+#### ✅ 2026-08-15 — storage incident recovered · prevention APPLIED (verified 2026-08-17)
 
 A NAS partition on 2026-08-08 left six filesystems permanently wedged for a
 week, including all three `postgres-ha` instances. **All six are recovered and
 verified writable**; a fresh `pg_dumpall` succeeded
 (`postgres-ha-20260815T165534Z.sql.gz`). Full mechanism in "Hard-won findings".
 
-What is **not** done — this is the resume point:
+Where this actually stands:
 
-1. 🔴 **Apply `no_path_retry` to the nodes.** The git change is in
-   (`node_baseline`, `group_vars/all.yml`), but converging needs a sudo
-   password, so it has not run. **Until it does, the cluster is exactly as
-   fragile as it was on 2026-08-08** — `90-preflight.yml` reports
-   `mpath queueing: mpathX|-` on all 12 LUNs across lab2/3/4/5. See
-   MANUAL-STEPS.md. The role applies it with `multipathd reconfigure`, in
-   place, no restart and no I/O interruption, and then asserts it went live.
+1. ✅ **`no_path_retry` is converged.** This entry read 🔴 "NOT applied ... the
+   cluster is exactly as fragile as it was on 2026-08-08" until **2026-08-17**,
+   by which point it had been false for some time — the sudo run had happened
+   and nothing updated the resume point. Since this is the file `CLAUDE.md`
+   sends you to first, it was pointing at a solved problem and mis-stating the
+   risk to everything downstream of it.
+
+   Verified by behaviour, not by reading the config, via
+   `ansible-playbook playbooks/90-preflight.yml` (read-only, no sudo):
+
+   ```
+   k8s-1   0 LUNs   (no PVCs scheduled)   wedged ext4: ''
+   k8s-2   2 LUNs   all mpathX|120        wedged ext4: ''
+   k8s-3   2 LUNs   all mpathX|120        wedged ext4: ''
+   k8s-4   1 LUN    all mpathX|120        wedged ext4: ''
+   k8s-5   7 LUNs   all mpathX|120        wedged ext4: ''
+   ```
+
+   All 12 LUNs queue for ~10 minutes on a NAS partition instead of erroring
+   into an aborted journal. Re-run that playbook to re-check; `-` in the
+   queueing column means a LUN is NOT protected.
 2. 🟡 **Velero.** The three ad-hoc backup CronJobs were removed on 2026-08-15
    at your request, so **there is currently no automated backup of anything**.
    The PVCs and their existing dumps are deliberately kept (`Prune=false`),
@@ -2024,6 +2038,25 @@ existed, was documented, and had never told the truth.
 
 **`Retain` means test PVCs leak.** Deleting a test PVC leaves the PV *and* the
 backend volume. Clean up with `tridentctl delete volume` after any storage test.
+
+**The telemetry pipeline was the last thing watching nothing.** Neither Alloy
+chart enabled its ServiceMonitor, so until 2026-08-17 there were **zero**
+`alloy_*` series: the DaemonSet shipping every pod log into Loki and the gateway
+receiving all of Necronia's OTLP could have stopped without any symptom except
+dashboards going quiet — and for Necronia, quiet is normal, because the server
+runs on a workstation that is off most of the time. Same shape as 2026-08-08:
+the component that would tell you is the component that is down.
+
+The first hand-scrape of that endpoint found
+`loki_write_dropped_entries_total{reason="ingester_error"}` at **7.2 million**
+against 13.2 million sent, identically on all five nodes. **It is not current
+loss** — measured before reacting: the counter did not move in 60 seconds while
+`sent` climbed by ~1,200, and Loki's own log gives the reason as *"has timestamp
+too old: 2026-08-04 … oldest acceptable is 2026-08-10"*. Alloy replays container
+logs from the start after a restart, and anything past Loki's 14d retention is
+correctly refused. Two lessons, both cheap: **alert on the rate, never the
+counter** (a rule on the total would have fired permanently on day one), and a
+seven-figure counter is a claim about all of history, not about now.
 
 **node-exporter cannot see inside PVCs, and no amount of collector config
 changes that.** The 2026-08-16 fix admitted `/var/lib/kubelet/pods/...` to the
