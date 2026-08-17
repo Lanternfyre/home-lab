@@ -14,6 +14,11 @@ metadata:
     gethomepage.dev/icon: postgres.png
 spec:
   type: LoadBalancer
+  # No NodePort. Full reasoning on postgres-ha-lb (postgres/manifests/
+  # pg-lb-service.yaml); this one was also on every node IP at :31811.
+  #
+  # ⚠️ Does not release the already-allocated port. See MANUAL-STEPS.md.
+  allocateLoadBalancerNodePorts: false
   ports:
     - name: postgresql
       port: 5432

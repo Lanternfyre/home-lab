@@ -100,6 +100,90 @@ ssh <node> sudo e2fsck -fy /dev/mapper/<mpathX>
 Get `<mpathX>` from `findmnt -rno SOURCE,TARGET | grep <pvc-uid>` *before*
 scaling down. Never run this against a mounted filesystem.
 
+### 0c. 🟡 Release the LoadBalancer NodePorts (needs one patch per service)
+
+**This is a step where the git change alone provably does nothing** — the
+reason it is written down rather than assumed.
+
+Every `LoadBalancer` Service in this cluster also allocates a NodePort, so each
+one answers on its MetalLB address **and** on all five node IPs somewhere in
+30000-32767. That second door is not less authenticated (it reaches the same
+backend), but it defeats any firewall rule written against the `192.168.32.x`
+addresses, and nothing in the repo mentioned it existed.
+
+`allocateLoadBalancerNodePorts: false` is now set in git for `postgres-ha-lb`,
+`redis-lb`, `immich-db-lb` and `ingress-nginx-controller`. **That only stops
+NEW allocations.** Verified by server-side dry-run against the live API:
+after applying the change, the flag reads `false` and `nodePort: 30669` is
+still there. Removing the port on its own does not work either — while the flag
+is still `true` live, the allocator immediately re-assigns the same number.
+
+Both fields have to change in **one** update. This form is verified (dry-run)
+to clear the port, set the flag, and **keep the MetalLB IP** — no delete and
+recreate, so the address does not move and the external-dns records do not
+churn:
+
+```sh
+# After the repo is pushed and ArgoCD has synced, once per service:
+kubectl -n databases patch svc postgres-ha-lb --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
+
+kubectl -n redis patch svc redis-lb --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"redis","port":6379,"targetPort":6379,"protocol":"TCP"}]}}'
+
+kubectl -n immich patch svc immich-db-lb --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
+
+kubectl -n ingress-nginx patch svc ingress-nginx-controller --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"targetPort":"http","protocol":"TCP","appProtocol":"http"},{"name":"https","port":443,"targetPort":"https","protocol":"TCP","appProtocol":"https"}]}}'
+```
+
+This is a legitimate exception to "never `kubectl patch`": `nodePort` is
+allocated by the API server and is **not** declared in git, so `selfHeal` has
+nothing to revert it to. Confirmed on the live object — no field manager claims
+`nodePort` at all.
+
+Verify (all four must return nothing):
+
+```sh
+kubectl get svc -A -o json | python3 -c '
+import json,sys
+for s in json.load(sys.stdin)["items"]:
+    if s["spec"]["type"] != "LoadBalancer": continue
+    np = [p.get("nodePort") for p in s["spec"]["ports"] if p.get("nodePort")]
+    if np: print(s["metadata"]["namespace"], s["metadata"]["name"], np)'
+```
+
+Then confirm each service still answers on its LB address —
+`192.168.32.10:5432`, `192.168.32.11:6379`, `192.168.32.15:5432`,
+`192.168.32.13:80`. **`Ready` is not the test; a connection is.**
+
+**Still open, deliberately not done here:**
+
+- `pihole-dns-tcp/udp`, `pihole-web` (4 ports), `argocd-server` (2 ports) and
+  `mealie` (1 port) — their charts do **not** expose
+  `allocateLoadBalancerNodePorts` (checked against pihole 2.35.0, argo-cd
+  10.2.2 and mealie 0.1.2). The patch above works on them, but nothing in git
+  would hold the setting, so a chart upgrade silently re-opens the port. Needs
+  either a Kyverno mutate rule or a post-render patch to be durable.
+- The two Envoy Gateway services (4 ports). Envoy Gateway generates them, so
+  changing this needs an `EnvoyProxy` CR with
+  `provider.kubernetes.envoyService.allocateLoadBalancerNodePorts` plus a
+  `parametersRef` from each Gateway. There is no `EnvoyProxy` resource in the
+  repo today, and these two front all 15 HTTPRoutes — worth doing carefully,
+  on its own, not bundled.
+- The genuinely LAN-exposed things a NetworkPolicy **cannot** touch:
+  node-exporter `:9100` and metallb-speaker `:7472` **and** `:7473` all serve
+  unauthenticated metrics to anything on the LAN (all three fetched from a pod
+  on another node to confirm), and cilium-agent listens on `:9879`/`:4244`.
+  All are `hostNetwork: true`, so their traffic is not pod traffic and no
+  NetworkPolicy applies to it. Closing those needs a host firewall (nftables
+  via Ansible, which needs the same sudo run as step 0) or dropping
+  `hostNetwork`, which changes the `instance` label on every node-exporter
+  series and would poison any alert with a lookback longer than the change.
+
+---
+
 ## 🔴 Blocks the k3s upgrade (Phase 2)
 
 ### ~~1. Switch the Google OAuth consent screen to "Internal"~~ ✅ DONE

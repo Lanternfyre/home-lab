@@ -11,6 +11,22 @@ metadata:
     gethomepage.dev/icon: postgres.png
 spec:
   type: LoadBalancer
+  # A LoadBalancer Service allocates a NodePort by DEFAULT, in addition to the
+  # MetalLB address. So this Postgres was reachable at 192.168.32.10:5432 AND
+  # at 192.168.33.{2,3,7,21,22}:30669 -- five undeclared doors nothing in this
+  # repo mentioned. MetalLB runs in L2 mode and does not need them; kube-proxy
+  # programs the LB ingress IP independently of the NodePort.
+  #
+  # The reason this matters is not that the NodePort is less authenticated --
+  # it reaches the same pg_hba. It is that any firewall rule written against
+  # the 192.168.32.x LB addresses would silently miss the 192.168.33.x:3xxxx
+  # path entirely, which is the shape of every monitoring failure in this repo:
+  # a control that looks complete and has a hole nobody can see from the config.
+  #
+  # ⚠️ Setting this to false does NOT release a node port that is already
+  # allocated -- upstream only stops allocating NEW ones. The existing 30669
+  # needs one explicit clear after this syncs. See MANUAL-STEPS.md.
+  allocateLoadBalancerNodePorts: false
   ports:
     - name: postgresql
       port: 5432

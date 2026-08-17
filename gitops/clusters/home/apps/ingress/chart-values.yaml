@@ -2,6 +2,21 @@ controller:
   config:
     disable-access-log: "false"
 
+  service:
+    # A LoadBalancer Service allocates a NodePort by default, so this
+    # controller answered on 192.168.32.13:80/443 AND on
+    # 192.168.33.{2,3,7,21,22}:32745/:32137 -- five undeclared doors per port.
+    # Same reasoning as postgres-ha-lb; full note in
+    # ../postgres/manifests/pg-lb-service.yaml.
+    #
+    # This one is still load-bearing despite the Envoy Gateway migration: two
+    # Ingresses (auth/oauth2-proxy, mcp/github-mcp-proxy) still route through
+    # it. Verified against the live cluster rather than assumed from the
+    # migration's phase notes.
+    #
+    # ⚠️ Does not release the already-allocated ports. See MANUAL-STEPS.md.
+    allocateLoadBalancerNodePorts: false
+
   # maxUnavailable MUST be an absolute 1, not the chart default of 25%.
   # With 3 replicas, 25% floors to 0, so the old ReplicaSet can never scale
   # down and the new one can only surge by 1. Combined with the anti-affinity

@@ -16,6 +16,12 @@ metadata:
     gethomepage.dev/icon: redis.png
 spec:
   type: LoadBalancer
+  # No NodePort. Full reasoning on postgres-ha-lb (pg-lb-service.yaml); the
+  # short version is that the LB address is not the only door unless you say
+  # so, and this one was also on every node IP at :31904.
+  #
+  # ⚠️ Does not release the already-allocated port. See MANUAL-STEPS.md.
+  allocateLoadBalancerNodePorts: false
   ports:
     - name: redis
       port: 6379
