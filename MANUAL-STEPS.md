@@ -158,20 +158,71 @@ Then confirm each service still answers on its LB address —
 `192.168.32.10:5432`, `192.168.32.11:6379`, `192.168.32.15:5432`,
 `192.168.32.13:80`. **`Ready` is not the test; a connection is.**
 
+**The remaining seven services** — pihole (4 ports), `argocd-server` (2),
+`mealie` (1) and the two Envoy Gateways (4) — are now covered *going forward*
+by `apps/kyverno/manifests/loadbalancer-no-nodeports.mutatingpolicy.yaml`,
+which sets the flag on every LoadBalancer Service at admission. That is what
+made an `EnvoyProxy` CR unnecessary and what makes the four git-declared
+services durable across a chart upgrade too.
+
+**First verify the policy actually mutates** (creates nothing — server dry-run
+runs the webhook and discards the object):
+
+```sh
+kubectl -n default create service loadbalancer np-probe --tcp=8080:8080 \
+  --dry-run=server -o json | python3 -c '
+import json,sys; s=json.load(sys.stdin)["spec"]
+print("allocateLoadBalancerNodePorts:", s.get("allocateLoadBalancerNodePorts"))
+print("ports:", s["ports"])'
+```
+
+Recorded **before** the policy existed, so the difference is unambiguous:
+
+```
+allocateLoadBalancerNodePorts: True
+ports: [{... 'nodePort': 32769}]
+```
+
+It must now read `False` with no `nodePort`. If it still says `True`, the
+policy is not doing anything — check `kubectl get mpol` status, and remember
+`failurePolicy: Ignore` means a broken policy fails silently by design.
+
+Only once that passes, clear the seven existing allocations (same one-update
+rule as above; port specs taken from the live objects, so `targetPort` names
+and protocols are preserved):
+
+```sh
+kubectl -n argocd patch svc argocd-server --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"protocol":"TCP","targetPort":8080},{"name":"https","port":443,"protocol":"TCP","targetPort":8080}]}}'
+
+kubectl -n dns patch svc pihole-dns-tcp --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"dns","port":53,"protocol":"TCP","targetPort":"dns"}]}}'
+
+kubectl -n dns patch svc pihole-dns-udp --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"dns-udp","port":53,"protocol":"UDP","targetPort":"dns-udp"}]}}'
+
+kubectl -n dns patch svc pihole-web --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"protocol":"TCP","targetPort":"http"},{"name":"https","port":443,"protocol":"TCP","targetPort":"https"}]}}'
+
+kubectl -n home-utils patch svc mealie --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":9000,"protocol":"TCP","targetPort":"http"}]}}'
+
+# ⚠️ These two front ALL 15 HTTPRoutes. Do them last, one at a time, and
+# confirm https://grafana.lab.techyon.dev still loads between the two.
+kubectl -n gateway-envoy patch svc envoy-gateway-envoy-homelab-b0a9a155 --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"https-443","port":443,"protocol":"TCP","targetPort":10443},{"name":"http-80","port":80,"protocol":"TCP","targetPort":10080}]}}'
+
+kubectl -n gateway-envoy patch svc envoy-gateway-envoy-homelab-gated-06cddf46 --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"https-443","port":443,"protocol":"TCP","targetPort":10443},{"name":"http-80","port":80,"protocol":"TCP","targetPort":10080}]}}'
+```
+
+The Envoy Services are controller-generated, so if Envoy Gateway ever rebuilds
+them the ports come back — but the policy stamps the flag at creation, so they
+come back **without** node ports. That is the whole reason the policy exists
+rather than seven more patches.
+
 **Still open, deliberately not done here:**
 
-- `pihole-dns-tcp/udp`, `pihole-web` (4 ports), `argocd-server` (2 ports) and
-  `mealie` (1 port) — their charts do **not** expose
-  `allocateLoadBalancerNodePorts` (checked against pihole 2.35.0, argo-cd
-  10.2.2 and mealie 0.1.2). The patch above works on them, but nothing in git
-  would hold the setting, so a chart upgrade silently re-opens the port. Needs
-  either a Kyverno mutate rule or a post-render patch to be durable.
-- The two Envoy Gateway services (4 ports). Envoy Gateway generates them, so
-  changing this needs an `EnvoyProxy` CR with
-  `provider.kubernetes.envoyService.allocateLoadBalancerNodePorts` plus a
-  `parametersRef` from each Gateway. There is no `EnvoyProxy` resource in the
-  repo today, and these two front all 15 HTTPRoutes — worth doing carefully,
-  on its own, not bundled.
 - The genuinely LAN-exposed things a NetworkPolicy **cannot** touch:
   node-exporter `:9100` and metallb-speaker `:7472` **and** `:7473` all serve
   unauthenticated metrics to anything on the LAN (all three fetched from a pod
