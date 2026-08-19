@@ -144,12 +144,78 @@
       args:
         creates: /usr/local/bin/k3s
 
+    # ⚠️ The Node object does NOT exist the moment the installer returns. It
+    # takes a few seconds to register, and cordoning before then fails with
+    # `nodes "k8s-lab6" not found` -- which aborts the play AFTER k3s is
+    # installed and running, leaving the new node Ready, SCHEDULABLE and with
+    # ZERO CSI drivers. That is precisely the k8s-4 condition this playbook
+    # exists to prevent, produced by the very task meant to prevent it.
+    # Observed on the real k8s-6 join, 2026-08-19.
+    - name: Wait for the node to register before cordoning it
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl get node {{ k8s_node_name }} -o name"
+      register: node_registered
+      until: node_registered.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ k3s_control_plane_host }}"
+
     # CORDON ON JOIN. This inverts the default that trapped k8s-4: a node is
     # untrusted until its storage path is PROVEN, not until it reports Ready.
     - name: Cordon immediately
       ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name }}"
       delegate_to: "{{ k3s_control_plane_host }}"
       changed_when: true
+
+    # ── Pods that landed on the WRONG CNI ───────────────────────────────
+    #
+    # Flannel is still present in this cluster (its removal is deliberately
+    # deferred -- it runs inside the k3s server process, so it is inert dead
+    # weight rather than a DaemonSet that can be deleted). On an ESTABLISHED
+    # node that costs nothing. On a BRAND-NEW one it does: for the ~60s between
+    # k3s starting and the Cilium agent becoming ready, k3s's own CNI config is
+    # the only one on disk, so DaemonSet pods that start in that window get
+    # flannel addresses and are NOT Cilium endpoints. They are on a different
+    # overlay from every other pod in the cluster.
+    #
+    # Observed on the real k8s-6 join, 2026-08-19: smartctl-exporter and
+    # volume-health-exporter came up on 10.42.3.2/10.42.3.3 while alloy, which
+    # started moments later, correctly got 10.245.5.123. Those two are the
+    # storage-watching exporters, so the effect was that the signals meant to
+    # notice a wedged filesystem were unscrapeable on the newest node -- a
+    # monitoring blind spot on exactly the node least proven.
+    #
+    # 35-cilium-migrate.yml does not cover this: it migrates EXISTING nodes.
+    # Deleting the pods is the whole fix -- they are DaemonSet-managed and come
+    # straight back on Cilium.
+    - name: "Find pods on {{ k8s_node_name }} that are not on the Cilium CIDR"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pods -A --field-selector spec.nodeName={{ k8s_node_name }}
+        -o jsonpath='{range .items[?(@.spec.hostNetwork!=true)]}{.metadata.namespace}/{.metadata.name}/{.status.podIP}{"\n"}{end}'
+        | grep -v '/{{ cilium_pod_cidr_prefix | default("10.245.") }}' | grep -v '//$' || true
+      args: { executable: /bin/bash }
+      register: wrong_cni_pods
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ k3s_control_plane_host }}"
+
+    - name: "Restart them onto Cilium"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n {{ item.split('/')[0] }}
+        delete pod {{ item.split('/')[1] }} --wait=false
+      loop: "{{ wrong_cni_pods.stdout_lines | default([]) }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
+      changed_when: true
+      when: wrong_cni_pods.stdout | trim | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ (wrong_cni_pods.stdout_lines | default([]) | length) }} pod(s) had
+          a non-Cilium address on {{ k8s_node_name }} and were restarted:
+          {{ wrong_cni_pods.stdout_lines | default([]) | join(', ') | default('none', true) }}
 
 - name: Post-join verification
   hosts: "{{ target | default('k3s_servers') }}"
