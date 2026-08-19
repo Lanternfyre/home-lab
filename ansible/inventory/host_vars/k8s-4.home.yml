@@ -1,0 +1,21 @@
+---
+ansible_host: 192.168.33.21
+node_nic: enp0s31f6
+
+# History, kept because it is the reason 40-add-node.yml is shaped the way it
+# is -- NOT a description of the node today.
+#
+# Joined 2026-07-30 from the prose runbook, which silently missed three steps:
+# the resolver stub wedged so containerd could not pull ANY image, leaving the
+# node with ZERO registered CSI drivers while sitting Ready, untainted and
+# schedulable; /etc/multipath.conf lacked `find_multipaths no`; iscsid was
+# inactive. It was cordoned on 2026-07-30 and REPAIRED AND UNCORDONED
+# 2026-08-02.
+#
+# ✅ Re-verified 2026-08-19, by value rather than by file presence:
+#   kubectl get csinode k8s-lab4         -> 1 driver
+#   grep find_multipaths /etc/multipath.conf -> "no"
+#   systemctl is-active iscsid multipathd -> active active
+#   sysctl -n fs.inotify.max_user_watches -> 1048576
+#   getent ahostsv4 registry.k8s.io       -> resolves
+#   .spec.unschedulable                   -> unset (NOT cordoned)

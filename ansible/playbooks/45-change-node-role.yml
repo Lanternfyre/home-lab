@@ -1,0 +1,505 @@
+---
+# Transform ONE node between k3s server (control-plane + etcd) and k3s agent
+# (worker).
+#
+#   1. Move the host between k3s_servers and k3s_agents in
+#      inventory/homelab.yml. That is the toggle; commit it.
+#   2. ansible-playbook playbooks/45-change-node-role.yml --ask-become-pass \
+#        -e target=k8s-2.home
+#
+# The inventory is the DESIRED state; the node is the actual state. This
+# playbook reads both, refuses if they already agree, and makes the node match.
+#
+# ── Why this is not a config change ─────────────────────────────────────────
+# k3s cannot convert a node in place. From the k3s docs, verbatim: "If an etcd
+# datastore is found on disk either because that node has either initialized or
+# joined a cluster already, the datastore arguments (--cluster-init, --server,
+# --datastore-endpoint, etc) are ignored." So a role change is necessarily
+# uninstall + rejoin, and a demotion additionally has to leave etcd.
+#
+# ── Deliberately NOT in site.yml ────────────────────────────────────────────
+# It runs k3s-uninstall.sh, which wipes /var/lib/rancher/k3s. An innocent
+# "converge" must never be able to do that. Same reasoning as 30-upgrade.yml
+# and 40-add-node.yml.
+#
+# ⚠️ ONE NODE PER RUN, and nothing else running at the same time. While a role
+# change is in flight the inventory and the cluster deliberately disagree by
+# one node, so these will read as broken and must not be run concurrently:
+#   playbooks/25-kube-vip-daemonset.yml   (asserts DS count == server count)
+#   playbooks/35-cilium-migrate.yml       (asserts counts == node count)
+#   playbooks/30-upgrade.yml              (asserts etcd on every server)
+#
+# ── Rollback ────────────────────────────────────────────────────────────────
+#   * Before the uninstall: free. Uncordon, revert the inventory line, done.
+#   * After uninstall, before rejoin: the node is out and the cluster is
+#     smaller but healthy (the member-count gate proved it). Revert the line
+#     and re-run; it rejoins in its original role.
+#   * After rejoin: revert the line and re-run. A full uninstall/rejoin cycle,
+#     ~5 minutes. Nothing but etcd and local-path lives on these disks.
+#   * If quorum is actually lost: the only path is
+#     `k3s server --cluster-reset --cluster-reset-restore-path=<snap>` on one
+#     node, then wiping /var/lib/rancher/k3s/server/db on the others and
+#     rejoining them. That procedure is UNREHEARSED. The gates below exist so
+#     you never need it.
+
+- name: Gate the role change
+  hosts: "{{ target | mandatory }}"
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  vars:
+    # A SERVER peer: everything here shells kubectl, and agents have no
+    # kubeconfig. reject/list/first, never `difference` -- difference is a set
+    # operation and does not preserve order.
+    peer: "{{ groups['k3s_servers'] | reject('equalto', inventory_hostname) | list | first }}"
+    node_name: "{{ k8s_node_name }}"
+
+  tasks:
+    # `-e target=` accepts a pattern, and a pattern can match a group. This
+    # playbook uninstalls k3s; it must never fan out.
+    - name: "gate | exactly one node"
+      ansible.builtin.assert:
+        that: ansible_play_hosts_all | length == 1
+        fail_msg: >-
+          target matched {{ ansible_play_hosts_all | length }} hosts
+          ({{ ansible_play_hosts_all | join(', ') }}). This playbook uninstalls
+          k3s and rejoins the node; run it for ONE host at a time.
+      run_once: true
+
+    - name: "gate | there is a server left to talk to"
+      ansible.builtin.assert:
+        that: peer is truthy
+        fail_msg: >-
+          No other server in k3s_servers to delegate kubectl to. You cannot
+          change the role of the only control-plane node with this playbook.
+
+    # ── What is this node, really? ──────────────────────────────────────────
+    - name: "gate | detect the actual role on the node"
+      ansible.builtin.stat:
+        path: /var/lib/rancher/k3s/server/db/etcd
+      register: etcd_dir
+      check_mode: false
+
+    - name: "gate | which unit is installed?"
+      ansible.builtin.shell: |
+        for u in k3s k3s-agent; do
+          systemctl list-unit-files "$u.service" --no-legend | grep -q . && echo "$u"
+        done
+      register: units_present
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    - name: "gate | name the actual role"
+      ansible.builtin.set_fact:
+        actual_role: "{{ 'server' if etcd_dir.stat.exists else 'agent' }}"
+
+    - name: "gate | report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ node_name }}: actual={{ actual_role }} desired={{ k3s_role }};
+          units present: {{ units_present.stdout_lines | join(', ') | default('none', true) }};
+          delegating kubectl to {{ peer }}.
+
+    - name: "gate | inventory and node must actually disagree"
+      ansible.builtin.assert:
+        that: actual_role != k3s_role
+        fail_msg: >-
+          {{ node_name }} is already a {{ actual_role }} and the inventory says
+          {{ k3s_role }}, so there is nothing to change. The usual cause is
+          running this BEFORE moving the host between k3s_servers and
+          k3s_agents in inventory/homelab.yml -- or running it twice.
+        success_msg: "{{ node_name }}: {{ actual_role }} -> {{ k3s_role }}"
+
+    # ── Quorum arithmetic, before anything is touched ───────────────────────
+    # The target has already been moved OUT of k3s_servers in the inventory, so
+    # for a demotion `groups['k3s_servers'] | length` is the count AFTER this
+    # change.
+    - name: "gate | refuse to shrink the control plane below 3"
+      ansible.builtin.assert:
+        that: (groups['k3s_servers'] | length) >= 3
+        fail_msg: >-
+          This would leave {{ groups['k3s_servers'] | length }} server(s).
+          Two members means a quorum of two, so losing either is a dead cluster
+          with no automated way back -- only an etcd restore. Keep at least 3.
+      when: k3s_role == 'agent'
+
+    - name: "gate | warn on an even control-plane count"
+      ansible.builtin.debug:
+        msg: >-
+          ⚠️ This leaves {{ groups['k3s_servers'] | length }} servers, an EVEN
+          number. {{ groups['k3s_servers'] | length }} members tolerate the same
+          {{ ((groups['k3s_servers'] | length / 2) | round(0, 'ceil') | int) - 1 }}
+          failure(s) as {{ (groups['k3s_servers'] | length) - 1 }} would, while
+          adding one more node that can break quorum. Do not linger here.
+      when: (groups['k3s_servers'] | length) % 2 == 0
+
+    # ── The cluster must be healthy BEFORE we make it smaller ───────────────
+    - name: "gate | etcd healthy on every remaining server"
+      ansible.builtin.shell: |
+        curl -s --max-time 5 http://127.0.0.1:2381/metrics \
+          | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
+      register: etcd_health
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] }}"
+      failed_when: >-
+        ('etcd_server_has_leader 1' not in etcd_health.stdout)
+        or ('etcd_server_health_failures 0' not in etcd_health.stdout)
+
+    # The target is no longer in k3s_servers, so the loop above MISSES it.
+    # Demoting an already-unhealthy member is how you lose two at once.
+    - name: "gate | etcd healthy on the node being demoted, too"
+      ansible.builtin.shell: |
+        curl -s --max-time 5 http://127.0.0.1:2381/metrics \
+          | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
+      register: etcd_self
+      changed_when: false
+      check_mode: false
+      failed_when: >-
+        ('etcd_server_has_leader 1' not in etcd_self.stdout)
+        or ('etcd_server_health_failures 0' not in etcd_self.stdout)
+      when: actual_role == 'server'
+
+    - name: "gate | the API reports etcd ok"
+      ansible.builtin.command: /usr/local/bin/k3s kubectl get --raw=/readyz?verbose
+      register: readyz
+      changed_when: false
+      check_mode: false
+      failed_when: "'[+]etcd ok' not in readyz.stdout"
+      delegate_to: "{{ peer }}"
+
+    - name: "gate | the repo and the cluster agree on who is an etcd member"
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get nodes
+        -l node-role.kubernetes.io/etcd=true -o name | wc -l
+      register: live_members
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "gate | assert the live member count is what we expect"
+      ansible.builtin.assert:
+        # Demotion: the target is still a member but already out of the group.
+        # Promotion: the target is not yet a member but already in the group.
+        that: >-
+          (live_members.stdout | trim | int) ==
+          (groups['k3s_servers'] | length) + (1 if k3s_role == 'agent' else -1)
+        fail_msg: >-
+          The cluster has {{ live_members.stdout | trim }} etcd member(s), which
+          does not match this inventory. Something else changed the topology, or
+          a previous run of this playbook did not finish. Reconcile before
+          continuing -- do NOT remove another member from a set you cannot
+          account for.
+
+    - name: "gate | every other node is Ready"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get nodes --no-headers
+        | awk '$2 != "Ready" && $2 != "Ready,SchedulingDisabled" {print $1}'
+      args: { executable: /bin/bash }
+      register: not_ready
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+      failed_when: >-
+        (not_ready.stdout_lines | reject('equalto', node_name) | list | length) > 0
+
+    # ── local-path is destroyed by the uninstall, Retain or not ─────────────
+    - name: "gate | local-path PVs pinned to this node"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pv
+        -o jsonpath='{range .items[?(@.spec.storageClassName=="local-path")]}{.metadata.name}|{.status.phase}|{.spec.claimRef.namespace}/{.spec.claimRef.name}|{.spec.nodeAffinity.required.nodeSelectorTerms[0].matchExpressions[0].values[0]}{"\n"}{end}'
+        | grep '|{{ node_name }}$' || true
+      args: { executable: /bin/bash }
+      register: localpath_here
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "gate | refuse to silently destroy local-path data"
+      ansible.builtin.assert:
+        that: (localpath_here.stdout | trim | length) == 0
+        fail_msg: >-
+          local-path PV(s) are pinned to {{ node_name }}:
+          {{ localpath_here.stdout_lines | join('; ') }}.
+          k3s-uninstall.sh deletes /var/lib/rancher/k3s/storage/, so this
+          DESTROYS the data. `reclaimPolicy: Retain` does not save you: Retain
+          preserves the PV OBJECT, and what survives is an unbindable tombstone
+          still reading as Bound while pointing at a directory that no longer
+          exists on a node that no longer has it.
+          Retire the PVC and then the PV first (deleting the PVC alone leaves
+          the PV Released, not gone). Then re-run.
+          To proceed anyway: -e accept_localpath_loss=true
+      when: not (accept_localpath_loss | default(false) | bool)
+
+    # ── Print, do not fail: <cluster>-primary PDBs are ALWAYS 0 by design ───
+    - name: "gate | PDBs that currently allow zero disruptions"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pdb -A --no-headers
+        | awk '$5 == 0 {print $1"/"$2}'
+      args: { executable: /bin/bash }
+      register: zero_pdbs
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "gate | report them"
+      ansible.builtin.debug:
+        msg: >-
+          PDBs allowing zero disruptions right now:
+          {{ zero_pdbs.stdout_lines | join(', ') | default('none', true) }}.
+          Not a failure -- CNPG's <cluster>-primary PDB is 0 by design. Printed
+          because it is what turns a silent 600s drain timeout into a diagnosis.
+
+    # ── A snapshot that does not live on the node being wiped ───────────────
+    - name: "gate | take an etcd snapshot on the peer first"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s etcd-snapshot save
+        --name pre-roleswap-{{ node_name }}
+      register: snap
+      changed_when: true
+      check_mode: false
+      delegate_to: "{{ peer }}"
+      when: not ansible_check_mode
+
+    - name: "gate | all clear"
+      ansible.builtin.debug:
+        msg: >-
+          Gates passed. {{ node_name }} will be drained, uninstalled, removed
+          from the cluster and rejoined as {{ k3s_role }}. Snapshot
+          pre-roleswap-{{ node_name }} taken on {{ peer }}.
+
+- name: Drain, remove, and rejoin in the new role
+  hosts: "{{ target | mandatory }}"
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  vars:
+    peer: "{{ groups['k3s_servers'] | reject('equalto', inventory_hostname) | list | first }}"
+    node_name: "{{ k8s_node_name }}"
+
+  tasks:
+    # ── Move CNPG primaries off before draining ─────────────────────────────
+    # Mandatory, not optional: the <cluster>-primary PDB permits ZERO
+    # disruptions, so a drain of the node holding a primary blocks until the
+    # primary moves. Without this the drain simply times out after 600s.
+    - name: "{{ node_name }} | which CNPG primaries live here?"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pods -A
+        -l cnpg.io/instanceRole=primary
+        -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.spec.nodeName}{"\n"}{end}'
+        | grep "/{{ node_name }}$" || true
+      args: { executable: /bin/bash }
+      register: cnpg_here
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "{{ node_name }} | move each primary off this node"
+      ansible.builtin.include_tasks: tasks/cnpg-move-primary.yml
+      loop: "{{ cnpg_here.stdout_lines | default([]) }}"
+      loop_control:
+        loop_var: primary_ref
+      when:
+        - cnpg_here.stdout | trim | length > 0
+        - not ansible_check_mode
+
+    # ── Cordon and drain ────────────────────────────────────────────────────
+    - name: "{{ node_name }} | cordon"
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl cordon {{ node_name }}"
+      delegate_to: "{{ peer }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    # NEVER --force, NEVER --disable-eviction. Both bypass PodDisruptionBudgets,
+    # and the budgets here protect database primaries. A timeout is the safety
+    # working: something could not be moved, and the answer is to find out what.
+    - name: "{{ node_name }} | drain (respecting every PDB)"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl drain {{ node_name }}
+        --ignore-daemonsets
+        --delete-emptydir-data
+        --timeout={{ k3s_drain_timeout | default('600s') }}
+      delegate_to: "{{ peer }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    # ── Leave the cluster ───────────────────────────────────────────────────
+    # Stop the unit BEFORE uninstalling so etcd leaves cleanly instead of being
+    # killed mid-write.
+    # NOTE: the unit to STOP follows the actual (current) role, while the
+    # k3s_unit var follows the DESIRED role -- they are opposites here, which
+    # is exactly why this one is spelled out rather than reusing k3s_unit.
+    - name: "{{ node_name }} | stop the running k3s unit"
+      ansible.builtin.systemd:
+        name: "{{ 'k3s' if actual_role == 'server' else 'k3s-agent' }}"
+        state: stopped
+      when: not ansible_check_mode
+
+    # Detect the uninstaller rather than assuming it. The installer names it
+    # after SYSTEM_NAME, so a server has k3s-uninstall.sh and an agent has
+    # k3s-agent-uninstall.sh -- and a promotion runs the latter.
+    - name: "{{ node_name }} | uninstall k3s ({{ actual_role }})"
+      ansible.builtin.command: "/usr/local/bin/{{ 'k3s-uninstall.sh' if actual_role == 'server' else 'k3s-agent-uninstall.sh' }}"
+      args:
+        removes: "/usr/local/bin/{{ 'k3s-uninstall.sh' if actual_role == 'server' else 'k3s-agent-uninstall.sh' }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    # This is what removes the etcd member: k3s ties etcd membership to the
+    # Node object. AFTER the uninstall, never before -- a live node simply
+    # re-registers itself.
+    - name: "{{ node_name }} | delete the Node object (removes the etcd member)"
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl delete node {{ node_name }} --ignore-not-found"
+      delegate_to: "{{ peer }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | wait for the member count to actually drop"
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get nodes
+        -l node-role.kubernetes.io/etcd=true -o name | wc -l
+      register: members_now
+      until: (members_now.stdout | trim | int) == (groups['k3s_servers'] | length - (1 if k3s_role == 'server' else 0))
+      retries: 30
+      delay: 10
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | quorum still healthy on every remaining server"
+      ansible.builtin.shell: |
+        curl -s --max-time 5 http://127.0.0.1:2381/metrics \
+          | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
+      register: etcd_after
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] | reject('equalto', inventory_hostname) | list }}"
+      failed_when: >-
+        ('etcd_server_has_leader 1' not in etcd_after.stdout)
+        or ('etcd_server_health_failures 0' not in etcd_after.stdout)
+      when: not ansible_check_mode
+
+    # ── Rejoin in the new role ──────────────────────────────────────────────
+    # config.yaml BEFORE the install, exactly as 40-add-node.yml does: the
+    # uninstall removed it along with everything else, and a node that comes up
+    # without one is the bug that resurrected the traefik addon on k8s-4/5.
+    - name: "{{ node_name }} | write the {{ k3s_role }} config.yaml first"
+      ansible.builtin.include_role:
+        name: k3s_config
+
+    - name: "{{ node_name }} | discover the cluster's live k3s version"
+      ansible.builtin.shell: |
+        /usr/local/bin/k3s kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'
+      register: live_version
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "token | read the join token from a live server"
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: k3s_token_raw
+      delegate_to: "{{ peer }}"
+      become: true
+      check_mode: false
+      when: k3s_token is not defined
+
+    - name: "token | expose it"
+      ansible.builtin.set_fact:
+        k3s_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+      no_log: true
+      when: k3s_token is not defined
+
+    - name: "{{ node_name }} | install k3s and rejoin as {{ k3s_role }}"
+      ansible.builtin.shell: |
+        curl -sfL https://get.k3s.io | \
+          INSTALL_K3S_VERSION={{ live_version.stdout }} \
+          INSTALL_K3S_EXEC="{{ 'server' if k3s_role == 'server' else 'agent' }}" \
+          K3S_TOKEN="{{ k3s_token }}" \
+          sh -s -
+      environment: {}
+      no_log: true
+      changed_when: true
+      when: not ansible_check_mode
+
+    # Untrusted until storage is PROVEN, not until it reports Ready.
+    # The Node object does not exist the moment the installer returns, so wait
+    # for it to register before cordoning -- otherwise this races and the node
+    # comes up UNCORDONED, which is the k8s-4 failure mode.
+    - name: "{{ node_name }} | wait for it to register"
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl get node {{ node_name }} -o name"
+      register: node_back
+      until: node_back.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | cordon immediately"
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl cordon {{ node_name }}"
+      delegate_to: "{{ peer }}"
+      changed_when: true
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | hand the node name to the proof play"
+      ansible.builtin.set_fact:
+        joined_nodes: "{{ (hostvars['localhost'].joined_nodes | default([])) + [node_name] }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+- name: Verify the rejoined node
+  hosts: "{{ target | mandatory }}"
+  gather_facts: false
+  any_errors_fatal: true
+  roles:
+    - node_verify        # includes the csinode.spec.drivers gate
+
+- name: Prove storage, then return the node to service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Prove and uncordon
+      ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
+      loop: "{{ joined_nodes | default([]) }}"
+      loop_control:
+        loop_var: joined_node
+      when: not ansible_check_mode
+
+- name: Re-assert the kube-vip addon across the control plane
+  # A demoted node's copy went with its /var/lib/rancher/k3s, and a promoted
+  # node needs the IDENTICAL bytes -- every server reconciles this addon from
+  # its own manifests directory, so divergent content makes it flap between
+  # DaemonSet and bare Pod depending on who restarted last. That has already
+  # taken the API VIP down twice.
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  roles:
+    - kube_vip
+
+  post_tasks:
+    - name: Role change complete
+      ansible.builtin.debug:
+        msg: >-
+          Done. Verify before the next node:
+            kubectl get nodes -o wide
+            kubectl -n kube-system get ds kube-vip-ds
+          Expect kube-vip desired == {{ groups['k3s_servers'] | length }}
+          (its nodeAffinity requires node-role.kubernetes.io/control-plane, so
+          a demoted node sheds its pod automatically). A count that is WRONG
+          here means check the node labels -- do not edit the number.
+      run_once: true

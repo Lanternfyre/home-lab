@@ -22,11 +22,17 @@
 # That is a rebuilt node, and it would start a SECOND, EMPTY cluster of one
 # while the survivors carried on serving. The failure does not look like an
 # error -- the node comes up Ready, with nothing on it.
+# Agents have no etcd datastore BY DESIGN, so this guard is meaningless there
+# -- and `k3s_cluster_init` on an agent is a contradiction the join playbooks
+# reject outright. Gated so the stat does not read as "missing datastore" on a
+# worker, which is the shape that would make the guard below fire wrongly if
+# anyone ever relaxed its conditions.
 - name: "guard | does this node already have an etcd datastore?"
   ansible.builtin.stat:
     path: /var/lib/rancher/k3s/server/db/etcd
   register: k3s_etcd_dir
   check_mode: false
+  when: (k3s_role | default('server')) == 'server'
 
 - name: "guard | refuse to initialise a second cluster"
   ansible.builtin.fail:
@@ -44,6 +50,7 @@
     - k3s_cluster_init | default(false) | bool
     - not k3s_etcd_dir.stat.exists
     - (groups['k3s_servers'] | length) > 1
+    - (k3s_role | default('server')) == 'server'
 
 - name: Ensure /etc/rancher/k3s exists
   ansible.builtin.file:
@@ -56,16 +63,16 @@
 # k3s.service.env on every run, regenerating the env file from the invoking
 # shell's exported K3S_*/CONTAINERD_*/proxy variables. Its current contents are
 # unknown (root-only), and once lost they are unrecoverable.
-- name: Back up k3s.service.env before any installer run
+- name: Back up the k3s unit env before any installer run
   ansible.builtin.fetch:
-    src: /etc/systemd/system/k3s.service.env
+    src: "/etc/systemd/system/{{ k3s_unit }}.service.env"
     dest: "{{ playbook_dir }}/../_captured/{{ inventory_hostname }}/"
     flat: true
     fail_on_missing: false
 
 - name: Back up the k3s unit file
   ansible.builtin.fetch:
-    src: /etc/systemd/system/k3s.service
+    src: "/etc/systemd/system/{{ k3s_unit }}.service"
     dest: "{{ playbook_dir }}/../_captured/{{ inventory_hostname }}/"
     flat: true
     fail_on_missing: false
@@ -107,13 +114,13 @@
   block:
     - name: Ensure systemd drop-in dir exists
       ansible.builtin.file:
-        path: /etc/systemd/system/k3s.service.d
+        path: "/etc/systemd/system/{{ k3s_unit }}.service.d"
         state: directory
         mode: "0755"
 
     - name: Write --server drop-in
       ansible.builtin.copy:
-        dest: /etc/systemd/system/k3s.service.d/10-server-peer.conf
+        dest: "/etc/systemd/system/{{ k3s_unit }}.service.d/10-server-peer.conf"
         mode: "0644"
         content: |
           # Managed by Ansible -- ansible/roles/k3s_config

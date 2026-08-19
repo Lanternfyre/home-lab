@@ -1,0 +1,15 @@
+---
+ansible_host: 192.168.33.7
+node_nic: eno1
+
+# ⚠️ Holds the cluster's ONLY local-path PV: `dns/pihole`
+# (pvc-c9212135-243e-4c78-8367-5df27209b626), pinned here by nodeAffinity.
+# It is Bound but UNUSED -- Pi-hole moved to `pihole-data` on qnap-iscsi on
+# 2026-08-02 and now runs elsewhere.
+#
+# It matters because `reclaimPolicy: Retain` is a false comfort here: Retain
+# preserves the PV OBJECT, while k3s-uninstall.sh deletes the DATA under
+# /var/lib/rancher/k3s/storage/. Demoting this node therefore destroys it and
+# leaves an unbindable tombstone that still reads as Bound.
+# Retire the PVC and the PV BEFORE any role change here (MANUAL-STEPS §9b);
+# 45-change-node-role.yml refuses to proceed until that is done.

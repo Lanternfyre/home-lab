@@ -1,7 +1,8 @@
 # home-lab
 
-GitOps repo for a 5-node k3s cluster (ArgoCD app-of-apps) plus the Ansible that
-manages the nodes.
+GitOps repo for a 6-node k3s cluster (ArgoCD app-of-apps) plus the Ansible that
+manages the nodes. Target topology is 3 control-plane/etcd servers
+(k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3, k8s-5).
 
 ## Read these first
 
@@ -43,6 +44,13 @@ Every app directory generates **two** Applications: `<name>` (Helm) and
 - **Do not uncordon a node until a storage proof passes on it.** `Ready` is not
   sufficient — k8s-lab4 sat Ready and schedulable with zero CSI drivers.
 - **k3s upgrades stop at 1.35.** The QNAP CSI driver declares no 1.36 support.
+- **A node's role is its inventory GROUP, and changing it is not a converge.**
+  `k3s_servers` vs `k3s_agents` in `ansible/inventory/homelab.yml` is the
+  toggle, but k3s cannot convert a node in place -- only
+  `playbooks/45-change-node-role.yml` may act on it, one node per run. Agents
+  run `k3s-agent.service`, have no etcd, no local kubeconfig and no
+  `/var/lib/rancher/k3s/server/`, so anything shelling `k3s kubectl` must
+  delegate to a server.
 - **Assert values and behaviour, never file presence.** Three separate bugs
   here were "the file exists and has never worked".
 

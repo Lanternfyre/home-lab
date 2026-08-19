@@ -1,0 +1,15 @@
+---
+ansible_host: 192.168.33.20
+node_nic: enp1s0
+
+# Added 2026-08-19. Registers as k8s-lab6. Ubuntu 24.04.3.
+#
+# ✅ `enp1s0` verified over SSH, and it needs no "fixing" after joining --
+# node_nic is DOCUMENTATION. Nothing consumes it: kube-vip auto-detects the
+# default-route interface when vip_interface is unset, which is exactly why one
+# identical manifest already covers eno1, enp0s31f6 and enp7s0. Hardcoding a
+# NIC is what CrashLooped the addon and took the API VIP down, twice.
+#
+# ⚠️ The smallest node in the fleet: 2 vCPU / 30 GiB / 238 GB SSD. Fine as an
+# etcd member (SSD, and etcd here is small), but it is the tightest
+# control-plane node -- worth remembering before scheduling anything heavy.

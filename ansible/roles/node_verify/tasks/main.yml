@@ -169,13 +169,13 @@
 # upgrade campaign.
 - name: Node has at least one registered CSI driver
   ansible.builtin.shell: >-
-    /usr/local/bin/k3s kubectl get csinode {{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}
+    /usr/local/bin/k3s kubectl get csinode {{ k8s_node_name }}
     -o jsonpath='{.spec.drivers[*].name}'
   register: csinode_check
   changed_when: false
   failed_when: csinode_check.stdout | trim | length == 0
   check_mode: false
-  delegate_to: "{{ groups['k3s_servers'] | first }}"
+  delegate_to: "{{ k3s_control_plane_host }}"
 
 - name: Summary
   ansible.builtin.debug:

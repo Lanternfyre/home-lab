@@ -33,7 +33,7 @@
       register: svclb_before
       changed_when: false
       become: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: Report
       ansible.builtin.debug:
@@ -43,7 +43,7 @@
           delete them on its own.
 
 - name: Converge config and restart k3s, one node at a time
-  hosts: k3s_servers
+  hosts: k3s_nodes
   serial: 1
   # k8s-1 LAST, matching 30-upgrade.yml and the note in the inventory itself
   # ("Upgrade and migration orders still put it last"). This playbook was the
@@ -66,13 +66,13 @@
   post_tasks:
     - name: Restart k3s
       ansible.builtin.systemd:
-        name: k3s
+        name: "{{ k3s_unit }}"
         state: restarted
       become: true
 
     - name: Wait for this node to report Ready again
       ansible.builtin.shell: >-
-        /usr/local/bin/k3s kubectl get node {{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-','k8s-lab')) }}
+        /usr/local/bin/k3s kubectl get node {{ k8s_node_name }}
         -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
       register: node_ready
       until: node_ready.stdout == "True"
@@ -80,12 +80,16 @@
       delay: 10
       changed_when: false
       become: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
-    # etcd quorum gate. ALL nodes must answer -- a node that dropped out of the
-    # cluster simply will not respond, so "all five answered" IS the
+    # etcd quorum gate. Every SERVER must answer -- a member that dropped out
+    # of the cluster simply will not respond, so "all of them answered" IS the
     # member-count check.
-    - name: Verify etcd quorum across every node
+    #
+    # ⚠️ Loops k3s_servers, NOT k3s_nodes, and that is load-bearing since
+    # 2026-08-19: agents run no etcd and nothing listens on :2381 there, so
+    # looping every node would fail this gate on a perfectly healthy worker.
+    - name: Verify etcd quorum across every server
       ansible.builtin.shell: |
         curl -s --max-time 5 http://127.0.0.1:2381/metrics \
           | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
@@ -117,7 +121,7 @@
       register: svclb_del
       changed_when: "'deleted' in svclb_del.stdout"
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: Remove the traefik HelmChart CRs and their jobs
       ansible.builtin.shell: |
@@ -126,11 +130,11 @@
       register: traefik_del
       changed_when: "'deleted' in traefik_del.stdout"
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: Confirm the cleanup
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
       ansible.builtin.shell: |
         echo "svclb DaemonSets remaining: $(/usr/local/bin/k3s kubectl -n kube-system get ds -o name | grep -c svclb || true)"
         echo "traefik HelmCharts remaining: $(/usr/local/bin/k3s kubectl -n kube-system get helmchart -o name 2>/dev/null | grep -c traefik || true)"
@@ -144,7 +148,7 @@
       ansible.builtin.debug:
         msg: "{{ cleanup_check.stdout_lines }}"
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
 # ── Confirm the stale hostPort DNAT is gone, and finish the job if not ───────
 #
@@ -169,7 +173,7 @@
 # reboot only the nodes that are still broken. iptables rules are not
 # persistent, so a reboot clears them for good now that the addon is disabled.
 - name: Verify DNS recovered on every node
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   become: true
   tasks:

@@ -59,11 +59,11 @@
     - name: "preflight | assert cilium is fully rolled out"
       ansible.builtin.assert:
         that:
-          - (pf_ds.stdout.split()[0] | int) == (groups['k3s_servers'] | length)
+          - (pf_ds.stdout.split()[0] | int) == (groups['k3s_nodes'] | length)
           - (pf_ds.stdout.split()[0] | int) == (pf_ds.stdout.split()[1] | int)
         fail_msg: >-
           cilium DaemonSet is {{ pf_ds.stdout }} (desired ready), expected
-          {{ groups['k3s_servers'] | length }} of each. Stage 1 is not healthy;
+          {{ groups['k3s_nodes'] | length }} of each. Stage 1 is not healthy;
           migrating a node now would take it off flannel with nothing to
           replace it.
         success_msg: "cilium DaemonSet {{ pf_ds.stdout }} — stage 1 healthy."
@@ -112,10 +112,10 @@
 
     - name: "preflight | assert all Ready"
       ansible.builtin.assert:
-        that: (pf_ready.stdout | trim | int) == (groups['k3s_servers'] | length)
+        that: (pf_ready.stdout | trim | int) == (groups['k3s_nodes'] | length)
         fail_msg: >-
           Only {{ pf_ready.stdout | trim }} of
-          {{ groups['k3s_servers'] | length }} nodes are Ready. Fix that first —
+          {{ groups['k3s_nodes'] | length }} nodes are Ready. Fix that first —
           this playbook drains one node at a time and needs somewhere to put
           the pods.
 
@@ -145,11 +145,11 @@
       ansible.builtin.debug:
         msg: >-
           Stage 1 healthy. Migrating in order
-          {{ groups['k3s_servers'] | reverse | join(' -> ') }}; already-migrated
+          {{ groups['k3s_nodes'] | reverse | join(' -> ') }}; already-migrated
           nodes are skipped. Policy stays OFF; flannel stays installed.
 
 - name: Migrate each node, one at a time, lab1 last
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   serial: 1
   order: reverse_inventory
@@ -171,7 +171,7 @@
     # non-determinism. Harmless for the same reason; worth aligning some time.
     peer: >-
       {{ (groups['k3s_servers'] | reject('equalto', inventory_hostname) | list | first) }}
-    node_name: "{{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}"
+    node_name: "{{ k8s_node_name }}"
     cni_dir: /var/lib/rancher/k3s/agent/etc/cni/net.d
 
   tasks:

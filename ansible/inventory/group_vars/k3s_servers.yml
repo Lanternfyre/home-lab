@@ -1,0 +1,7 @@
+---
+# Derived from group membership in homelab.yml. NEVER set this per host -- the
+# inventory group is the single source of truth for role, and this file only
+# makes that fact readable as a variable, which is what roles and templates
+# need (asking "am I in group X" from inside a template is possible but ugly,
+# and it invites two answers to one question).
+k3s_role: server

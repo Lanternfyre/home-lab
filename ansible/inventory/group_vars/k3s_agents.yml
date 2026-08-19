@@ -1,0 +1,10 @@
+---
+# See group_vars/k3s_servers.yml. Derived from the group, never set per host.
+#
+# An agent is NOT "a server with less turned on". It is a different systemd
+# unit (k3s-agent.service), a different uninstall script
+# (k3s-agent-uninstall.sh), and it has NO local apiserver, NO kubeconfig at
+# /etc/rancher/k3s/k3s.yaml, NO /var/lib/rancher/k3s/server/ and NO etcd
+# metrics on :2381. Anything in this repo that touches one of those must be
+# delegated to a server or gated on k3s_role.
+k3s_role: agent

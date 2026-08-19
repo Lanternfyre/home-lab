@@ -74,11 +74,46 @@
         /usr/local/bin/k3s kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'
       register: live_version
       changed_when: false
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: Show what we will install
       ansible.builtin.debug:
         msg: "Joining at the cluster's live version: {{ live_version.stdout }}"
+
+    # ── The join token ──────────────────────────────────────────────────
+    # This used to be a bare `{{ k3s_token }}` that was defined NOWHERE -- no
+    # group_vars, no vault, no host_vars -- so the play died on an undefined
+    # variable before installing anything. Read it from the cluster instead:
+    # the live node-token is the only authoritative copy, and pulling it here
+    # avoids committing a second one.
+    - name: "token | read the join token from a live server"
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token   # 0600 root -- hence become
+      register: k3s_token_raw
+      delegate_to: "{{ k3s_control_plane_host }}"
+      become: true
+      check_mode: false
+      when: k3s_token is not defined
+
+    - name: "token | expose it"
+      ansible.builtin.set_fact:
+        # `| trim` is not cosmetic: a trailing newline inside K3S_TOKEN="..."
+        # is accepted by the shell and then rejected by the server, which
+        # surfaces as a generic TLS/auth failure rather than "bad token".
+        k3s_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+      no_log: true
+      when: k3s_token is not defined
+
+    - name: "token | refuse to install without one"
+      ansible.builtin.assert:
+        that: (k3s_token | default('') | trim | length) > 0
+        fail_msg: >-
+          No join token. It is read from /var/lib/rancher/k3s/server/node-token
+          on {{ k3s_control_plane_host }}. If that node is down, pass
+          -e k3s_token=... from any other server. Do NOT proceed without one:
+          installing with an empty token does not fail, it starts a BRAND NEW
+          single-node cluster, which looks exactly like "the node joined but is
+          empty".
 
     - name: Write config.yaml BEFORE installing
       ansible.builtin.include_role:
@@ -88,22 +123,32 @@
       # nodes had no config.yaml at all, so their deploy controllers kept
       # rewriting traefik.yaml while the others deleted it -- 580+ crashloops.
 
-    - name: Install k3s and join
+    # INSTALL_K3S_EXEC follows the node's group in the inventory. It decides
+    # far more than the command: the installer sets SYSTEM_NAME from it, so a
+    # server gets k3s.service + k3s-uninstall.sh and an agent gets
+    # k3s-agent.service + k3s-agent-uninstall.sh. Getting it wrong does not
+    # error -- it silently builds the other kind of node.
+    #
+    # No K3S_URL is needed even for an agent: config.yaml (written above)
+    # carries `server:`, which is the same mechanism every server already uses
+    # to find the VIP.
+    - name: "Install k3s and join as {{ k3s_role }}"
       ansible.builtin.shell: |
         curl -sfL https://get.k3s.io | \
           INSTALL_K3S_VERSION={{ live_version.stdout }} \
-          INSTALL_K3S_EXEC="server" \
+          INSTALL_K3S_EXEC="{{ 'server' if k3s_role == 'server' else 'agent' }}" \
           K3S_TOKEN="{{ k3s_token }}" \
           sh -s -
       environment: {}   # keep stray K3S_* out of the regenerated k3s.service.env
+      no_log: true      # the token is on the command line
       args:
         creates: /usr/local/bin/k3s
 
     # CORDON ON JOIN. This inverts the default that trapped k8s-4: a node is
     # untrusted until its storage path is PROVEN, not until it reports Ready.
     - name: Cordon immediately
-      ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name | default(inventory_hostname.split('.')[0]) }}"
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
       changed_when: true
 
 - name: Post-join verification
@@ -113,9 +158,41 @@
     - node_verify        # includes the csinode.spec.drivers gate
 
   post_tasks:
-    - name: Reminder
+    - name: Joined and cordoned
       ansible.builtin.debug:
         msg: >-
-          {{ inventory_hostname }} is joined and CORDONED. Run the storage
-          proof (a pinned test PVC on this node) before uncordoning. Reporting
-          Ready is NOT sufficient -- k8s-4 was Ready with zero CSI drivers.
+          {{ inventory_hostname }} is joined as {{ k3s_role }} and CORDONED.
+          The storage proof runs next and uncordons only if it passes.
+
+    # Hand the k8s node name to the localhost play below. `target` is a host
+    # PATTERN (it may be one host or a group), so the next play cannot rederive
+    # this -- groups[target] only works when target happens to name a group.
+    - name: Record this node for the storage-proof play
+      ansible.builtin.set_fact:
+        joined_nodes: "{{ (hostvars['localhost'].joined_nodes | default([])) + [k8s_node_name] }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+# Separate play, and deliberately so: the proof runs kubectl on the WORKSTATION
+# with no privilege escalation, while the plays above run as root on the node.
+# `become:`/`delegate_to:` are not valid on a TaskInclude, so a play boundary
+# is the only way out of that play -- same shape as 30-upgrade.yml.
+#
+# This used to be a printed REMINDER to go and run the proof by hand. That is
+# exactly the gap the playbook exists to close: k8s-4 sat Ready, untainted and
+# schedulable with ZERO registered CSI drivers, and a reminder is not a gate.
+# `proof_node` pins the pod with nodeName, which bypasses the scheduler and so
+# works while the node is still cordoned -- which is the whole point.
+- name: Prove storage works on the new node, then return it to service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Prove and uncordon each node that just joined
+      ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
+      loop: "{{ joined_nodes | default([]) }}"
+      loop_control:
+        loop_var: joined_node
+      when: not ansible_check_mode

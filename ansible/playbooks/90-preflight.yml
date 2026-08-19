@@ -3,7 +3,7 @@
 # a partly broken cluster. Run this FIRST on any new node and before any
 # maintenance window.
 - name: Preflight audit
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: true
   # Read-only: every path inspected is world-readable, so no sudo needed.
   # That keeps the audit runnable without a password prompt.
@@ -16,7 +16,8 @@
         echo "os:            $(. /etc/os-release && echo "$PRETTY_NAME")"
         echo "default nic:   $(ip route show default | awk '{print $5; exit}')"
         echo "k3s:           $(/usr/local/bin/k3s --version 2>/dev/null | head -1 | awk '{print $3}')"
-        echo "k3s service:   $(systemctl is-active k3s 2>/dev/null)"
+        echo "role:          {{ k3s_role | default('server') }}"
+        echo "{{ k3s_unit }} service:{{ '' if k3s_unit == 'k3s-agent' else '   ' }} $(systemctl is-active {{ k3s_unit }} 2>/dev/null)"
         echo "iscsid:        $(systemctl is-active iscsid 2>/dev/null)"
         echo "multipathd:    $(systemctl is-active multipathd 2>/dev/null)"
         echo "find_multipaths: $(grep -oE 'find_multipaths\s+\S+' /etc/multipath.conf 2>/dev/null || echo 'NOT SET  <-- QNAP volumes will NOT stage')"

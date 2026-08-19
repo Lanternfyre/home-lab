@@ -42,7 +42,7 @@
 #   verify     assertions only -- read-only, safe to run alone
 
 - name: Converge node OS baseline
-  hosts: k3s_servers
+  hosts: k3s_nodes
   # serial: 1 so a broken node stops the run before the next one is touched.
   # These tasks do not evict pods, but systemd-resolved and multipathd can
   # bounce, and doing that on five nodes simultaneously is needless risk.
@@ -54,7 +54,7 @@
     - role: node_baseline
 
 - name: Converge k3s configuration
-  hosts: k3s_servers
+  hosts: k3s_nodes
   serial: 1
   any_errors_fatal: true
   gather_facts: false
@@ -72,6 +72,9 @@
 # restarts and node drains that are deliberately kept out of site.yml.
 - name: Make cluster DNS survive a drain
   hosts: "{{ coredns_manifest_host | default(groups['k3s_servers'][0]) }}"
+  # NOTE: must use groups[...] directly, NOT the k3s_control_plane_host var.
+  # A `hosts:` line is evaluated before any host is bound, so host/group vars
+  # are not in scope there -- only magic vars like `groups` are.
   gather_facts: false
   any_errors_fatal: true
   tags: [coredns, dns]
@@ -79,7 +82,7 @@
     - role: coredns_ha
 
 - name: Verify every node
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   # NOT serial: verification is read-only, so run it everywhere at once and get
   # the full picture in one pass rather than failing at the first bad node.

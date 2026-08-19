@@ -1,0 +1,28 @@
+---
+# Prove storage on ONE freshly joined node, then return it to service.
+#
+# Included per node by 40-add-node.yml and 45-change-node-role.yml so both
+# entry points gate on the same thing. Runs on localhost (kubectl from the
+# workstation, no privilege escalation).
+#
+# `proof_node` pins the pod with nodeName, which bypasses the scheduler and
+# therefore works while the node is still CORDONED. That is the entire reason
+# the proof can run before the uncordon rather than after it.
+
+- name: "{{ joined_node }} | storage proof, pinned to this node"
+  ansible.builtin.include_tasks: storage-proof.yml
+  vars:
+    proof_name: "storage-proof-{{ joined_node }}"
+    proof_node: "{{ joined_node }}"
+
+# Only reached if the proof above succeeded: any_errors_fatal stops the play
+# otherwise and the node stays cordoned, which is the safe default. Reporting
+# Ready is NOT the gate -- k8s-lab4 was Ready, untainted and schedulable with
+# zero registered CSI drivers.
+- name: "{{ joined_node }} | uncordon, storage PROVEN"
+  ansible.builtin.command: "kubectl uncordon {{ joined_node }}"
+  changed_when: true
+
+- name: "{{ joined_node }} | done"
+  ansible.builtin.debug:
+    msg: "{{ joined_node }} joined, storage-proven and uncordoned."

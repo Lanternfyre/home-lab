@@ -28,7 +28,7 @@
 # upgraded when four nodes are already known-good at the new version.
 
 - name: Pre-flight -- refuse to start on a cluster that is not already healthy
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   any_errors_fatal: true
   # Needs root even for the read-only checks: /etc/rancher/k3s/k3s.yaml is 0600,
@@ -78,7 +78,7 @@
       changed_when: false
       check_mode: false
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     # NotReady is always fatal: an upgrade that starts a node down has fewer
     # drain targets and may leave a CNPG switchover with nowhere to go.
@@ -118,14 +118,18 @@
       run_once: true
       when: item.split('|')[1] == 'true'
 
-    - name: "preflight | etcd is healthy on ALL five right now"
-      # All five answering IS the member-count check -- a node whose etcd is
-      # gone does not serve :2381 at all.
+    - name: "preflight | etcd is healthy on every server right now"
+      # Every server answering IS the member-count check -- a node whose etcd
+      # is gone does not serve :2381 at all.
+      #
+      # ⚠️ Servers only. Agents run no etcd and nothing listens on :2381 there,
+      # so this would fail the whole preflight on a healthy worker.
       ansible.builtin.uri:
         url: "http://127.0.0.1:2381/metrics"
         return_content: true
       register: pre_etcd
       check_mode: false
+      when: k3s_role == 'server'
 
     - name: "preflight | assert leader present and zero health failures"
       ansible.builtin.assert:
@@ -137,6 +141,9 @@
           failures. Upgrading now risks losing quorum with no way back except
           a restore.
         success_msg: "etcd healthy on {{ inventory_hostname }}"
+      # Skipped on agents along with the probe above -- pre_etcd is not even
+      # defined there, so without this the assert fails on an undefined var.
+      when: k3s_role == 'server'
 
     - name: "preflight | nothing is already in ImagePullBackOff"
       ansible.builtin.shell: >-
@@ -150,7 +157,7 @@
       changed_when: false
       check_mode: false
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
       failed_when: (pre_ipbo.stdout | trim | int) > 0
 
     # ── The local-path trap ──────────────────────────────────────────────────
@@ -180,7 +187,7 @@
       changed_when: false
       check_mode: false
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: "preflight | WARN about node-pinned workloads"
       ansible.builtin.debug:
@@ -202,7 +209,7 @@
         --name pre-upgrade-{{ k3s_version | regex_replace('[^a-zA-Z0-9]', '-') }}
       become: true
       run_once: true
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
       when: not ansible_check_mode
       changed_when: true
 
@@ -214,7 +221,7 @@
           taken. Nodes will be upgraded one at a time, lab1 last.
 
 - name: Roll the upgrade, one node at a time, lab1 last
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   serial: 1
   order: reverse_inventory
@@ -226,8 +233,8 @@
     # elsewhere: asking a node to evict its own pods while its API server is
     # about to restart is how a drain hangs half-done.
     peer: >-
-      {{ (groups['k3s_servers'] | difference([inventory_hostname]) | first) }}
-    node_name: "{{ k8s_node_name | default(inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')) }}"
+      {{ (groups['k3s_servers'] | reject('equalto', inventory_hostname) | list | first) }}
+    node_name: "{{ k8s_node_name }}"
 
   tasks:
     - name: "{{ node_name }} | skip if already at the target version"
@@ -331,9 +338,18 @@
           ansible.builtin.shell: |
             curl -sfL https://get.k3s.io | \
               INSTALL_K3S_VERSION={{ k3s_version }} \
+              INSTALL_K3S_EXEC="{{ 'server' if k3s_role == 'server' else 'agent' }}" \
               INSTALL_K3S_SKIP_START=true \
               sh -s -
           environment: {}   # keep stray K3S_* out of the regenerated service env
+          # ⚠️ INSTALL_K3S_EXEC IS LOAD-BEARING, added 2026-08-19. Read the
+          # installer: with no INSTALL_K3S_EXEC and no K3S_URL it defaults
+          # CMD_K3S to `server`, and SYSTEM_NAME follows CMD_K3S. Omitting it
+          # on an AGENT therefore installs a second unit -- k3s.service beside
+          # the node's real k3s-agent.service -- and the restart task below
+          # would then start a BRAND NEW CONTROL PLANE on a worker. Nothing in
+          # the gates catches that quickly: the node reports Ready, etcd keeps
+          # its leader, and every DaemonSet stays even.
           register: k3s_install
           until: k3s_install.rc == 0
           retries: 3
@@ -343,7 +359,7 @@
 
         - name: "{{ node_name }} | restart k3s onto the new version"
           ansible.builtin.systemd:
-            name: k3s
+            name: "{{ k3s_unit }}"
             state: restarted
             daemon_reload: true
           when: not ansible_check_mode
@@ -382,9 +398,13 @@
           delay: 10
           when: not ansible_check_mode
 
+        # Delegated to a SERVER since 2026-08-19: this reads the API through a
+        # local kubeconfig, and an agent has neither. It is a cluster-health
+        # gate, not a node-local one, so asking a server is also more correct.
         - name: "{{ node_name }} | /readyz reports etcd ok"
           ansible.builtin.command: >-
             /usr/local/bin/k3s kubectl get --raw=/readyz?verbose
+          delegate_to: "{{ peer }}"
           register: g_readyz
           changed_when: false
           until: "'[+]etcd ok' in g_readyz.stdout"
@@ -468,9 +488,9 @@
           ansible.builtin.include_role:
             name: coredns_ha
             apply:
-              delegate_to: "{{ groups['k3s_servers'] | first }}"
+              delegate_to: "{{ k3s_control_plane_host }}"
           vars:
-            coredns_manifest_host: "{{ groups['k3s_servers'] | first }}"
+            coredns_manifest_host: "{{ k3s_control_plane_host }}"
           when: not ansible_check_mode
 
         # kube-vip is an addon from the SAME manifest mechanism, and it was
@@ -487,10 +507,18 @@
         # over a serial:1 pass every server ends up with identical content --
         # which is the actual fix. Pinning it to one host is what let a stale
         # kube-vip.yaml survive on the others and keep reverting the addon.
+        # ⚠️ SERVERS ONLY. The role templates into
+        # /var/lib/rancher/k3s/server/manifests/, a directory agents do not
+        # have -- template: will not create the parent, so this is a hard fail
+        # on a worker. Deliberately still UNDELEGATED for servers: the point is
+        # that every server ends up with identical content over the serial:1
+        # pass, which is what stops the addon flapping.
         - name: "{{ node_name }} | re-assert the kube-vip DaemonSet here"
           ansible.builtin.include_role:
             name: kube_vip
-          when: not ansible_check_mode
+          when:
+            - not ansible_check_mode
+            - k3s_role == 'server'
 
         # ── Cilium's CNI binary lives in k3s-managed, VERSIONED ground ───────
         # Since 2026-08-03 this cluster is on Cilium, whose cilium-cni binary is
@@ -586,7 +614,7 @@
               drivers registered, etcd healthy on all five. Moving on.
 
 - name: Post-upgrade verification across the whole cluster
-  hosts: k3s_servers
+  hosts: k3s_nodes
   gather_facts: false
   any_errors_fatal: false
   become: true

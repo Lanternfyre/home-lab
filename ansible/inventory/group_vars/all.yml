@@ -43,18 +43,37 @@ k3s_max_version: "v1.36.0"     # assert k3s_version is strictly below this
 #                     cannot break itself.
 #
 # ⚠️ servicelb is driven by a LEADER-ELECTED controller, so it must be set on
-# ALL nodes and then k3s restarted (serial:1). Setting it on one node no-ops or
-# flaps depending on who holds the lease. The existing svclb-* DaemonSets also
-# need an explicit one-time delete -- disabling the addon does not remove them.
+# every node that RUNS that controller -- i.e. every SERVER -- and then k3s
+# restarted (serial:1). Setting it on one node no-ops or flaps depending on who
+# holds the lease. The existing svclb-* DaemonSets also need an explicit
+# one-time delete -- disabling the addon does not remove them.
+#
+# ⚠️ This used to read "must be set on ALL nodes", and that was correct when all
+# five nodes were servers. Since 2026-08-19 there are agents, and `disable:` is
+# NOT a valid agent flag -- k3s agents refuse to start on an unknown flag, so
+# the role-aware template deliberately omits it there. Nothing is lost: agents
+# run no deploy controller, so there is nothing on them to disable. Do not
+# "fix" the template by putting it back.
 k3s_disable:
   - traefik
   - servicelb
 
 # ── Control-plane VIP ────────────────────────────────────────────────────────
-# Served by kube-vip. NOTE: currently a bare Pod on k8s-1 only, with empty
-# ownerReferences -- if that node dies the VIP disappears, and it is also the
-# --server join target baked into lab2-lab5's systemd units AND the tls-san.
-# Converting it to a DaemonSet is tracked separately.
+# Served by kube-vip. It is the `server:` join target every node renders into
+# config.yaml, the tls-san, and the address in every kubeconfig.
+#
+# ✅ The DaemonSet cutover LANDED 2026-08-02 (playbooks/25-kube-vip-daemonset.yml).
+# This used to warn that it was "a bare Pod on k8s-1 only, with empty
+# ownerReferences, so if that node dies the VIP disappears". It is now a
+# leader-elected DaemonSet, and since 2026-08-19 it runs on the CONTROL-PLANE
+# nodes only -- its nodeAffinity requires node-role.kubernetes.io/control-plane,
+# so demoting a node sheds its kube-vip pod automatically and the expected
+# DaemonSet count is `groups['k3s_servers'] | length`, not the node count.
+#
+# ⚠️ It is a k3s ADDON, reconciled from /var/lib/rancher/k3s/server/manifests/
+# by EVERY server independently. Identical bytes on every server is the whole
+# safety property -- divergent content makes the addon flap between DaemonSet
+# and bare Pod depending on who restarted last. Re-assert after any role change.
 k3s_api_vip: "192.168.32.2"
 
 # ── Node baseline ────────────────────────────────────────────────────────────
@@ -178,3 +197,31 @@ k3s_oidc_client_id: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleus
 # gitops/.../headlamp/manifests/oidc-admin.clusterrolebinding.yaml matches.
 # Changing this claim silently breaks that binding.
 k3s_oidc_username_claim: "email"
+
+# ── Derived per-node identity ────────────────────────────────────────────────
+#
+# The Kubernetes node name is NOT the inventory hostname: k8s-3.home registers
+# as k8s-lab3. This expression used to be copy-pasted at five call sites, and
+# ONE of them had lost the replace() -- 40-add-node.yml cordoned "k8s-6", a node
+# object that does not exist. kubectl exits non-zero, so the join play failed
+# AFTER installing k3s and left the new node joined and UNCORDONED. That is
+# precisely the k8s-4 failure the playbook was written to prevent.
+#
+# Defined here, every `{{ k8s_node_name | default(<expr>) }}` in the repo
+# resolves to this instead of its inline copy -- so the bug is fixed by the
+# definition alone. Override per host in host_vars/ if a node ever registers
+# under a name that does not follow the pattern.
+k8s_node_name: "{{ inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab') }}"
+
+# The systemd unit differs by role, and this is not cosmetic. Read from the
+# installer itself (get.k3s.io): INSTALL_K3S_EXEC="agent" sets SYSTEM_NAME to
+# k3s-agent, so an agent gets k3s-agent.service, k3s-agent-uninstall.sh and
+# /etc/rancher/k3s/k3s-agent.env. An agent has NO k3s.service at all, so a
+# hardcoded name does not degrade -- it fails outright, in the middle of a
+# converge, on a node that is otherwise fine.
+k3s_unit: "{{ 'k3s' if (k3s_role | default('server')) == 'server' else 'k3s-agent' }}"
+
+# The one node to delegate cluster-wide kubectl to. Must be a SERVER: agents
+# have no local apiserver and no kubeconfig. Defined once so the ~20 call sites
+# that used to repeat the expression have a single place to change.
+k3s_control_plane_host: "{{ groups['k3s_servers'] | first }}"
