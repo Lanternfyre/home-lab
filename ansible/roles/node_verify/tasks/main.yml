@@ -18,6 +18,43 @@
 # verification role. Nothing below writes anything, so running for real is
 # always right.
 
+# ── Is this node in the cluster at all? ─────────────────────────────────────
+#
+# Since 2026-08-19 the inventory can legitimately contain a node that has NOT
+# joined yet: adding a host to k3s_nodes is the FIRST step of onboarding, and
+# 40-add-node.yml is the second. Before this probe existed, `site.yml --tags
+# verify` failed on such a node with `k3s ctr images pull` returning rc=2 --
+# "command not found" dressed up as a broken container runtime.
+#
+# That is the "a gate placed before its own remedy blocks the repair" shape
+# this repo has hit four times: the role that tells you whether a node is ready
+# to join refused to run until the node had joined.
+#
+# ⚠️ This is the ONE file-presence check in a role whose stated design rule is
+# to assert values and never file presence, and it is deliberate: the question
+# "is k3s installed here" has no behavioural form -- every behavioural probe
+# requires the binary that is missing. It is narrow on purpose. A node WITH
+# k3s installed still gets every assertion at full strength, so this cannot
+# mask a broken cluster member; it only distinguishes "not joined yet" from
+# "joined and broken", which are different problems with different fixes.
+- name: "Is k3s installed on this node yet?"
+  ansible.builtin.stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+  check_mode: false
+
+- name: "Say so plainly when it is not"
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }} has NO k3s installed, so it is not a cluster
+      member. The OS baseline assertions below still run at full strength --
+      they are exactly what must pass BEFORE joining. The cluster-membership
+      checks (containerd pull, csinode drivers) are skipped because they cannot
+      mean anything yet. Join it with:
+        ansible-playbook playbooks/40-add-node.yml --ask-become-pass
+          -e target={{ inventory_hostname }}
+  when: not k3s_binary.stat.exists
+
 - name: DNS resolves external registries
   ansible.builtin.command: getent ahostsv4 registry.k8s.io registry-1.docker.io
   register: dns_check
@@ -33,6 +70,7 @@
   changed_when: false
   failed_when: pull_check.rc != 0
   check_mode: false
+  when: k3s_binary.stat.exists
 
 - name: Read effective sysctl values
   ansible.builtin.command: "sysctl -n {{ item.key }}"
@@ -176,10 +214,17 @@
   failed_when: csinode_check.stdout | trim | length == 0
   check_mode: false
   delegate_to: "{{ k3s_control_plane_host }}"
+  # A node that has not joined has no csinode object -- and no Node object
+  # either. Skipped rather than failed; see the probe at the top of this file.
+  when: k3s_binary.stat.exists
 
 - name: Summary
   ansible.builtin.debug:
     msg: >-
-      {{ inventory_hostname }}: DNS ok, image pull ok, sysctls ok,
-      multipath.conf ok, iscsid+multipathd active,
-      CSI drivers = {{ csinode_check.stdout }}
+      {{ inventory_hostname }}: DNS ok, sysctls ok, multipath.conf ok,
+      iscsid+multipathd active
+      {{ ', image pull ok, CSI drivers = ' ~ csinode_check.stdout
+         if k3s_binary.stat.exists
+         else '-- OS baseline PASSES and this node is ready to join. Not a
+               cluster member yet, so image pull and CSI drivers were not
+               checked.' }}

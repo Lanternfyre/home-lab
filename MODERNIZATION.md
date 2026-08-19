@@ -69,9 +69,16 @@ of writing is still 5 nodes, all servers. What exists now:
    template were rewritten. The rendered keys are byte-identical to the
    previous template (verified by diffing both renders), and `k3s_config` never
    restarts k3s, so this is cosmetic.
+
+   ⚠️ **k8s-6 will report `failed=1` in this run, and that is correct.** It is
+   in the inventory but has not joined, and its OS baseline has never been
+   applied, so `node_verify` asserts its inotify sysctls are at the kernel
+   default. Step 2 is the fix. To see the other five cleanly on their own:
+   `--limit 'k3s_nodes:!k8s-6.home'`.
 2. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-6.home`
-   — k8s-6 currently reports `multipath=BROKEN, sysctls=BROKEN,
-   services=BROKEN`, which is simply "baseline has never run here".
+   — k8s-6 reports `multipath=BROKEN, sysctls=BROKEN, services=BROKEN`, which
+   is simply "baseline has never run here". Re-run `90-preflight.yml` after and
+   expect `sysctls=ok, multipath=ok, services=ok` before going on.
 3. `ansible-playbook playbooks/40-add-node.yml --ask-become-pass -e target=k8s-6.home`
    → 6 servers, 6 etcd members. **Even, so do not linger**: 6 tolerates one
    failure, exactly as 5 did.
