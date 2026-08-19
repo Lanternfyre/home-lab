@@ -284,7 +284,16 @@ throughout — it delivered the value correctly; it cannot know the registry
 rejects it. If you set the new PAT to expire, put a calendar reminder on it,
 because the failure mode is invisible.
 
-### 2b. Fix lab4/lab5 — ✅ lab4 DONE · 🔴 lab5 STILL BLOCKED
+### 2b. Fix lab4/lab5 — ✅ BOTH DONE (lab4 and lab5 uncordoned 2026-08-02)
+
+> **✅ CLOSED. Re-verified by value on 2026-08-19** — this section is kept for
+> the diagnosis, not as an open item. Both nodes now report:
+> `kubectl get csinode` → 1 registered driver each · `find_multipaths no` in
+> `/etc/multipath.conf` · `iscsid` and `multipathd` both `active` ·
+> `fs.inotify.max_user_watches` = 1048576 · external registries resolve ·
+> `.spec.unschedulable` unset, i.e. **neither is cordoned**.
+> The header below used to read "🔴 lab5 STILL BLOCKED"; it had been fixed
+> since 2026-08-02 and the doc simply never caught up.
 
 **Status as of 2026-08-02, measured not assumed:**
 
@@ -713,12 +722,18 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
 
 ## Standing warnings
 
-- **Do not uncordon k8s-lab4** until `kubectl get csinode k8s-lab4` shows a
-  registered driver. It is Ready but cannot mount any QNAP volume; any
-  PVC-bearing pod that lands there hangs in `ContainerCreating` forever.
-- **Do not uncordon k8s-lab5** until a test PVC has been proven to attach there.
-  It has never established an iSCSI session, so its storage path is unproven
-  rather than merely untested.
+- ~~**Do not uncordon k8s-lab4 / k8s-lab5**~~ ✅ Both were repaired and
+  uncordoned 2026-08-02, re-verified 2026-08-19 (see §2b).
+  **The RULE stands for every future node, and it is now enforced rather than
+  remembered:** `40-add-node.yml` and `45-change-node-role.yml` keep a node
+  cordoned until a test PVC actually mounts on it. `Ready` is not the gate —
+  k8s-lab4 sat Ready, untainted and schedulable with zero registered CSI
+  drivers, and any PVC-bearing pod landing there would have hung in
+  `ContainerCreating` forever.
+- **A node being demoted loses its etcd snapshots** along with the rest of
+  `/var/lib/rancher/k3s`. `45-change-node-role.yml` takes a fresh snapshot on a
+  peer first, but there is still no off-cluster backup (see §8 and the Velero
+  note in MODERNIZATION.md).
 - **Never `kubectl patch` the QNAP StorageClasses.** They are chart-managed and
   `selfHeal` silently reverts imperative patches. Change them in git.
 - **Backups live on the same NAS as the data.** They cover driver bugs,

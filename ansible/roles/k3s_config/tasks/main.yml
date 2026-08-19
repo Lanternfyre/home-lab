@@ -22,17 +22,18 @@
 # That is a rebuilt node, and it would start a SECOND, EMPTY cluster of one
 # while the survivors carried on serving. The failure does not look like an
 # error -- the node comes up Ready, with nothing on it.
-# Agents have no etcd datastore BY DESIGN, so this guard is meaningless there
-# -- and `k3s_cluster_init` on an agent is a contradiction the join playbooks
-# reject outright. Gated so the stat does not read as "missing datastore" on a
-# worker, which is the shape that would make the guard below fire wrongly if
-# anyone ever relaxed its conditions.
+# ⚠️ Deliberately NOT gated on k3s_role. The stat is read-only and its answer
+# on an agent (no datastore) is simply TRUE, so there is nothing to protect
+# against -- whereas a `when:` here would leave k3s_etcd_dir SKIPPED rather
+# than false, and the guard below dereferences k3s_etcd_dir.stat.exists. A
+# skipped register has no .stat, so gating this task turns the guard into an
+# undefined-attribute error on every agent the moment its other conditions
+# stop short-circuiting. The role check belongs on the guard, not here.
 - name: "guard | does this node already have an etcd datastore?"
   ansible.builtin.stat:
     path: /var/lib/rancher/k3s/server/db/etcd
   register: k3s_etcd_dir
   check_mode: false
-  when: (k3s_role | default('server')) == 'server'
 
 - name: "guard | refuse to initialise a second cluster"
   ansible.builtin.fail:
@@ -48,8 +49,11 @@
       k3s_cluster_init=true only to bootstrap a genuinely new cluster.
   when:
     - k3s_cluster_init | default(false) | bool
-    - not k3s_etcd_dir.stat.exists
+    - not (k3s_etcd_dir.stat.exists | default(false))
     - (groups['k3s_servers'] | length) > 1
+    # Agents have no etcd datastore BY DESIGN, so "no datastore here" is not
+    # evidence of a rebuild on a worker. k3s_cluster_init on an agent is a
+    # contradiction the join playbooks reject outright.
     - (k3s_role | default('server')) == 'server'
 
 - name: Ensure /etc/rancher/k3s exists

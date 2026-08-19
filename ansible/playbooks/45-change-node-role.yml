@@ -90,16 +90,34 @@
       check_mode: false
       failed_when: false
 
+    # Three states, not two. A node with an etcd datastore is a server; one
+    # with a k3s unit but no datastore is an agent; one with NEITHER is a node
+    # where a previous run died between the uninstall and the rejoin, or a
+    # machine that never joined at all.
+    #
+    # `absent` is treated as `agent` for the work below, and that happens to be
+    # correct rather than accidental: the uninstall step is guarded by
+    # `removes:` so it skips when the script is gone, and everything after it
+    # is a plain join. It is reported distinctly anyway, because "this node has
+    # no k3s at all" and "this node is a worker" want very different reactions
+    # from whoever is reading the output.
     - name: "gate | name the actual role"
       ansible.builtin.set_fact:
         actual_role: "{{ 'server' if etcd_dir.stat.exists else 'agent' }}"
+        actual_state: >-
+          {{ 'server' if etcd_dir.stat.exists
+             else ('agent' if units_present.stdout | trim | length > 0
+                   else 'absent') }}
 
     - name: "gate | report"
       ansible.builtin.debug:
         msg: >-
-          {{ node_name }}: actual={{ actual_role }} desired={{ k3s_role }};
+          {{ node_name }}: actual={{ actual_state }} desired={{ k3s_role }};
           units present: {{ units_present.stdout_lines | join(', ') | default('none', true) }};
           delegating kubectl to {{ peer }}.
+          {{ 'NOTE: no k3s on this node at all -- treating it as a fresh join. A
+             previous role change may have died between uninstall and rejoin.'
+             if actual_state == 'absent' else '' }}
 
     - name: "gate | inventory and node must actually disagree"
       ansible.builtin.assert:
@@ -471,6 +489,14 @@
   become: false
   any_errors_fatal: true
   tasks:
+    - name: Note that the proof cannot run in check mode
+      ansible.builtin.debug:
+        msg: >-
+          CHECK MODE: the storage proof and the uncordon are SKIPPED. In a real
+          run the node stays cordoned until a pinned test PVC actually mounts
+          on it. Do not read this run as evidence that storage works.
+      when: ansible_check_mode
+
     - name: Prove and uncordon
       ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
       loop: "{{ joined_nodes | default([]) }}"

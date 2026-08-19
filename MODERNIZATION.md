@@ -13,8 +13,10 @@ Last updated: 2026-08-03 (SMART monitoring landed — see "Immediately next")
 
 ## Where we are
 
-k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 5 nodes, all
-`control-plane,etcd,master`, no workers.
+k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 6 nodes. Topology is being split
+from "all `control-plane,etcd,master`, no workers" into **3 servers
+(k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3, k8s-5)** — see
+"Node roles" below for exactly how far that has got.
 Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
 ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
@@ -41,8 +43,61 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-**Session of 2026-08-03 ended here. Everything below is current and pushed;
-working tree clean, both repos level with origin.**
+#### 🔄 2026-08-19 — Node roles: k8s-6 added, control plane shrinking to 3
+
+The Ansible layer LANDED (commit "a node's role is now a line in the
+inventory"); **the cluster changes have NOT been made yet.** Live state at time
+of writing is still 5 nodes, all servers. What exists now:
+
+* `ansible/inventory/homelab.yml` is topology-only: `k3s_nodes` with
+  `k3s_servers` / `k3s_agents` beneath it. Per-host detail moved to
+  `host_vars/`, so a role change is moving ONE hostname line.
+* `playbooks/45-change-node-role.yml` performs the transformation, ONE node per
+  run, `-e target=`. k3s cannot convert a node in place, so it drains,
+  uninstalls, deletes the Node object (which is what drops the etcd member) and
+  rejoins in the new role — behind gates for quorum arithmetic, live-vs-
+  inventory member count, CNPG primaries, local-path data, and a snapshot taken
+  on a peer.
+* `40-add-node.yml` now derives `INSTALL_K3S_EXEC` from the group, slurps the
+  join token from a live server (it was previously an undefined variable), and
+  RUNS the storage proof instead of printing a reminder to run it.
+
+**Remaining, in this order — every step needs `--ask-become-pass`:**
+
+1. `ansible-playbook site.yml --ask-become-pass --check --diff` then apply.
+   Expect config.yaml to report *changed* on every server: the comments in the
+   template were rewritten. The rendered keys are byte-identical to the
+   previous template (verified by diffing both renders), and `k3s_config` never
+   restarts k3s, so this is cosmetic.
+2. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-6.home`
+   — k8s-6 currently reports `multipath=BROKEN, sysctls=BROKEN,
+   services=BROKEN`, which is simply "baseline has never run here".
+3. `ansible-playbook playbooks/40-add-node.yml --ask-become-pass -e target=k8s-6.home`
+   → 6 servers, 6 etcd members. **Even, so do not linger**: 6 tolerates one
+   failure, exactly as 5 did.
+4. Demote **k8s-2**, then **k8s-5**, then **k8s-3**, one at a time, verifying
+   between each. Member count 6 → 5 → 4 → 3.
+   * k8s-2 first: 11 pods, lowest risk, and it proves the playbook.
+   * k8s-5 second: ~44 pods including Pi-hole (LAN DNS) and a CoreDNS replica.
+     Expect real churn. Ansible itself is immune — the inventory carries
+     explicit IPs — but the rest of the LAN will notice.
+   * k8s-3 last: it holds BOTH CNPG primaries and the stale local-path PV.
+     **Retire `dns/pihole` (PVC then PV) before running it** — the gate refuses
+     otherwise, which is the gate working. `Retain` does not protect it:
+     `k3s-uninstall.sh` deletes the data and leaves a tombstone reading Bound.
+5. ⚠️ Three rejoins will reuse the cluster token `k3sblog`, which is in
+   plaintext in `gitops/argo-install.md` (MANUAL-STEPS §8). Good moment to
+   rotate it.
+
+⚠️ Do not run `25-kube-vip-daemonset.yml`, `35-cilium-migrate.yml` or
+`30-upgrade.yml` while a role change is in flight: the inventory and the
+cluster deliberately disagree by one node, so their count assertions will read
+as a broken cluster.
+
+#### Older resume point
+
+**Session of 2026-08-03 ended here.** *(Its "working tree clean" note is no
+longer true — the node-role work above is newer.)*
 
 **Resumed later the same day: Phase 7 item 1 (SMART) is now complete.** The
 next item is #2 below, and it is the one that needs a human at a keyboard.
