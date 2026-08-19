@@ -84,6 +84,35 @@ of writing is still 5 nodes, all servers. What exists now:
    failure, exactly as 5 did.
 4. Demote **k8s-2**, then **k8s-5**, then **k8s-3**, one at a time, verifying
    between each. Member count 6 → 5 → 4 → 3.
+
+   Each demotion is exactly two actions. There is no command that does the
+   first one for you -- moving the line IS the decision, and the playbook
+   refuses to run if the inventory and the node still agree:
+
+   ```
+   # a) edit ansible/inventory/homelab.yml -- move ONE line:
+   #      from  k3s_servers:  hosts:  ...  k8s-2.home:
+   #      to    k3s_agents:   hosts:  ...  k8s-2.home:
+   #    then commit it, so the repo and the cluster never disagree silently.
+
+   # b) cd ansible
+   ansible-playbook playbooks/45-change-node-role.yml --ask-become-pass \
+     -e target=k8s-2.home
+   ```
+
+   Then repeat with `k8s-5.home`, then `k8s-3.home`. Between each, confirm:
+
+   ```
+   kubectl get nodes -o wide
+   kubectl get nodes -l node-role.kubernetes.io/etcd=true --no-headers | wc -l
+   kubectl get --raw='/readyz?verbose' | grep etcd
+   kubectl -n kube-system get ds kube-vip-ds     # desired should DROP each time
+   kubectl get ds -A --no-headers | awk '$3!=$4 || $4!=$6'   # must print nothing
+   ```
+
+   kube-vip's desired count follows the control-plane label, so it should read
+   6 → 5 → 4 → 3 in step with the demotions. If it does not, check the node
+   labels -- do not adjust the number.
    * k8s-2 first: 11 pods, lowest risk, and it proves the playbook.
    * k8s-5 second: ~44 pods including Pi-hole (LAN DNS) and a CoreDNS replica.
      Expect real churn. Ansible itself is immune — the inventory carries
