@@ -84,8 +84,17 @@ template:
           - name: DOCKER_CERT_PATH
             value: /certs/client
         resources:
-          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
-          limits: {memory: 4Gi, ephemeral-storage: 12Gi}
+          # 2026-08-21 first-run lesson: the BUILD + 10.9k-test suite runs in
+          # THIS container (dind only hosts the NDepend docker run), and a
+          # 4Gi limit OOM-killed the runner mid-build — GitHub saw the runner
+          # vanish (assigned job=0), ARC cleaned up the pod, the job died
+          # with empty step conclusions and no logs. Hosted runners give
+          # ~7GB and the exit-143 history says even that was marginal.
+          # cpu request 4 + memory request 8Gi deliberately steer the pod to
+          # the large nodes (k8s-4/5: 32/47Gi allocatable) and off 4-CPU/16Gi
+          # members + 2-CPU k8s-6. No CPU limit — repo standing rule.
+          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
+          limits: {memory: 16Gi, ephemeral-storage: 12Gi}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities: {drop: ["ALL"]}
