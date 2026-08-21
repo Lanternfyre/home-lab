@@ -27,9 +27,18 @@ cilium_namespace: kube-system
 #                 unconditionally. Stage 5a of CILIUM-MIGRATION.md.
 #
 # ⚠️ Moving to `production` is the single riskiest change in Phase 3: it makes
-# the 6 argocd NetworkPolicies enforceable for the first time in their
-# existence. The role REFUSES to do it while any node is unmigrated.
-cilium_stage: migration
+# every NetworkPolicy in the cluster enforceable. The role REFUSES to do it
+# while any node is unmigrated.
+#
+# 2026-08-21 -- flipped to `production` (ARC v4 "footgun #1" fix). The LIVE
+# cluster has run production-mode policy since the migration finished; leaving
+# `migration` committed here meant the next site.yml converge would have
+# silently REGRESSED the running cluster back to migration values. The
+# preflight guard above still protects the flip itself: a converge refuses
+# while any node lacks the io.cilium.migration/cilium-default label -- which
+# today means k8s-6 must be labeled (50-ci-taint.yml's sibling concern, see
+# the ARC v4 plan C2b) before this converges clean.
+cilium_stage: production
 
 # Single source of truth for values, deliberately NOT copied into the role —
 # same reasoning as argocd_values_file. gitops/cilium-values-*.yaml are real
