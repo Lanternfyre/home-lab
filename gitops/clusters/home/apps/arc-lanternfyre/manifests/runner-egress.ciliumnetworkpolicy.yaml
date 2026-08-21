@@ -91,3 +91,23 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+
+    # Certificate revocation infrastructure — plain HTTP :80 by design (CRL
+    # and OCSP are pre-TLS protocols). Found the hard way (2026-08-21):
+    # Metalama's compile-time assemblies are Authenticode-signed and .NET
+    # validates the chain, phoning OCSP/CRL; the 443-only policy silently
+    # dropped it, the check hung, and Metalama's 120s temp-project budget
+    # blew as LAMA0083 "could not build the internal project". Hubble showed
+    # 160+ drops to crl3/crl4/ocsp.digicert.com + ts-ocsp.ws.symantec.com.
+    # Extend this list from `hubble observe --verdict DROPPED` evidence, not
+    # guesswork. Port 80 ONLY here — nothing else widens.
+    - toFQDNs:
+        - matchPattern: "*.digicert.com"
+        - matchPattern: "*.ws.symantec.com"
+        - matchName: crl.microsoft.com
+        - matchName: oneocsp.microsoft.com
+        - matchName: www.microsoft.com
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
