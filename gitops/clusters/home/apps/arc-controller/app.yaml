@@ -1,0 +1,10 @@
+#Notice chart name has to be a part of repoURL for oci
+# ARC controller (gha-runner-scale-set-controller). Pinned 0.14.2 -- the last
+# release carrying flags.updateStrategy (removed on master by ARC PR #4516,
+# in-place upgrades); re-read the release notes before any chart bump, the
+# eventual/immediate tradeoff the runner scale sets rely on dissolves there.
+repoURL: "ghcr.io/actions/actions-runner-controller-charts"
+chart: "gha-runner-scale-set-controller"
+targetRevision: "0.14.2"
+releaseName: "arc-controller"
+namespace: "arc-systems"
