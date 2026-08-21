@@ -39,19 +39,17 @@ crds:
 # This scrape feeds the ARC CI etcd WAL-fsync p99 canary
 # (manifests/ci-guards.prometheusrule.yaml) — the standing guard for CI
 # runners co-scheduling with etcd members.
+#
+# ⚠️ 2026-08-21 follow-up: the endpoints mechanism DOES NOT WORK under this
+# ArgoCD — it renders a static v1 Endpoints object, and ArgoCD v3's default
+# resource.exclusions silently never apply Endpoints/EndpointSlice. The real
+# scrape lives in prometheusSpec.additionalScrapeConfigs above (job_name
+# kube-etcd, static targets). kubeEtcd is disabled to remove the dead
+# Service/ServiceMonitor pair that produced zero targets; the chart's etcd
+# defaultRules stay active via defaultRules.rules (they match
+# job=~".*etcd.*", which the static job satisfies).
 kubeEtcd:
-  enabled: true
-  endpoints:
-    - 192.168.33.3    # k8s-1
-    - 192.168.33.2    # k8s-2
-    - 192.168.33.7    # k8s-3
-    - 192.168.33.21   # k8s-4
-    - 192.168.33.22   # k8s-5
-    - 192.168.33.20   # k8s-6
-  service:
-    enabled: true
-    port: 2381
-    targetPort: 2381
+  enabled: false
 
 kubeScheduler:
   enabled: false
@@ -160,6 +158,29 @@ prometheus:
     # follow-up it could not do from its own repo.
     enableFeatures:
       - exemplar-storage
+
+    # ── etcd scrape, the way that actually works under ArgoCD ────────────────
+    # The kubeEtcd.endpoints mechanism below renders a static v1 Endpoints
+    # object — and ArgoCD v3's DEFAULT resource.exclusions drop Endpoints +
+    # EndpointSlice, so the object renders in helm and is silently never
+    # applied (verified 2026-08-21: chart renders it at --kube-version 1.35,
+    # app resource list doesn't contain it, argocd-cm exclusions list both
+    # kinds). A static scrape job involves no Endpoints object at all.
+    # job_name "kube-etcd" on purpose: the chart's own etcd defaultRules and
+    # the ci-guards canary both match it.
+    # ⚠️ Same maintenance duty as the kubeEtcd comment: this is the CURRENT
+    # server set — demotions remove an IP here, promotions add one.
+    additionalScrapeConfigs:
+      - job_name: kube-etcd
+        metrics_path: /metrics
+        static_configs:
+          - targets:
+              - 192.168.33.3:2381    # k8s-1
+              - 192.168.33.2:2381    # k8s-2
+              - 192.168.33.7:2381    # k8s-3
+              - 192.168.33.21:2381   # k8s-4
+              - 192.168.33.22:2381   # k8s-5
+              - 192.168.33.20:2381   # k8s-6
 
 # ── Alerts actually reach a human ────────────────────────────────────────────
 # Until 2026-08-03 the ONLY receiver was `name: "null"`. Every alert the
