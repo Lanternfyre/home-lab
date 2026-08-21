@@ -90,13 +90,42 @@
       changed_when: false
       check_mode: false
 
-    - name: "preflight | assert policy is never"
+    # Post-migration straggler case (2026-08-21, k8s-6): the cluster finished
+    # the migration and runs enable-policy=default (production posture), and
+    # then a NEW node joined on flannel. The original assert would force the
+    # whole cluster back to 'never' to migrate one straggler. The risk the
+    # assert guards against -- enforcement dropping cross-CNI traffic -- only
+    # exists if policy OBJECTS exist, so 'default' is acceptable exactly when
+    # the cluster holds ZERO NetworkPolicy/CiliumNetworkPolicy/CCNP objects
+    # (enforcement with no policies allows everything). That emptiness is
+    # PROVEN here, not assumed. The moment real policies land (the ARC CI
+    # egress CNP will be the first), a straggler migration goes back to
+    # requiring the policy-off window this assert always demanded.
+    - name: "preflight | count policy objects cluster-wide"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        { /usr/local/bin/k3s kubectl get networkpolicies -A --no-headers 2>/dev/null;
+          /usr/local/bin/k3s kubectl get ciliumnetworkpolicies -A --no-headers 2>/dev/null;
+          /usr/local/bin/k3s kubectl get ciliumclusterwidenetworkpolicies --no-headers 2>/dev/null;
+        } | wc -l
+      args:
+        executable: /bin/bash
+      register: pf_polcount
+      changed_when: false
+      check_mode: false
+
+    - name: "preflight | assert policy is never (or default with zero policy objects)"
       ansible.builtin.assert:
-        that: pf_policy.stdout | trim == 'never'
+        that: >-
+          pf_policy.stdout | trim == 'never'
+          or (pf_policy.stdout | trim == 'default'
+              and (pf_polcount.stdout | trim | int) == 0)
         fail_msg: >-
-          cilium enable-policy is '{{ pf_policy.stdout | trim }}', expected
-          'never'. Migrating nodes with policy live risks dropping traffic
-          between migrated and unmigrated pods.
+          cilium enable-policy is '{{ pf_policy.stdout | trim }}' with
+          {{ pf_polcount.stdout | trim }} policy object(s) present. Migrating
+          nodes with live policy risks dropping traffic between migrated and
+          unmigrated pods. Either migrate inside a policy-off window
+          (enable-policy=never) or remove/complete the policies first.
 
     - name: "preflight | every node Ready"
       ansible.builtin.shell: >-
