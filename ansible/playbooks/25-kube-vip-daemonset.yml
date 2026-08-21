@@ -33,6 +33,9 @@
 
 - name: Pre-flight -- the VIP must be healthy BEFORE we touch it
   hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  # NOTE: must use groups[...] directly, NOT the k3s_control_plane_host var.
+  # A `hosts:` line is evaluated before any host is bound, so host/group vars
+  # are not in scope there -- only magic vars like `groups` are.
   gather_facts: false
   any_errors_fatal: true
   vars_files:
@@ -62,7 +65,7 @@
     - name: Every node is reachable
       ansible.builtin.ping:
       delegate_to: "{{ item }}"
-      loop: "{{ groups['k3s_servers'] }}"
+      loop: "{{ groups['k3s_nodes'] }}"
       check_mode: false
 
     - name: Report the starting point
@@ -89,6 +92,9 @@
 
 - name: Verify -- assert behaviour, not that a manifest was written
   hosts: "{{ kube_vip_manifest_host | default(groups['k3s_servers'][0]) }}"
+  # NOTE: must use groups[...] directly, NOT the k3s_control_plane_host var.
+  # A `hosts:` line is evaluated before any host is bound, so host/group vars
+  # are not in scope there -- only magic vars like `groups` are.
   gather_facts: false
   any_errors_fatal: true
   vars_files:
@@ -167,7 +173,7 @@
       ansible.builtin.debug:
         msg: >-
           kube-vip is now a DaemonSet: {{ kv_ds.stdout | default('n/a') }}
-          (desired/ready) across {{ groups['k3s_servers'] | length }} nodes.
+          (desired/ready) across {{ groups['k3s_servers'] | length }} control-plane nodes.
           VIP lease {{ kube_vip_lease_name }} held by
           {{ kv_lease.stdout | default('n/a') }}.
           Restart counts: {{ kv_restarts.stdout | default('n/a') }}.

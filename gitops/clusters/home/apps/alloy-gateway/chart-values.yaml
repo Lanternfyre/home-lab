@@ -169,3 +169,23 @@ rbac:
 
 serviceAccount:
   create: true
+
+# ── Monitor the ingest hub ───────────────────────────────────────────────────
+# Everything from outside the cluster lands here: Necronia's OTLP metrics, logs
+# and traces, Faro browser telemetry, Pyroscope profiles. One replica, no
+# monitoring at all until 2026-08-17 -- if this silently stopped relaying, the
+# only symptom would be dashboards going quiet, which is indistinguishable from
+# "the dev server is off" (and that is its normal state).
+#
+# Verified present on this endpoint before any alert was written against it:
+# alloy_config_last_load_successful, alloy_component_controller_running_components,
+# otelcol_receiver_{accepted,refused,failed}_*, otelcol_exporter_send_failed_*,
+# prometheus_remote_storage_samples_{total,failed_total}.
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: prometheus-operator
+  relabelings:
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+      action: replace

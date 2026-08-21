@@ -74,11 +74,46 @@
         /usr/local/bin/k3s kubectl get nodes -o jsonpath='{.items[0].status.nodeInfo.kubeletVersion}'
       register: live_version
       changed_when: false
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     - name: Show what we will install
       ansible.builtin.debug:
         msg: "Joining at the cluster's live version: {{ live_version.stdout }}"
+
+    # ── The join token ──────────────────────────────────────────────────
+    # This used to be a bare `{{ k3s_token }}` that was defined NOWHERE -- no
+    # group_vars, no vault, no host_vars -- so the play died on an undefined
+    # variable before installing anything. Read it from the cluster instead:
+    # the live node-token is the only authoritative copy, and pulling it here
+    # avoids committing a second one.
+    - name: "token | read the join token from a live server"
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token   # 0600 root -- hence become
+      register: k3s_token_raw
+      delegate_to: "{{ k3s_control_plane_host }}"
+      become: true
+      check_mode: false
+      when: k3s_token is not defined
+
+    - name: "token | expose it"
+      ansible.builtin.set_fact:
+        # `| trim` is not cosmetic: a trailing newline inside K3S_TOKEN="..."
+        # is accepted by the shell and then rejected by the server, which
+        # surfaces as a generic TLS/auth failure rather than "bad token".
+        k3s_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+      no_log: true
+      when: k3s_token is not defined
+
+    - name: "token | refuse to install without one"
+      ansible.builtin.assert:
+        that: (k3s_token | default('') | trim | length) > 0
+        fail_msg: >-
+          No join token. It is read from /var/lib/rancher/k3s/server/node-token
+          on {{ k3s_control_plane_host }}. If that node is down, pass
+          -e k3s_token=... from any other server. Do NOT proceed without one:
+          installing with an empty token does not fail, it starts a BRAND NEW
+          single-node cluster, which looks exactly like "the node joined but is
+          empty".
 
     - name: Write config.yaml BEFORE installing
       ansible.builtin.include_role:
@@ -88,23 +123,99 @@
       # nodes had no config.yaml at all, so their deploy controllers kept
       # rewriting traefik.yaml while the others deleted it -- 580+ crashloops.
 
-    - name: Install k3s and join
+    # INSTALL_K3S_EXEC follows the node's group in the inventory. It decides
+    # far more than the command: the installer sets SYSTEM_NAME from it, so a
+    # server gets k3s.service + k3s-uninstall.sh and an agent gets
+    # k3s-agent.service + k3s-agent-uninstall.sh. Getting it wrong does not
+    # error -- it silently builds the other kind of node.
+    #
+    # No K3S_URL is needed even for an agent: config.yaml (written above)
+    # carries `server:`, which is the same mechanism every server already uses
+    # to find the VIP.
+    - name: "Install k3s and join as {{ k3s_role }}"
       ansible.builtin.shell: |
         curl -sfL https://get.k3s.io | \
           INSTALL_K3S_VERSION={{ live_version.stdout }} \
-          INSTALL_K3S_EXEC="server" \
+          INSTALL_K3S_EXEC="{{ 'server' if k3s_role == 'server' else 'agent' }}" \
           K3S_TOKEN="{{ k3s_token }}" \
           sh -s -
       environment: {}   # keep stray K3S_* out of the regenerated k3s.service.env
+      no_log: true      # the token is on the command line
       args:
         creates: /usr/local/bin/k3s
+
+    # ⚠️ The Node object does NOT exist the moment the installer returns. It
+    # takes a few seconds to register, and cordoning before then fails with
+    # `nodes "k8s-lab6" not found` -- which aborts the play AFTER k3s is
+    # installed and running, leaving the new node Ready, SCHEDULABLE and with
+    # ZERO CSI drivers. That is precisely the k8s-4 condition this playbook
+    # exists to prevent, produced by the very task meant to prevent it.
+    # Observed on the real k8s-6 join, 2026-08-19.
+    - name: Wait for the node to register before cordoning it
+      ansible.builtin.command: "/usr/local/bin/k3s kubectl get node {{ k8s_node_name }} -o name"
+      register: node_registered
+      until: node_registered.rc == 0
+      retries: 30
+      delay: 10
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ k3s_control_plane_host }}"
 
     # CORDON ON JOIN. This inverts the default that trapped k8s-4: a node is
     # untrusted until its storage path is PROVEN, not until it reports Ready.
     - name: Cordon immediately
-      ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name | default(inventory_hostname.split('.')[0]) }}"
-      delegate_to: "{{ groups['k3s_servers'] | first }}"
+      ansible.builtin.shell: "/usr/local/bin/k3s kubectl cordon {{ k8s_node_name }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
       changed_when: true
+
+    # ── Pods that landed on the WRONG CNI ───────────────────────────────
+    #
+    # Flannel is still present in this cluster (its removal is deliberately
+    # deferred -- it runs inside the k3s server process, so it is inert dead
+    # weight rather than a DaemonSet that can be deleted). On an ESTABLISHED
+    # node that costs nothing. On a BRAND-NEW one it does: for the ~60s between
+    # k3s starting and the Cilium agent becoming ready, k3s's own CNI config is
+    # the only one on disk, so DaemonSet pods that start in that window get
+    # flannel addresses and are NOT Cilium endpoints. They are on a different
+    # overlay from every other pod in the cluster.
+    #
+    # Observed on the real k8s-6 join, 2026-08-19: smartctl-exporter and
+    # volume-health-exporter came up on 10.42.3.2/10.42.3.3 while alloy, which
+    # started moments later, correctly got 10.245.5.123. Those two are the
+    # storage-watching exporters, so the effect was that the signals meant to
+    # notice a wedged filesystem were unscrapeable on the newest node -- a
+    # monitoring blind spot on exactly the node least proven.
+    #
+    # 35-cilium-migrate.yml does not cover this: it migrates EXISTING nodes.
+    # Deleting the pods is the whole fix -- they are DaemonSet-managed and come
+    # straight back on Cilium.
+    - name: "Find pods on {{ k8s_node_name }} that are not on the Cilium CIDR"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        /usr/local/bin/k3s kubectl get pods -A --field-selector spec.nodeName={{ k8s_node_name }}
+        -o jsonpath='{range .items[?(@.spec.hostNetwork!=true)]}{.metadata.namespace}/{.metadata.name}/{.status.podIP}{"\n"}{end}'
+        | grep -v '/{{ cilium_pod_cidr_prefix | default("10.245.") }}' | grep -v '//$' || true
+      args: { executable: /bin/bash }
+      register: wrong_cni_pods
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ k3s_control_plane_host }}"
+
+    - name: "Restart them onto Cilium"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl -n {{ item.split('/')[0] }}
+        delete pod {{ item.split('/')[1] }} --wait=false
+      loop: "{{ wrong_cni_pods.stdout_lines | default([]) }}"
+      delegate_to: "{{ k3s_control_plane_host }}"
+      changed_when: true
+      when: wrong_cni_pods.stdout | trim | length > 0
+
+    - name: "Report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ (wrong_cni_pods.stdout_lines | default([]) | length) }} pod(s) had
+          a non-Cilium address on {{ k8s_node_name }} and were restarted:
+          {{ wrong_cni_pods.stdout_lines | default([]) | join(', ') | default('none', true) }}
 
 - name: Post-join verification
   hosts: "{{ target | default('k3s_servers') }}"
@@ -113,9 +224,41 @@
     - node_verify        # includes the csinode.spec.drivers gate
 
   post_tasks:
-    - name: Reminder
+    - name: Joined and cordoned
       ansible.builtin.debug:
         msg: >-
-          {{ inventory_hostname }} is joined and CORDONED. Run the storage
-          proof (a pinned test PVC on this node) before uncordoning. Reporting
-          Ready is NOT sufficient -- k8s-4 was Ready with zero CSI drivers.
+          {{ inventory_hostname }} is joined as {{ k3s_role }} and CORDONED.
+          The storage proof runs next and uncordons only if it passes.
+
+    # Hand the k8s node name to the localhost play below. `target` is a host
+    # PATTERN (it may be one host or a group), so the next play cannot rederive
+    # this -- groups[target] only works when target happens to name a group.
+    - name: Record this node for the storage-proof play
+      ansible.builtin.set_fact:
+        joined_nodes: "{{ (hostvars['localhost'].joined_nodes | default([])) + [k8s_node_name] }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+# Separate play, and deliberately so: the proof runs kubectl on the WORKSTATION
+# with no privilege escalation, while the plays above run as root on the node.
+# `become:`/`delegate_to:` are not valid on a TaskInclude, so a play boundary
+# is the only way out of that play -- same shape as 30-upgrade.yml.
+#
+# This used to be a printed REMINDER to go and run the proof by hand. That is
+# exactly the gap the playbook exists to close: k8s-4 sat Ready, untainted and
+# schedulable with ZERO registered CSI drivers, and a reminder is not a gate.
+# `proof_node` pins the pod with nodeName, which bypasses the scheduler and so
+# works while the node is still cordoned -- which is the whole point.
+- name: Prove storage works on the new node, then return it to service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tasks:
+    - name: Prove and uncordon each node that just joined
+      ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
+      loop: "{{ joined_nodes | default([]) }}"
+      loop_control:
+        loop_var: joined_node
+      when: not ansible_check_mode

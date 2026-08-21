@@ -1,0 +1,18 @@
+---
+ansible_host: 192.168.33.22
+node_nic: enp7s0
+
+# The big node: 20 CPU / 47 GiB, and the only NVMe. It carries ~44 of the
+# cluster's pods, because 96 containers declare no requests at all and the
+# scheduler's NodeResourcesFit scores free-versus-capacity -- so the largest
+# node wins nearly every placement. Draining it is the most disruptive drain in
+# the fleet, and it currently runs Pi-hole, i.e. LAN DNS.
+#
+# History, not current state: joined 2026-07-30 with the wrong
+# /etc/multipath.conf and proven unable to stage a qnap-iscsi volume
+# ("multipath device not found"). Cordoned, then storage-proven and UNCORDONED
+# 2026-08-02.
+#
+# ✅ Re-verified 2026-08-19 (same checks as k8s-4): 1 CSI driver,
+# find_multipaths no, iscsid+multipathd active, inotify 1048576, DNS resolves,
+# not cordoned.

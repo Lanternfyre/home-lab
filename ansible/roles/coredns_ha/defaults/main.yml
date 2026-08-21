@@ -24,4 +24,4 @@ coredns_pdb_manifest_path: /var/lib/rancher/k3s/server/manifests/coredns-pdb.yam
 
 # Which node's manifest directory to write through. Any server works -- the
 # objects are cluster-scoped -- but keeping it on one node keeps one writer.
-coredns_manifest_host: "{{ groups['k3s_servers'] | first }}"
+coredns_manifest_host: "{{ k3s_control_plane_host }}"

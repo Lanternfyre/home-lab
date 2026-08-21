@@ -1,0 +1,36 @@
+# ARC controller values (gha-runner-scale-set-controller 0.14.2).
+#
+# The controller lands ALONE first (with the ci-runner PriorityClass in
+# manifests/) and must sync green BEFORE any arc-lanternfyre* scale set is
+# added -- the scale-set charts depend on this release's CRDs (~360 KB) and on
+# the exact ServiceAccount name below (ARC v4 plan, C4).
+
+flags:
+  # 🔴 P0 #1 -- ARC propagates AutoscalingRunnerSet labels down to the runner
+  # pods and listener it creates. Without this exclusion the children get
+  # stamped with ArgoCD's tracking label while not existing in git, and ArgoCD
+  # PRUNES RUNNING RUNNERS MID-JOB (actions/actions-runner-controller#3533).
+  excludeLabelPropagationPrefixes:
+    - "argocd.argoproj.io/instance"
+
+  # 🔴 P0 #2 -- the AutoscalingRunnerSet CR carries a values-hash annotation,
+  # so ANY values edit mutates it. The default "immediate" recreates the
+  # listener + EphemeralRunnerSet instantly, killing in-flight jobs -- and
+  # with selfHeal: true that fires on every push touching a values file.
+  # "eventual" drains pending/running jobs first. (0.14.x-only flag -- see
+  # the chart-bump warning in app.yaml.)
+  updateStrategy: "eventual"
+
+  # Default "debug" floods Loki.
+  logLevel: "info"
+
+  # Off by default, which leaves a wedged controller looking Ready forever.
+  healthProbeBindAddress: ":8081"
+
+# Metrics ports open (C9). Collection is declared in
+# prometheus/manifests/arc.podmonitor.yaml — monitors must live where the
+# release:prometheus-operator label convention is enforced, see that file.
+metrics:
+  controllerManagerAddr: ":8080"
+  listenerAddr: ":8080"
+  listenerEndpoint: "/metrics"

@@ -5,7 +5,7 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-15
+Last updated: 2026-08-17
 
 ---
 
@@ -41,16 +41,31 @@ each hop is verified before the next.
 
 ---
 
-## 🔴 Do this next — the storage fix is written but NOT applied
+## ✅ Storage fix — APPLIED and verified 2026-08-17
 
-### 0. Converge `no_path_retry` onto the nodes (needs your sudo password)
+### 0. Converge `no_path_retry` onto the nodes — ✅ DONE
 
-**Why this is red.** On 2026-08-08 a partition to the QNAP permanently wedged
-six filesystems — all three `postgres-ha` instances, loki, mealie and
-pihole-data — and they stayed dead for seven days while every dashboard showed
-green. They are recovered now. **The cause is not.** Until this runs, another
-NAS blip does the same thing again; the window before a filesystem is destroyed
-is roughly *five seconds*.
+**This section read 🔴 "written but NOT applied" until 2026-08-17, when a
+preflight run showed all 12 LUNs already at `120`.** The sudo run had happened;
+nothing updated the docs. Both this file and MODERNIZATION.md were telling
+whoever picked the work up next that the cluster was still one NAS blip from
+another week-long outage. Recorded here rather than quietly deleted, because
+"the doc says it is broken and it is not" costs the same kind of time as the
+reverse.
+
+Verify any time — read-only, no sudo, asserts behaviour rather than file
+contents:
+
+```bash
+cd ansible
+ansible-playbook playbooks/90-preflight.yml
+```
+
+`mpath queueing:` must read `mpathX|120` for every LUN; `-` means that LUN is
+**not** protected. `wedged ext4:` must be empty. As of 2026-08-17: 12/12 LUNs
+at 120 across lab2/3/4/5 (lab1 has no PVCs scheduled), nothing wedged.
+
+If it ever needs re-applying — a rebuilt node, a reverted config:
 
 ```bash
 cd ansible
@@ -76,13 +91,12 @@ is recoverable; an aborted journal cost a week. Bounded at 120 rather than
 `queue` (infinite) precisely so a NAS that never comes back degrades the node
 instead of wedging kubelet on it forever.
 
-**Verify it took** — asserts behaviour, not file contents:
-
-```bash
-ansible-playbook playbooks/90-preflight.yml     # no sudo needed
-# "mpath queueing:" must read mpathX|120 for every LUN.
-# "-" means NOT protected. "wedged ext4:" must be empty.
-```
+This is **live behaviour now**, which changes what a future outage looks like
+from the monitoring side. `volume-health-exporter` statfs's every PVC mount, and
+during a partition those calls land in uninterruptible sleep rather than
+returning EIO — so expect `VolumeHealthProbeStale` (the probe blocked) rather
+than `VolumeFilesystemStatfsFailing`. Both page. See the note at the statfs loop
+in `prometheus/manifests/volume-health-exporter.configmap.yaml`.
 
 ### 0b. 🟢 If a volume ever returns EIO after a confirmed unmount+remount
 
@@ -123,8 +137,14 @@ to clear the port, set the flag, and **keep the MetalLB IP** — no delete and
 recreate, so the address does not move and the external-dns records do not
 churn:
 
+✅ **The four below were run on 2026-08-17 and verified.** All five LB addresses
+still answer; all five old NodePorts are closed on all five nodes (25/25);
+`argocd-server:32497`, deliberately left open at the time, still answered — the
+control that proves the probe was not simply returning CLOSED for everything.
+Kept here as the reference form for the remaining services and for any future
+Service.
+
 ```sh
-# After the repo is pushed and ArgoCD has synced, once per service:
 kubectl -n databases patch svc postgres-ha-lb --type=merge -p \
   '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
 
@@ -158,20 +178,71 @@ Then confirm each service still answers on its LB address —
 `192.168.32.10:5432`, `192.168.32.11:6379`, `192.168.32.15:5432`,
 `192.168.32.13:80`. **`Ready` is not the test; a connection is.**
 
+**The remaining seven services** — pihole (4 ports), `argocd-server` (2),
+`mealie` (1) and the two Envoy Gateways (4) — are now covered *going forward*
+by `apps/kyverno/manifests/loadbalancer-no-nodeports.mutatingpolicy.yaml`,
+which sets the flag on every LoadBalancer Service at admission. That is what
+made an `EnvoyProxy` CR unnecessary and what makes the four git-declared
+services durable across a chart upgrade too.
+
+**First verify the policy actually mutates** (creates nothing — server dry-run
+runs the webhook and discards the object):
+
+```sh
+kubectl -n default create service loadbalancer np-probe --tcp=8080:8080 \
+  --dry-run=server -o json | python3 -c '
+import json,sys; s=json.load(sys.stdin)["spec"]
+print("allocateLoadBalancerNodePorts:", s.get("allocateLoadBalancerNodePorts"))
+print("ports:", s["ports"])'
+```
+
+Recorded **before** the policy existed, so the difference is unambiguous:
+
+```
+allocateLoadBalancerNodePorts: True
+ports: [{... 'nodePort': 32769}]
+```
+
+It must now read `False` with no `nodePort`. If it still says `True`, the
+policy is not doing anything — check `kubectl get mpol` status, and remember
+`failurePolicy: Ignore` means a broken policy fails silently by design.
+
+Only once that passes, clear the seven existing allocations (same one-update
+rule as above; port specs taken from the live objects, so `targetPort` names
+and protocols are preserved):
+
+```sh
+kubectl -n argocd patch svc argocd-server --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"protocol":"TCP","targetPort":8080},{"name":"https","port":443,"protocol":"TCP","targetPort":8080}]}}'
+
+kubectl -n dns patch svc pihole-dns-tcp --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"dns","port":53,"protocol":"TCP","targetPort":"dns"}]}}'
+
+kubectl -n dns patch svc pihole-dns-udp --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"dns-udp","port":53,"protocol":"UDP","targetPort":"dns-udp"}]}}'
+
+kubectl -n dns patch svc pihole-web --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"protocol":"TCP","targetPort":"http"},{"name":"https","port":443,"protocol":"TCP","targetPort":"https"}]}}'
+
+kubectl -n home-utils patch svc mealie --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":9000,"protocol":"TCP","targetPort":"http"}]}}'
+
+# ⚠️ These two front ALL 15 HTTPRoutes. Do them last, one at a time, and
+# confirm https://grafana.lab.techyon.dev still loads between the two.
+kubectl -n gateway-envoy patch svc envoy-gateway-envoy-homelab-b0a9a155 --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"https-443","port":443,"protocol":"TCP","targetPort":10443},{"name":"http-80","port":80,"protocol":"TCP","targetPort":10080}]}}'
+
+kubectl -n gateway-envoy patch svc envoy-gateway-envoy-homelab-gated-06cddf46 --type=merge -p \
+  '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"https-443","port":443,"protocol":"TCP","targetPort":10443},{"name":"http-80","port":80,"protocol":"TCP","targetPort":10080}]}}'
+```
+
+The Envoy Services are controller-generated, so if Envoy Gateway ever rebuilds
+them the ports come back — but the policy stamps the flag at creation, so they
+come back **without** node ports. That is the whole reason the policy exists
+rather than seven more patches.
+
 **Still open, deliberately not done here:**
 
-- `pihole-dns-tcp/udp`, `pihole-web` (4 ports), `argocd-server` (2 ports) and
-  `mealie` (1 port) — their charts do **not** expose
-  `allocateLoadBalancerNodePorts` (checked against pihole 2.35.0, argo-cd
-  10.2.2 and mealie 0.1.2). The patch above works on them, but nothing in git
-  would hold the setting, so a chart upgrade silently re-opens the port. Needs
-  either a Kyverno mutate rule or a post-render patch to be durable.
-- The two Envoy Gateway services (4 ports). Envoy Gateway generates them, so
-  changing this needs an `EnvoyProxy` CR with
-  `provider.kubernetes.envoyService.allocateLoadBalancerNodePorts` plus a
-  `parametersRef` from each Gateway. There is no `EnvoyProxy` resource in the
-  repo today, and these two front all 15 HTTPRoutes — worth doing carefully,
-  on its own, not bundled.
 - The genuinely LAN-exposed things a NetworkPolicy **cannot** touch:
   node-exporter `:9100` and metallb-speaker `:7472` **and** `:7473` all serve
   unauthenticated metrics to anything on the LAN (all three fetched from a pod
@@ -213,7 +284,16 @@ throughout — it delivered the value correctly; it cannot know the registry
 rejects it. If you set the new PAT to expire, put a calendar reminder on it,
 because the failure mode is invisible.
 
-### 2b. Fix lab4/lab5 — ✅ lab4 DONE · 🔴 lab5 STILL BLOCKED
+### 2b. Fix lab4/lab5 — ✅ BOTH DONE (lab4 and lab5 uncordoned 2026-08-02)
+
+> **✅ CLOSED. Re-verified by value on 2026-08-19** — this section is kept for
+> the diagnosis, not as an open item. Both nodes now report:
+> `kubectl get csinode` → 1 registered driver each · `find_multipaths no` in
+> `/etc/multipath.conf` · `iscsid` and `multipathd` both `active` ·
+> `fs.inotify.max_user_watches` = 1048576 · external registries resolve ·
+> `.spec.unschedulable` unset, i.e. **neither is cordoned**.
+> The header below used to read "🔴 lab5 STILL BLOCKED"; it had been fixed
+> since 2026-08-02 and the doc simply never caught up.
 
 **Status as of 2026-08-02, measured not assumed:**
 
@@ -642,12 +722,18 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
 
 ## Standing warnings
 
-- **Do not uncordon k8s-lab4** until `kubectl get csinode k8s-lab4` shows a
-  registered driver. It is Ready but cannot mount any QNAP volume; any
-  PVC-bearing pod that lands there hangs in `ContainerCreating` forever.
-- **Do not uncordon k8s-lab5** until a test PVC has been proven to attach there.
-  It has never established an iSCSI session, so its storage path is unproven
-  rather than merely untested.
+- ~~**Do not uncordon k8s-lab4 / k8s-lab5**~~ ✅ Both were repaired and
+  uncordoned 2026-08-02, re-verified 2026-08-19 (see §2b).
+  **The RULE stands for every future node, and it is now enforced rather than
+  remembered:** `40-add-node.yml` and `45-change-node-role.yml` keep a node
+  cordoned until a test PVC actually mounts on it. `Ready` is not the gate —
+  k8s-lab4 sat Ready, untainted and schedulable with zero registered CSI
+  drivers, and any PVC-bearing pod landing there would have hung in
+  `ContainerCreating` forever.
+- **A node being demoted loses its etcd snapshots** along with the rest of
+  `/var/lib/rancher/k3s`. `45-change-node-role.yml` takes a fresh snapshot on a
+  peer first, but there is still no off-cluster backup (see §8 and the Velero
+  note in MODERNIZATION.md).
 - **Never `kubectl patch` the QNAP StorageClasses.** They are chart-managed and
   `selfHeal` silently reverts imperative patches. Change them in git.
 - **Backups live on the same NAS as the data.** They cover driver bugs,

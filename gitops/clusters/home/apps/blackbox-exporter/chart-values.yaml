@@ -98,6 +98,9 @@ serviceMonitor:
     - name: k8s-node-5
       url: 192.168.33.22
       module: icmp
+    - name: k8s-node-6
+      url: 192.168.33.20
+      module: icmp
 
     # --- Powerline link (paired TP-Link adapters) ---
     # Zero services on either adapter but they still ARP-reply; drops in

@@ -60,3 +60,29 @@ rbac:
 
 serviceAccount:
   create: true
+
+# ── Monitor the thing that does the monitoring ───────────────────────────────
+# Until 2026-08-17 there were ZERO alloy_* series in Prometheus. This DaemonSet
+# ships every pod log in the cluster into Loki, and nothing watched whether it
+# was succeeding. That is the 2026-08-08 shape again: the component that would
+# tell you is the component that is down.
+#
+# It was not hypothetical. The first scrape of this endpoint, done by hand,
+# found loki_write_dropped_entries_total{reason="ingester_error"} at 7.2 MILLION
+# against 13.2 million sent, on every node. (Measured further before panicking:
+# the counter has not moved in 60s, so it is a historical replay of entries
+# older than Loki's 14d retention -- "timestamp too old" -- not current loss.
+# Correct to drop; wrong that nobody could see it either way.)
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    # Mandatory -- the Prometheus CR's serviceMonitorSelector matches on this.
+    # Without it the object exists, reads correctly, and is loaded by nobody.
+    release: prometheus-operator
+  relabelings:
+    # Same node-label promotion as node-exporter and smartctl-exporter, and for
+    # the same reason: the Pushover template prints {{ .Labels.node }} and
+    # renders it empty otherwise.
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      targetLabel: node
+      action: replace

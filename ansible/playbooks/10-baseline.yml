@@ -11,7 +11,7 @@
 # another. These changes do not restart k3s or evict pods, but multipathd and
 # systemd-resolved do bounce, and doing that on all five at once is needless.
 - name: Node baseline
-  hosts: k3s_servers
+  hosts: k3s_nodes
   serial: 1
   any_errors_fatal: true
   gather_facts: true
@@ -29,7 +29,7 @@
         timeout: 5
 
 - name: Verify
-  hosts: k3s_servers
+  hosts: k3s_nodes
   serial: 1
   any_errors_fatal: true
   gather_facts: false

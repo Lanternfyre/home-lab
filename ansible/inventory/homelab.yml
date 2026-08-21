@@ -11,54 +11,84 @@
 # that node), .home resolution died mid-run, and the playbook reported the node
 # it was upgrading as UNREACHABLE.
 #
-# Every host therefore carries an explicit `ansible_host` IP. Ansible now
-# resolves NOTHING, so a DNS outage -- including one this playbook causes --
-# cannot stop it from finishing or from repairing the cluster.
+# Every host therefore carries an explicit `ansible_host` IP, in host_vars/.
+# Ansible resolves NOTHING, so a DNS outage -- including one this playbook
+# causes -- cannot stop it from finishing or from repairing the cluster.
 # The names are kept as inventory_hostname because the rest of the repo,
 # _captured/ paths included, refers to them.
 #
-# There is deliberately NO k3s_agents group. Every node in this cluster joined
-# with `k3s server`, so all five are control-plane + etcd members. Adding an
-# agents group would invite a future join to use INSTALL_K3S_EXEC="agent",
-# which would be a silent topology change.
+# ── THIS FILE IS THE TOPOLOGY, AND NOTHING ELSE ──────────────────────────────
+#
+# Per-host detail (ansible_host, node_nic, history) lives in host_vars/, so
+# that changing a node's ROLE is moving ONE line between the two groups below
+# and nothing else has to be relocated. That is the whole point of the split.
+#
+# ⚠️ Moving a line here does NOT change the node. It changes the DESIRED state.
+# k3s cannot convert a node between server and agent in place -- once an etcd
+# datastore exists on disk it ignores the datastore arguments entirely -- so a
+# role change is uninstall + rejoin, and only ONE playbook is allowed to do it:
+#
+#   ansible-playbook playbooks/45-change-node-role.yml --ask-become-pass \
+#     -e target=k8s-2.home
+#
+# It reads the desired role from these groups, detects the actual role from the
+# node, and REFUSES if they already agree (the usual operator error is running
+# it before moving the line, or twice).
+#
+# ── Why there IS a k3s_agents group now (2026-08-19) ─────────────────────────
+#
+# This file used to say, in bold, that there deliberately was NO agents group,
+# because "adding one would invite a future join to use INSTALL_K3S_EXEC=agent,
+# which would be a silent topology change". The risk was real; the remedy was
+# not. It was written when the cluster was five nodes and five was odd, and it
+# traded a topology we could not express for one we could not change.
+#
+# What actually makes a role change safe is that it is EXPLICIT and CHECKED,
+# and that is now true: role is declared here, derived into `k3s_role` by
+# group_vars/k3s_servers.yml and group_vars/k3s_agents.yml, rendered into a
+# role-aware config.yaml, and a mismatch between this file and the live node is
+# something 45-change-node-role.yml detects and refuses rather than papers over.
+# Nothing silently reads "agent" any more -- it has to be written down here.
+#
+# Six etcd members would also have been strictly worse than three: identical
+# failure tolerance, more write fan-out, more nodes that can break quorum.
 
 all:
   children:
-    k3s_servers:
-      hosts:
-        k8s-1.home:
-          ansible_host: 192.168.33.3
-          # The node that ORIGINALLY ran --cluster-init, and the historical
-          # kube-vip holder. Upgrade and migration orders still put it last.
-          #
-          # ⚠️ `k3s_cluster_init: true` deliberately does NOT live here any
-          # more. It was a rebuild landmine: k3s_config renders
-          # `cluster-init: true` from it, and 40-add-node.yml writes config.yaml
-          # BEFORE installing. So rebuilding k8s-1 after a disk failure would
-          # have brought up a BRAND NEW EMPTY CLUSTER of one, while the four
-          # survivors carried on — and it would have looked like "k8s-1 came
-          # back but the cluster is wrong".
-          #
-          # It is correct exactly once, on a greenfield cluster, and wrong
-          # forever after. So it is now an explicit bootstrap-time flag:
-          #   ansible-playbook playbooks/40-add-node.yml -e target=k8s-1.home \
-          #     -e k3s_cluster_init=true
-          # Rebuilding k8s-1 into the EXISTING cluster needs no flag at all —
-          # it joins via the VIP like every other node.
-          node_nic: eno1
-        k8s-2.home:
-          ansible_host: 192.168.33.2
-          node_nic: eno1
-        k8s-3.home:
-          ansible_host: 192.168.33.7
-          node_nic: eno1
-        k8s-4.home:
-          ansible_host: 192.168.33.21
-          # Joined 2026-07-30. Resolver stub wedged; cannot pull images.
-          # Wrong multipath.conf; iscsid inactive. CORDONED.
-          node_nic: enp0s31f6
-        k8s-5.home:
-          ansible_host: 192.168.33.22
-          # Joined 2026-07-30. Wrong multipath.conf -- proven unable to stage a
-          # qnap-iscsi volume ("multipath device not found"). CORDONED.
-          node_nic: enp7s0
+
+    # Every machine in the cluster. Use this for anything that is true of a
+    # node regardless of role: OS baseline, verification, upgrades, CNI, and
+    # "is the whole fleet reachable" checks.
+    k3s_nodes:
+      children:
+
+        # Control plane + etcd members. Use this group -- NOT k3s_nodes -- for
+        # anything that needs a local apiserver, a kubeconfig, an etcd
+        # datastore, or /var/lib/rancher/k3s/server/. Every `delegate_to:
+        # groups['k3s_servers'] | first` in this repo means exactly that.
+        #
+        # ⚠️ Keep k8s-1.home FIRST. `order: reverse_inventory` in
+        # 20-config-converge.yml and 30-upgrade.yml exists to roll k8s-1 LAST,
+        # and with child groups Ansible orders by group order then host order.
+        # Reordering these lines silently changes which node goes last.
+        #
+        # ⚠️ An ODD count. 3 tolerates one loss; 4 also tolerates only one.
+        k3s_servers:
+          hosts:
+            k8s-1.home:
+            k8s-2.home:
+            k8s-3.home:
+            k8s-4.home:
+            k8s-5.home:
+            k8s-6.home:
+
+        # Workers. No etcd, no apiserver, no server/manifests directory. They
+        # run `k3s-agent.service`, not `k3s.service` -- see k3s_unit in
+        # group_vars/all.yml.
+        #
+        # Deliberately empty right now: k8s-2, k8s-3 and k8s-5 are still
+        # servers, and each moves down here one at a time as
+        # 45-change-node-role.yml demotes it. Target end state is
+        # servers {k8s-1, k8s-4, k8s-6} and agents {k8s-2, k8s-3, k8s-5}.
+        k3s_agents:
+          hosts: {}

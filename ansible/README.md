@@ -116,20 +116,56 @@ playbooks/90-preflight.yml      read-only audit
   `stub-resolv.conf` and lab1/2/3 have been healthy that way for 211 days. The
   runbook's symlink step was never applied on any node; changing it now is an
   unverified behaviour change for no observed benefit.
-* **No `k3s_agents` group.** All five nodes joined with `k3s server`. An agents
-  group would invite a future join to use `INSTALL_K3S_EXEC="agent"`, which
-  would be a silent topology change.
+* **~~No `k3s_agents` group.~~ REVERSED 2026-08-19.** This used to read: *"All
+  five nodes joined with `k3s server`. An agents group would invite a future
+  join to use `INSTALL_K3S_EXEC="agent"`, which would be a silent topology
+  change."* The risk was real; the remedy was not. It was written when the
+  cluster was five nodes and five was odd, and it traded a topology we could
+  not express for one we could not change.
+
+  What makes a role change safe is that it is **explicit and checked**, and that
+  is now true. Role is declared by inventory group, derived into `k3s_role`,
+  rendered into a role-aware `config.yaml`, and a disagreement between the
+  inventory and the live node is something `45-change-node-role.yml` detects and
+  refuses. Nothing reads "agent" silently — it has to be written down.
+
+  Six etcd members would also have been strictly worse than three: identical
+  failure tolerance, more write fan-out, more nodes that can break quorum.
 * **Purpose-built roles, nothing vendored.** `k3s-io/k3s-ansible` and
   `techno-tim/k3s-ansible` are greenfield installers; several ship a `reset.yml`
   that wipes `/var/lib/rancher/k3s`, and techno-tim's bundles its own kube-vip
   and MetalLB that would collide with the ones already running here.
 
-## Not yet written
+## Roles and groups
 
-`k3s_config` (owns `/etc/rancher/k3s/config.yaml`), `k3s_manifests` (kube-vip
-DaemonSet), `30-upgrade.yml` (the rolling upgrade), `40-add-node.yml`.
+The inventory has one parent group and two children, and the distinction is
+load-bearing in about 55 places:
 
-⚠️ When `k3s_config` lands, remember its scope must include **systemd drop-ins**,
-not just `config.yaml`: lab2–lab5 have `--server https://192.168.32.2:6443`
-baked into their unit files, and k3s CLI arguments take precedence over the
-config file. "Ansible owns config.yaml" is not sufficient to repoint them.
+| group | means | use it for |
+|---|---|---|
+| `k3s_nodes` | every machine | OS baseline, verification, upgrades, CNI, fleet-wide counts |
+| `k3s_servers` | control-plane + etcd | anything needing a local apiserver, a kubeconfig, etcd on `:2381`, or `/var/lib/rancher/k3s/server/` — including every `delegate_to` |
+| `k3s_agents` | workers | membership only; there is no play that targets agents alone |
+
+Three vars are derived from that, all defined once in `group_vars/`:
+`k3s_role` (`server`/`agent`), `k3s_unit` (`k3s`/`k3s-agent` — an agent has no
+`k3s.service` at all), and `k3s_control_plane_host` (the delegation target).
+
+⚠️ **Audit by command, not by group name.** `k3s kubectl` run locally works only
+on a server. Any task that shells it, reads `k3s.yaml`, or touches
+`server/manifests/` must either delegate to `k3s_control_plane_host` or be
+gated on `k3s_role`. Grepping for the group name alone misses these.
+
+⚠️ `hosts:` is evaluated before any host is bound, so host and group vars are
+**not** in scope there — only magic vars like `groups`. Use
+`groups['k3s_servers'][0]`, not `k3s_control_plane_host`, in a `hosts:` line.
+
+## History: what this section used to say
+
+It used to list `k3s_config`, `k3s_manifests`, `30-upgrade.yml` and
+`40-add-node.yml` as "not yet written". All of them exist. Its warning was
+discharged: `k3s_config`'s scope does include **systemd drop-ins**, because
+k3s CLI arguments take precedence over `config.yaml` and lab2–lab5 had
+`--server https://192.168.32.2:6443` baked into their unit files. Those units
+have since been normalised to a bare `ExecStart`, so `config.yaml` is
+authoritative.

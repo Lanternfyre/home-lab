@@ -26,18 +26,24 @@ EXISTS   every metric name referenced by an `expr` is in the live __name__ index
 
 Known-absent metrics
 --------------------
-Two classes are absent for legitimate reasons and are allow-listed below:
+Absence has three causes and only one of them is a bug:
 
   NEVER_OBSERVED   OpenTelemetry does not export a counter until it is first
                    incremented, so counters for rare events (packet drops,
                    contained faults, write-behind rejections) genuinely do not
-                   exist yet. The Necronia server also runs on the dev machine
-                   and is off most of the time.
+                   exist yet. Hand-maintained list below.
 
-  PENDING_SCRAPE   Metrics that will appear once a recently added scrape config
-                   has synced. Prune entries once they show up -- a stale entry
-                   here hides a real typo, which is the exact failure this
-                   script exists to catch.
+  producer down    The job or service the query names has NO series at all.
+                   Detected automatically per query -- these are reported as
+                   NOT CHECKED, never as failures, because absence proves
+                   nothing while the producer is off. This Prometheus is
+                   emptyDir with 10d retention, so a pod restart empties the
+                   index for every producer that is not currently writing.
+
+  a real bug       Everything else. This is what the script is for.
+
+`--strict` disables NEVER_OBSERVED. The producer check is not disableable:
+turning it off would not make the answer more accurate, only more confident.
 
 Exit codes
 ----------
@@ -86,31 +92,32 @@ NEVER_OBSERVED = {
     "necronia_scripting_timeouts_total",
 }
 
-# Arrive once gitops/clusters/home/apps/prometheus/manifests/cnpg.podmonitor.yaml
-# has synced and CNPG has been scraped at least once. Delete this set then.
-PENDING_SCRAPE = {
-    "cnpg_backends_max_tx_duration_seconds",
-    "cnpg_backends_total",
-    "cnpg_backends_waiting_total",
-    "cnpg_collector_last_collection_error",
-    "cnpg_collector_nodes_used",
-    "cnpg_collector_pg_wal",
-    "cnpg_collector_up",
-    "cnpg_pg_database_size_bytes",
-    "cnpg_pg_database_xid_age",
-    "cnpg_pg_replication_lag",
-    "cnpg_pg_replication_streaming_replicas",
-    "cnpg_pg_stat_database_blks_hit",
-    "cnpg_pg_stat_database_blks_read",
-    "cnpg_pg_stat_database_conflicts",
-    "cnpg_pg_stat_database_deadlocks",
-    "cnpg_pg_stat_database_tup_deleted",
-    "cnpg_pg_stat_database_tup_fetched",
-    "cnpg_pg_stat_database_tup_inserted",
-    "cnpg_pg_stat_database_tup_updated",
-    "cnpg_pg_stat_database_xact_commit",
-    "cnpg_pg_stat_database_xact_rollback",
-}
+# (A PENDING_SCRAPE set lived here while the CNPG PodMonitor was in flight.
+# Removed 2026-08-17 once cnpg_* was confirmed live -- a stale entry in a set
+# like that hides a real typo, which is the failure this script exists to catch.)
+PENDING_SCRAPE = set()
+
+# Absence is not evidence when the producer is simply not running.
+#
+# The __name__ index only knows what is currently IN THE TSDB, and this
+# Prometheus is deliberately emptyDir with 10d retention. So a name disappears
+# from it for two completely different reasons: it never existed (a real bug,
+# the thing this script hunts) or its producer has not written recently
+# (nothing wrong at all).
+#
+# Not hypothetical. Within hours of this script being written, a Prometheus pod
+# restart wiped the TSDB while the Necronia dev server -- a workstation process,
+# off most of the time -- was down, and the audit reported 81 failures against
+# metric names it had itself verified as live that morning. An audit that cries
+# wolf gets muted, and a muted audit is worth the same as no audit.
+#
+# The producer is read from the QUERY rather than from a table of name
+# prefixes. A first attempt used prefixes and immediately mis-classified
+# `target_info{job="necronia-server"}`, which comes from that same dead
+# producer but shares no prefix with it. The expression already says who it is
+# asking about; believe it.
+PRODUCER_SELECTOR = re.compile(r'\b(job|service)\s*=\s*"([^"]+)"')
+
 
 # PromQL keywords and functions -- identifiers that are not metric names.
 RESERVED = {
@@ -197,11 +204,27 @@ def main() -> int:
         print("could not read the Prometheus __name__ index", file=sys.stderr)
         return 2
     allowed = set() if args.strict else NEVER_OBSERVED | PENDING_SCRAPE
+
+    live_producer = {}   # (label, value) -> bool, memoised across dashboards
+
+    def producer_alive(expr):
+        """False only when the expr names a job/service that has NO series."""
+        m = PRODUCER_SELECTOR.search(expr)
+        if not m:
+            return True                      # no producer claimed -> judge it
+        key = (m.group(1), m.group(2))
+        if key not in live_producer:
+            sel = urllib.parse.quote('{%s="%s"}' % key)
+            live_producer[key] = bool(
+                prom("/api/v1/series?match[]=" + sel).get("data"))
+        return live_producer[key]
+
     paths = args.paths or sorted(glob.glob(DASHBOARD_GLOB))
     if not args.quiet:
         print(f"{len(known)} metric names live; auditing {len(paths)} dashboards\n")
 
     failures = 0
+    skipped = set()
     for path in paths:
         problems = []
         for title, expr in targets(path):
@@ -210,10 +233,15 @@ def main() -> int:
             if r.get("status") != "success":
                 problems.append(f"PARSE   {title}: {r.get('error', 'unparseable')}")
                 continue
-            missing = sorted(n for n in metric_names(expr)
-                             if n not in known and n not in allowed)
-            if missing:
+            missing = [n for n in sorted(metric_names(expr))
+                       if n not in known and n not in allowed]
+            if not missing:
+                continue
+            # A name whose producer is offline proves nothing either way.
+            if producer_alive(expr):
                 problems.append(f"EXISTS  {title}: {', '.join(missing)}")
+            else:
+                skipped.update(missing)
         failures += len(problems)
         if problems:
             print(f"FAIL  {path}")
@@ -222,6 +250,13 @@ def main() -> int:
         elif not args.quiet:
             print(f"ok    {path}")
 
+    if skipped and not args.quiet:
+        dead = sorted(f'{k}="{v}"' for (k, v), up in live_producer.items()
+                      if not up)
+        print(f"\n{len(skipped)} name(s) NOT CHECKED -- their producer has no "
+              f"series at all right now ({', '.join(dead)}).")
+        print("Absence proves nothing while the producer is down. Re-run with "
+              "it up for a real verdict.")
     print(f"\n{failures} problem(s)")
     return 1 if failures else 0
 

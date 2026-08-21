@@ -1,0 +1,110 @@
+# Standing guards for the ARC-CI-on-server-nodes trade-off (ARC v4, C9).
+#
+# CI runner pods schedule cluster-wide, which puts CI I/O on nodes that are
+# live etcd members. The v3 plan removed that risk with node demotions; v4
+# accepted it and made THESE alerts + the runner pods' ephemeral-storage
+# limits + the 50-ci-taint.yml reserve switch the permanent guards. If the
+# WAL alert fires during CI runs, the answer is the taint switch, not tuning
+# this threshold.
+#
+# House rule (see smartctl alerts): every expression validated against live
+# Prometheus before commit, straight AND inverted. 2026-08-21:
+#   - fs-below-15%:  0 firing / 6 series inverted (one per node, ext4 /).
+#   - DiskPressure:  0 firing / 18 series inverted (6 nodes × 3 statuses).
+#   - WAL p99: NOT YET VALIDATABLE — zero etcd_disk_* series exist until the
+#     k3s etcd-expose-metrics converge lands (same PR, ansible side). The
+#     expression is empty-when-absent by construction (histogram_quantile
+#     over no series returns nothing), so it stays SILENT, not wrong, until
+#     then — and EtcdServerMetricsAbsent below is the loud counterpart that
+#     makes that gap visible instead of letting quiet impersonate healthy.
+#     VALIDATE both after the converge:
+#       histogram_quantile(0.99, sum by (instance, le)
+#         (rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])))
+#     must return one row per server; then delete this paragraph.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ci-guards
+  namespace: monitoring
+  labels:
+    # Mandatory — the Prometheus CR's ruleSelector matches this label; without
+    # it this file is decoration (see the smartctl rules file).
+    release: prometheus-operator
+spec:
+  groups:
+    - name: ci-guards
+      rules:
+        # --- the flagship: etcd WAL fsync latency ------------------------
+        # upstream etcd's own health threshold: p99 fsync > 100ms sustained
+        # means the disk is too slow for the leader's heartbeat guarantees.
+        # 10m `for:` rides out lone compactions; a CI job hammering the same
+        # filesystem shows up as a sustained plateau, not a spike.
+        - alert: EtcdWalFsyncSlow
+          expr: >-
+            histogram_quantile(0.99,
+              sum by (instance, le)
+              (rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])))
+            > 0.1
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: "etcd WAL fsync p99 over 100ms on {{ $labels.instance }}"
+            description: >-
+              etcd's write-ahead-log fsync p99 has been above 100ms for 10m —
+              the disk this member shares (possibly with CI emptyDirs under
+              /var/lib/kubelet) is too slow for quorum health. If CI is
+              running, dedicate nodes: ansible/playbooks/50-ci-taint.yml.
+
+        # --- the canary-of-the-canary ------------------------------------
+        # Fires while the WAL series don't exist (e.g. the k3s
+        # etcd-expose-metrics converge hasn't run, or a scrape target broke).
+        # EXPECTED to fire between the gitops merge and the ansible converge;
+        # that is the point — the flagship above is silent-when-absent, and
+        # this is what stops that silence from impersonating health.
+        - alert: EtcdServerMetricsAbsent
+          expr: absent(etcd_disk_wal_fsync_duration_seconds_bucket)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "etcd server metrics are not being collected"
+            description: >-
+              No etcd_disk_wal_fsync_duration_seconds series exist — the WAL
+              canary guarding CI-on-etcd-nodes is blind. Either the k3s
+              etcd-expose-metrics converge hasn't run yet (ansible k3s_config)
+              or the kubeEtcd endpoints list in prometheus chart-values
+              drifted from the server set.
+
+        # --- kubelet filesystem headroom ---------------------------------
+        # emptyDir (runner workspaces) lives under /var/lib/kubelet, on the
+        # root filesystem on every node here. 15% floor, 15m sustain.
+        - alert: NodeRootFilesystemLow
+          expr: >-
+            (node_filesystem_avail_bytes{mountpoint="/",fstype="ext4"}
+             / node_filesystem_size_bytes{mountpoint="/",fstype="ext4"})
+            < 0.15
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "root filesystem under 15% free on {{ $labels.node }}"
+            description: >-
+              The node's root filesystem (which hosts /var/lib/kubelet, CI
+              emptyDirs and the containerd image store) is below 15% free.
+              Kubelet DiskPressure eviction starts near 10%.
+
+        # --- kubelet's own verdict ---------------------------------------
+        - alert: NodeDiskPressure
+          expr: >-
+            kube_node_status_condition{condition="DiskPressure",status="true"}
+            == 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "DiskPressure on {{ $labels.node }}"
+            description: >-
+              Kubelet has declared DiskPressure — eviction is imminent or in
+              progress. If a CI job caused it, its runner pod's
+              ephemeral-storage limit was set too high relative to the node.

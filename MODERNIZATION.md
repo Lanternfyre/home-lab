@@ -13,8 +13,10 @@ Last updated: 2026-08-03 (SMART monitoring landed — see "Immediately next")
 
 ## Where we are
 
-k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 5 nodes, all
-`control-plane,etcd,master`, no workers.
+k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 6 nodes. Topology is being split
+from "all `control-plane,etcd,master`, no workers" into **3 servers
+(k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3, k8s-5)** — see
+"Node roles" below for exactly how far that has got.
 Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
 ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
@@ -41,28 +43,131 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
 ### Immediately next
 
-**Session of 2026-08-03 ended here. Everything below is current and pushed;
-working tree clean, both repos level with origin.**
+#### 🔄 2026-08-19 — Node roles: k8s-6 added, control plane shrinking to 3
+
+The Ansible layer LANDED (commit "a node's role is now a line in the
+inventory"); **the cluster changes have NOT been made yet.** Live state at time
+of writing is still 5 nodes, all servers. What exists now:
+
+* `ansible/inventory/homelab.yml` is topology-only: `k3s_nodes` with
+  `k3s_servers` / `k3s_agents` beneath it. Per-host detail moved to
+  `host_vars/`, so a role change is moving ONE hostname line.
+* `playbooks/45-change-node-role.yml` performs the transformation, ONE node per
+  run, `-e target=`. k3s cannot convert a node in place, so it drains,
+  uninstalls, deletes the Node object (which is what drops the etcd member) and
+  rejoins in the new role — behind gates for quorum arithmetic, live-vs-
+  inventory member count, CNPG primaries, local-path data, and a snapshot taken
+  on a peer.
+* `40-add-node.yml` now derives `INSTALL_K3S_EXEC` from the group, slurps the
+  join token from a live server (it was previously an undefined variable), and
+  RUNS the storage proof instead of printing a reminder to run it.
+
+**Remaining, in this order — every step needs `--ask-become-pass`:**
+
+1. `ansible-playbook site.yml --ask-become-pass --check --diff` then apply.
+   Expect config.yaml to report *changed* on every server: the comments in the
+   template were rewritten. The rendered keys are byte-identical to the
+   previous template (verified by diffing both renders), and `k3s_config` never
+   restarts k3s, so this is cosmetic.
+
+   ⚠️ **k8s-6 will report `failed=1` in this run, and that is correct.** It is
+   in the inventory but has not joined, and its OS baseline has never been
+   applied, so `node_verify` asserts its inotify sysctls are at the kernel
+   default. Step 2 is the fix. To see the other five cleanly on their own:
+   `--limit 'k3s_nodes:!k8s-6.home'`.
+2. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-6.home`
+   — k8s-6 reports `multipath=BROKEN, sysctls=BROKEN, services=BROKEN`, which
+   is simply "baseline has never run here". Re-run `90-preflight.yml` after and
+   expect `sysctls=ok, multipath=ok, services=ok` before going on.
+3. `ansible-playbook playbooks/40-add-node.yml --ask-become-pass -e target=k8s-6.home`
+   → 6 servers, 6 etcd members. **Even, so do not linger**: 6 tolerates one
+   failure, exactly as 5 did.
+4. Demote **k8s-2**, then **k8s-5**, then **k8s-3**, one at a time, verifying
+   between each. Member count 6 → 5 → 4 → 3.
+
+   Each demotion is exactly two actions. There is no command that does the
+   first one for you -- moving the line IS the decision, and the playbook
+   refuses to run if the inventory and the node still agree:
+
+   ```
+   # a) edit ansible/inventory/homelab.yml -- move ONE line:
+   #      from  k3s_servers:  hosts:  ...  k8s-2.home:
+   #      to    k3s_agents:   hosts:  ...  k8s-2.home:
+   #    then commit it, so the repo and the cluster never disagree silently.
+
+   # b) cd ansible
+   ansible-playbook playbooks/45-change-node-role.yml --ask-become-pass \
+     -e target=k8s-2.home
+   ```
+
+   Then repeat with `k8s-5.home`, then `k8s-3.home`. Between each, confirm:
+
+   ```
+   kubectl get nodes -o wide
+   kubectl get nodes -l node-role.kubernetes.io/etcd=true --no-headers | wc -l
+   kubectl get --raw='/readyz?verbose' | grep etcd
+   kubectl -n kube-system get ds kube-vip-ds     # desired should DROP each time
+   kubectl get ds -A --no-headers | awk '$3!=$4 || $4!=$6'   # must print nothing
+   ```
+
+   kube-vip's desired count follows the control-plane label, so it should read
+   6 → 5 → 4 → 3 in step with the demotions. If it does not, check the node
+   labels -- do not adjust the number.
+   * k8s-2 first: 11 pods, lowest risk, and it proves the playbook.
+   * k8s-5 second: ~44 pods including Pi-hole (LAN DNS) and a CoreDNS replica.
+     Expect real churn. Ansible itself is immune — the inventory carries
+     explicit IPs — but the rest of the LAN will notice.
+   * k8s-3 last: it holds BOTH CNPG primaries and the stale local-path PV.
+     **Retire `dns/pihole` (PVC then PV) before running it** — the gate refuses
+     otherwise, which is the gate working. `Retain` does not protect it:
+     `k3s-uninstall.sh` deletes the data and leaves a tombstone reading Bound.
+5. ⚠️ Three rejoins will reuse the cluster token `k3sblog`, which is in
+   plaintext in `gitops/argo-install.md` (MANUAL-STEPS §8). Good moment to
+   rotate it.
+
+⚠️ Do not run `25-kube-vip-daemonset.yml`, `35-cilium-migrate.yml` or
+`30-upgrade.yml` while a role change is in flight: the inventory and the
+cluster deliberately disagree by one node, so their count assertions will read
+as a broken cluster.
+
+#### Older resume point
+
+**Session of 2026-08-03 ended here.** *(Its "working tree clean" note is no
+longer true — the node-role work above is newer.)*
 
 **Resumed later the same day: Phase 7 item 1 (SMART) is now complete.** The
 next item is #2 below, and it is the one that needs a human at a keyboard.
 
-#### 🔴 2026-08-15 — storage incident recovered, prevention NOT yet applied
+#### ✅ 2026-08-15 — storage incident recovered · prevention APPLIED (verified 2026-08-17)
 
 A NAS partition on 2026-08-08 left six filesystems permanently wedged for a
 week, including all three `postgres-ha` instances. **All six are recovered and
 verified writable**; a fresh `pg_dumpall` succeeded
 (`postgres-ha-20260815T165534Z.sql.gz`). Full mechanism in "Hard-won findings".
 
-What is **not** done — this is the resume point:
+Where this actually stands:
 
-1. 🔴 **Apply `no_path_retry` to the nodes.** The git change is in
-   (`node_baseline`, `group_vars/all.yml`), but converging needs a sudo
-   password, so it has not run. **Until it does, the cluster is exactly as
-   fragile as it was on 2026-08-08** — `90-preflight.yml` reports
-   `mpath queueing: mpathX|-` on all 12 LUNs across lab2/3/4/5. See
-   MANUAL-STEPS.md. The role applies it with `multipathd reconfigure`, in
-   place, no restart and no I/O interruption, and then asserts it went live.
+1. ✅ **`no_path_retry` is converged.** This entry read 🔴 "NOT applied ... the
+   cluster is exactly as fragile as it was on 2026-08-08" until **2026-08-17**,
+   by which point it had been false for some time — the sudo run had happened
+   and nothing updated the resume point. Since this is the file `CLAUDE.md`
+   sends you to first, it was pointing at a solved problem and mis-stating the
+   risk to everything downstream of it.
+
+   Verified by behaviour, not by reading the config, via
+   `ansible-playbook playbooks/90-preflight.yml` (read-only, no sudo):
+
+   ```
+   k8s-1   0 LUNs   (no PVCs scheduled)   wedged ext4: ''
+   k8s-2   2 LUNs   all mpathX|120        wedged ext4: ''
+   k8s-3   2 LUNs   all mpathX|120        wedged ext4: ''
+   k8s-4   1 LUN    all mpathX|120        wedged ext4: ''
+   k8s-5   7 LUNs   all mpathX|120        wedged ext4: ''
+   ```
+
+   All 12 LUNs queue for ~10 minutes on a NAS partition instead of erroring
+   into an aborted journal. Re-run that playbook to re-check; `-` in the
+   queueing column means a LUN is NOT protected.
 2. 🟡 **Velero.** The three ad-hoc backup CronJobs were removed on 2026-08-15
    at your request, so **there is currently no automated backup of anything**.
    The PVCs and their existing dumps are deliberately kept (`Prune=false`),
@@ -2024,6 +2129,25 @@ existed, was documented, and had never told the truth.
 
 **`Retain` means test PVCs leak.** Deleting a test PVC leaves the PV *and* the
 backend volume. Clean up with `tridentctl delete volume` after any storage test.
+
+**The telemetry pipeline was the last thing watching nothing.** Neither Alloy
+chart enabled its ServiceMonitor, so until 2026-08-17 there were **zero**
+`alloy_*` series: the DaemonSet shipping every pod log into Loki and the gateway
+receiving all of Necronia's OTLP could have stopped without any symptom except
+dashboards going quiet — and for Necronia, quiet is normal, because the server
+runs on a workstation that is off most of the time. Same shape as 2026-08-08:
+the component that would tell you is the component that is down.
+
+The first hand-scrape of that endpoint found
+`loki_write_dropped_entries_total{reason="ingester_error"}` at **7.2 million**
+against 13.2 million sent, identically on all five nodes. **It is not current
+loss** — measured before reacting: the counter did not move in 60 seconds while
+`sent` climbed by ~1,200, and Loki's own log gives the reason as *"has timestamp
+too old: 2026-08-04 … oldest acceptable is 2026-08-10"*. Alloy replays container
+logs from the start after a restart, and anything past Loki's 14d retention is
+correctly refused. Two lessons, both cheap: **alert on the rate, never the
+counter** (a rule on the total would have fired permanently on day one), and a
+seven-figure counter is a claim about all of history, not about now.
 
 **node-exporter cannot see inside PVCs, and no amount of collector config
 changes that.** The 2026-08-16 fix admitted `/var/lib/kubelet/pods/...` to the

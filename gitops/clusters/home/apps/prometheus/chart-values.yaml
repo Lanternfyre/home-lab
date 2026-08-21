@@ -23,8 +23,36 @@ crds:
 # matches even more confidently. The `defaultRules.rules.*` toggles are what
 # actually stop them.
 #
-# kubeEtcd is deliberately LEFT ENABLED: k3s does expose etcd metrics on :2381
-# and no etcd alert is firing, so it is genuinely being scraped.
+# kubeEtcd stays enabled AND now gets explicit endpoints. The old comment
+# here claimed k3s "does expose etcd metrics on :2381 … so it is genuinely
+# being scraped" — DISPROVEN live 2026-08-21: `count by (job) (up)` showed no
+# etcd job and zero etcd_disk_* series existed (the etcd_* names in
+# Prometheus are apiserver CLIENT metrics). "No etcd alert firing" was
+# absence of data, not health — the exact silent-empty class the smartctl
+# rules file warns about. Two halves fixed together:
+#   1. k3s now sets etcd-expose-metrics: true (ansible k3s_config role) so
+#      etcd listens on 0.0.0.0:2381 instead of localhost-only.
+#   2. The endpoints below point the chart's kube-etcd Service at the SERVER
+#      nodes. ⚠️ Every k3s server is an etcd member, so this list is the
+#      CURRENT server set — a node demotion (45-change-node-role.yml) must
+#      remove its IP here, and a promotion must add it.
+# This scrape feeds the ARC CI etcd WAL-fsync p99 canary
+# (manifests/ci-guards.prometheusrule.yaml) — the standing guard for CI
+# runners co-scheduling with etcd members.
+kubeEtcd:
+  enabled: true
+  endpoints:
+    - 192.168.33.3    # k8s-1
+    - 192.168.33.2    # k8s-2
+    - 192.168.33.7    # k8s-3
+    - 192.168.33.21   # k8s-4
+    - 192.168.33.22   # k8s-5
+    - 192.168.33.20   # k8s-6
+  service:
+    enabled: true
+    port: 2381
+    targetPort: 2381
+
 kubeScheduler:
   enabled: false
 kubeControllerManager:

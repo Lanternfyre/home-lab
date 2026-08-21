@@ -1,0 +1,97 @@
+# NDepend dind runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux-ndepend`.
+#
+# ── Why dind at all ──────────────────────────────────────────────────────────
+# ndepend.yml runs `docker run --cap-add NET_ADMIN --hostname TarjeiPC …` --
+# the licence fingerprint is MAC + machine name, and the machine name is
+# UPPERCASE. pod.spec.hostname rejects uppercase (RFC 1123, verified by
+# server-side dry-run), but a container started by a Docker daemon INSIDE the
+# pod takes its hostname from that daemon's UTS namespace, which kubelet never
+# sees. So the workflow runs verbatim in-cluster: no job split, no
+# re-licensing, no NET_ADMIN on the pod itself.
+#
+# ── Hand-written sidecar; NEVER containerMode: dind ──────────────────────────
+# The chart's dind helper is a fixed literal with privileged: true and NO
+# resources key -- it cannot bound ephemeral storage, which matters more here
+# than anywhere (emptyDir shares /var/lib/kubelet with the containerd image
+# store and, on server nodes, the etcd WAL).
+#
+# ⚠️ Blast radius: one scale set, one org, first-party private repos only.
+# NEVER point anything that runs untrusted fork PRs at arc-linux-ndepend.
+
+githubConfigUrl: "https://github.com/Lanternfyre"
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux-ndepend"
+
+# maxRunners 1 -- concurrent inner containers would present identical
+# hostname+MAC to NDepend licensing (untested), and worst-case ephemeral for
+# one pod is ~32Gi.
+minRunners: 0
+maxRunners: 1
+
+# P0 #3 -- explicit, helm-template lookup returns empty under ArgoCD.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    priorityClassName: ci-runner
+    # v4 posture: cluster-wide, no nodeSelector/tolerations (see
+    # ansible/playbooks/50-ci-taint.yml for the reserve dedication switch).
+    initContainers:
+      # 🔴 MUST be an initContainer with restartPolicy: Always (native
+      # sidecar, GA on this cluster's 1.35): a pod ends when all `containers`
+      # terminate, and dockerd never does -- as a normal container it would
+      # keep every finished runner pod alive forever, stall ARC cleanup, and
+      # fill the namespace with zombies.
+      - name: dind
+        image: docker:27.5.1-dind
+        restartPolicy: Always
+        securityContext:
+          privileged: true
+        # kubelet blocks the runner container until dockerd answers.
+        startupProbe:
+          exec:
+            command: ["docker", "info"]
+          periodSeconds: 2
+          failureThreshold: 45
+        env:
+          - name: DOCKER_TLS_CERTDIR
+            value: /certs
+        resources:
+          requests: {cpu: 500m, memory: 1Gi, ephemeral-storage: 8Gi}
+          # Memory 6Gi then measure: the hosted runner gave this job ~7GB; a
+          # 4Gi cap is a downgrade and an OOMKill mid-analysis reads as a
+          # mystery failure. No CPU limit -- repo standing rule.
+          limits: {memory: 6Gi, ephemeral-storage: 20Gi}
+        volumeMounts:
+          # SAME path as the runner so the workflow's `-v "$PWD:/work"`
+          # resolves on the daemon's filesystem too.
+          - {name: work, mountPath: /home/runner/_work}
+          - {name: dind-cert, mountPath: /certs}
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: DOCKER_HOST
+            value: tcp://localhost:2376
+          - name: DOCKER_TLS_VERIFY
+            value: "1"
+          - name: DOCKER_CERT_PATH
+            value: /certs/client
+        resources:
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
+          limits: {memory: 4Gi, ephemeral-storage: 12Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+          - {name: dind-cert, mountPath: /certs}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 20Gi}}
+      - {name: dind-cert, emptyDir: {}}

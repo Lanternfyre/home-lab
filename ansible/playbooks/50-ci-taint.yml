@@ -1,0 +1,116 @@
+---
+# The CI dedication switch -- apply or remove the CI label + taint on a set of
+# nodes, quickly, without editing anything else.
+#
+#   # dedicate two nodes to CI (nothing else schedules there):
+#   ansible-playbook playbooks/50-ci-taint.yml --ask-become-pass \
+#     -e ci_taint_state=present -e ci_nodes=k8s-2.home,k8s-3.home
+#
+#   # release them back to the general pool:
+#   ansible-playbook playbooks/50-ci-taint.yml --ask-become-pass \
+#     -e ci_taint_state=absent -e ci_nodes=k8s-2.home,k8s-3.home
+#
+# ── Why this exists (and why the DEFAULT is no taints at all) ────────────────
+# The ARC v4 decision (2026-08-21) is that CI runner pods schedule CLUSTER-WIDE:
+# no standing label, no standing taint. This playbook is the RESERVE switch for
+# the day CI load starts hurting interactive workloads or etcd -- dedication
+# becomes one command, not an inventory surgery. Until that day, running it is
+# a deliberate act, never part of site.yml.
+#
+# ── ⚠️ THIS IS HALF A SWITCH ─────────────────────────────────────────────────
+# Tainting nodes does NOT move the ARC runners onto them -- it just forbids
+# everything without the toleration, runners included. Flipping to `present`
+# only makes sense TOGETHER with the paired values change on the runner scale
+# sets (gitops/clusters/home/apps/arc-*/chart-values.yaml): re-add
+#
+#   template.spec.nodeSelector: {node-role.home-lab/ci: "true"}
+#   template.spec.tolerations:  [{key: dedicated, value: ci, effect: NoSchedule}]
+#
+# and let ArgoCD sync it. On gha-runner-scale-set <= 0.14.x that values flip is
+# safe under flags.updateStrategy: "eventual" (drains in-flight jobs before the
+# listener is recreated); the flag is removed on ARC master (PR #4516), so
+# re-check the release notes before the first use after a chart bump.
+#
+# ── What it applies ──────────────────────────────────────────────────────────
+#   label:  node-role.home-lab/ci=true
+#   taint:  dedicated=ci:NoSchedule
+# NoSchedule (not NoExecute) on purpose: flipping to `present` must not evict
+# anything already running -- existing pods drain away naturally / on restart.
+# Both operations are idempotent (--overwrite; absent tolerates already-gone).
+
+- name: CI dedication switch -- label + taint a node set (or undo it)
+  hosts: "{{ groups['k3s_servers'][0] }}"
+  gather_facts: false
+  any_errors_fatal: true
+  become: true
+  vars:
+    ci_label_key: node-role.home-lab/ci
+    ci_taint_key: dedicated
+    ci_taint_val: ci
+    kubectl: /usr/local/bin/k3s kubectl
+
+  tasks:
+    - name: "preflight | both -e vars are required, and state must be valid"
+      ansible.builtin.assert:
+        that:
+          - ci_taint_state is defined
+          - ci_taint_state in ['present', 'absent']
+          - ci_nodes is defined
+          - ci_nodes | length > 0
+        fail_msg: >-
+          Usage: -e ci_taint_state=present|absent -e ci_nodes=<name>[,<name>...]
+          (inventory hostnames or kubectl node names -- they match in this
+          cluster). Refusing to guess a node set: this playbook exists to make
+          dedication EXPLICIT.
+
+    - name: "preflight | every named node must exist in the cluster"
+      ansible.builtin.command: >-
+        {{ kubectl }} get node {{ item }} -o name
+      loop: "{{ ci_nodes.split(',') | map('trim') | map('regex_replace', '\\.home$', '') | list }}"
+      register: ci_node_check
+      changed_when: false
+
+    - name: "apply | label {{ ci_label_key }}"
+      ansible.builtin.command: >-
+        {{ kubectl }} label node {{ item }}
+        {{ ci_label_key }}{{ '=true --overwrite' if ci_taint_state == 'present' else '-' }}
+      loop: "{{ ci_nodes.split(',') | map('trim') | map('regex_replace', '\\.home$', '') | list }}"
+      register: ci_label_out
+      changed_when: "'labeled' in ci_label_out.stdout or 'unlabeled' in ci_label_out.stdout"
+      failed_when: >-
+        ci_label_out.rc != 0
+        and 'not found' not in ci_label_out.stderr
+
+    - name: "apply | taint {{ ci_taint_key }}={{ ci_taint_val }}:NoSchedule"
+      ansible.builtin.command: >-
+        {{ kubectl }} taint node {{ item }}
+        {{ ci_taint_key }}{{ ('=' ~ ci_taint_val ~ ':NoSchedule --overwrite') if ci_taint_state == 'present' else ':NoSchedule-' }}
+      loop: "{{ ci_nodes.split(',') | map('trim') | map('regex_replace', '\\.home$', '') | list }}"
+      register: ci_taint_out
+      changed_when: "'tainted' in ci_taint_out.stdout or 'untainted' in ci_taint_out.stdout"
+      failed_when: >-
+        ci_taint_out.rc != 0
+        and 'not found' not in ci_taint_out.stderr
+
+    - name: "verify | render the node set as the scheduler now sees it"
+      ansible.builtin.command: >-
+        {{ kubectl }} get nodes
+        -L {{ ci_label_key }}
+        -o custom-columns=NAME:.metadata.name,CI:.metadata.labels.node-role\.home-lab/ci,TAINTS:.spec.taints[*].key
+      register: ci_verify
+      changed_when: false
+
+    - name: "verify | show it"
+      ansible.builtin.debug:
+        msg: "{{ ci_verify.stdout_lines }}"
+
+    - name: "remind | the other half of the switch"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'DEDICATED: now re-add nodeSelector+tolerations in the arc-* '
+             'chart-values (see header) or NOTHING will schedule on these '
+             'nodes, runners included.'
+             if ci_taint_state == 'present' else
+             'RELEASED: if the arc-* chart-values still carry '
+             'nodeSelector/tolerations, remove them or runners will refuse '
+             'to schedule anywhere else.' }}

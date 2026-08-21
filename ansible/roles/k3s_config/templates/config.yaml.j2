@@ -1,4 +1,11 @@
 # Managed by Ansible -- ansible/roles/k3s_config. Do not edit on the node.
+#
+# ⚠️ ROLE-AWARE, and it has to be. A k3s AGENT rejects every server-only key
+# below as an unknown flag and then REFUSES TO START. There is no partial
+# failure here: a config.yaml carrying `disable:` on a worker is a worker that
+# does not come back. The agent surface is deliberately tiny -- `server:` and
+# the token are the whole join mechanism.
+{% if (k3s_role | default('server')) == 'server' %}
 {% if k3s_cluster_init | default(false) %}
 cluster-init: true
 {% else %}
@@ -13,11 +20,26 @@ disable:
   - {{ addon }}
 {% endfor %}
 
-# Twice-daily etcd snapshots, retained per node. All five nodes snapshot
+# Twice-daily etcd snapshots, retained per node. Every SERVER snapshots
 # independently, so each is a complete copy of cluster state and losing one
 # node loses nothing.
+#
+# ⚠️ This used to say "all five nodes". Since 2026-08-19 only the control-plane
+# nodes are etcd members, so the number of independent copies is the number of
+# servers -- and a node being DEMOTED destroys the snapshots it holds. Take a
+# fresh snapshot and copy it off-node before any role change.
 etcd-snapshot-schedule-cron: "{{ k3s_etcd_snapshot_cron | default('0 */12 * * *') }}"
 etcd-snapshot-retention: {{ k3s_etcd_snapshot_retention | default(10) }}
+
+# Expose etcd's own metrics on 0.0.0.0:2381 instead of localhost-only, so the
+# kubeEtcd scrape (prometheus chart-values kubeEtcd.endpoints) has something
+# to read. Added 2026-08-21 for the ARC CI etcd WAL-fsync canary: CI runners
+# now co-schedule with etcd members, and the p99 WAL alert is THE standing
+# guard for that trade-off. Before this line NO job scraped etcd — the etcd_*
+# series in Prometheus were apiserver client-side metrics, and the "kubeEtcd
+# is genuinely being scraped" belief was disproven live (2026-08-21: zero
+# etcd_disk_* series, no etcd scrape job in `count by (job) (up)`).
+etcd-expose-metrics: true
 
 {% if k3s_oidc_issuer_url is defined %}
 # Native OIDC on the API server, for Headlamp and per-user RBAC.
@@ -40,4 +62,19 @@ kube-apiserver-arg:
 # convergence.
 flannel-backend: {{ k3s_flannel_backend }}
 disable-network-policy: {{ k3s_disable_network_policy | default(true) | lower }}
+{% endif %}
+{% else %}
+# ── AGENT ────────────────────────────────────────────────────────────────────
+#
+# This node runs k3s-agent.service. It has no apiserver, no etcd and no
+# /var/lib/rancher/k3s/server/, so NONE of the server block above applies.
+#
+# `disable:` is absent on purpose and its absence changes nothing: the bundled
+# addons are reconciled by the SERVERS' deploy controllers from their own
+# manifests directories. An agent has no deploy controller, so there is nothing
+# here to disable -- and `disable` is not a valid agent flag anyway.
+#
+# `tls-san` is likewise server-only: the serving certs are issued by the
+# control plane and propagated through the datastore.
+server: "https://{{ k3s_server_peer | default(k3s_api_vip) }}:6443"
 {% endif %}

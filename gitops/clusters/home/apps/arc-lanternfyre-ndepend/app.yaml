@@ -1,0 +1,11 @@
+#Notice chart name has to be a part of repoURL for oci
+# NDepend runner scale set (runs-on: arc-linux-ndepend) -- the dind set the
+# Necronia Quality workflow's `docker run --hostname TarjeiPC` needs. Same
+# 0.14.2 pin + chart-bump warning as arc-controller/app.yaml. Shares
+# ns arc-runners-lanternfyre; the github-app ExternalSecret is owned by the
+# arc-lanternfyre app dir (namespace-wide objects live there).
+repoURL: "ghcr.io/actions/actions-runner-controller-charts"
+chart: "gha-runner-scale-set"
+targetRevision: "0.14.2"
+releaseName: "arc-lanternfyre-ndepend"
+namespace: "arc-runners-lanternfyre"
