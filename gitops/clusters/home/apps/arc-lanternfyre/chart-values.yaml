@@ -34,9 +34,18 @@ template:
     # re-adding here (see that playbook's half-a-switch warning):
     #   nodeSelector: {node-role.home-lab/ci: "true"}
     #   tolerations: [{key: dedicated, operator: Equal, value: ci, effect: NoSchedule}]
+    # Private-package pulls (actions-runner-dotnet) — see
+    # manifests/ghcr-pull.external-secret.yaml. M11 alternative: packages
+    # stay private, kubelet authenticates.
+    imagePullSecrets:
+      - name: ghcr-pull
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:latest
+        # Custom image from docker-compedium: gh/oras/trivy/python3 + dotnet
+        # SDK 10.0.100 baked (setup-dotnet + Ensure-gh become no-ops).
+        # :latest deliberately — build-push re-points it per release; pin to a
+        # convco tag if a bad image ever ships.
+        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Sized for the Necronia Grains/Scripting/Simulation suites -- the

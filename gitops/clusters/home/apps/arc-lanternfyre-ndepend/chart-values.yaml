@@ -72,9 +72,16 @@ template:
           # resolves on the daemon's filesystem too.
           - {name: work, mountPath: /home/runner/_work}
           - {name: dind-cert, mountPath: /certs}
+    # Private-package pulls — Secret owned by the arc-lanternfyre app dir
+    # (namespace-wide), manifests/ghcr-pull.external-secret.yaml there.
+    imagePullSecrets:
+      - name: ghcr-pull
     containers:
       - name: runner
-        image: ghcr.io/actions/actions-runner:latest
+        # Custom image: gh/oras/trivy/python3 + dotnet SDK baked — the
+        # Ensure-gh + setup-dotnet workflow steps become no-ops. dind sidecar
+        # above stays the stock docker image (public).
+        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
