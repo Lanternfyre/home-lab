@@ -1,0 +1,87 @@
+# Egress allowlist for the CI runner pods (ARC v4, C10 — deliberately the
+# LAST commit of the ARC rollout: with everything else proven green, a
+# failure after this lands is unambiguously the policy).
+#
+# ── Why CiliumNetworkPolicy, not NetworkPolicy ───────────────────────────────
+# A plain NetworkPolicy is one spec with two engines watching it (Cilium +
+# kube-router); a CNP is a CRD only Cilium acts on — exactly one place to
+# debug. These are the FIRST hand-authored network policies in the repo, and
+# adding them re-arms the 35-cilium-migrate straggler preflight (its
+# zero-policy-objects escape hatch closes — by design).
+#
+# ── 🔴 The node-admit rule is non-negotiable ─────────────────────────────────
+# A policy that selects a pod must also admit the NODE, or kubelet probes are
+# denied and the pod crash-loops. This empirically took out argocd-repo-server
+# (chart policy admitted namespaces; a kubelet probe comes from the node).
+# CILIUM-MIGRATION.md:521's claim of implicit host allow is CONTRADICTED by
+# that observed crash-loop — the empirical account is later and wins. The
+# ingress fromEntities [host, remote-node] rule below is that admit; V6 proves
+# it (pod must NOT crash-loop on probes).
+#
+# ── What runners may reach ───────────────────────────────────────────────────
+# DNS (kube-dns, with L7 dns inspection so toFQDNs can resolve), the GitHub
+# service surface (api/codeload/objects/pkg-containers), GHCR, and the .NET/
+# node package registries. Everything else — INCLUDING the cluster-local pod
+# and service space — is denied by the default-deny that selecting the pods
+# creates. V6's cluster-local curl must time out.
+#
+# The dind set is covered too: both scale sets' pods carry
+# actions.github.com/scale-set-namespace: arc-runners-lanternfyre labels; the
+# endpointSelector below selects EVERYTHING in this namespace, runner and
+# listener alike (listeners live in arc-systems, so they are NOT selected —
+# their long-poll to GitHub is untouched).
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: runner-egress
+  namespace: arc-runners-lanternfyre
+spec:
+  endpointSelector: {}   # every pod in this namespace (runners + dind)
+
+  ingress:
+    # Node-admit: kubelet startup/liveness probes originate from the host
+    # (this node) or, under some topologies, another node.
+    - fromEntities:
+        - host
+        - remote-node
+
+  egress:
+    # DNS to kube-dns, with the DNS proxy engaged so toFQDNs below works.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # The GitHub + package-registry surface the workflows actually use.
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchName: uploads.github.com
+        - matchName: objects.githubusercontent.com
+        - matchName: raw.githubusercontent.com
+        - matchPattern: "*.actions.githubusercontent.com"
+        - matchName: results-receiver.actions.githubusercontent.com
+        - matchName: ghcr.io
+        - matchPattern: "*.ghcr.io"
+        - matchName: pkg-containers.githubusercontent.com
+        - matchName: api.nuget.org
+        - matchName: www.nuget.org
+        - matchName: registry.npmjs.org
+        - matchName: dot.net
+        - matchName: builds.dotnet.microsoft.com
+        - matchName: ci.dot.net
+        - matchPattern: "*.blob.core.windows.net"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
