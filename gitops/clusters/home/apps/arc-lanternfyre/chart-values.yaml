@@ -1,0 +1,59 @@
+# Lanternfyre org runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux`.
+
+githubConfigUrl: "https://github.com/Lanternfyre"
+
+# The 3-key Secret materialized by manifests/github-app.external-secret.yaml
+# (github_app_id / github_app_installation_id / github_app_private_key).
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux"
+
+# maxRunners 3 -- operator-set 2026-08-21 (was 2 in the v3 plan).
+minRunners: 0
+maxRunners: 3
+
+# 🔴 P0 #3 -- the chart auto-discovers the controller SA via a Helm `lookup`,
+# and ArgoCD renders with `helm template`, which has NO cluster access: the
+# lookup silently returns empty, the RoleBinding binds to nothing, and the
+# scale set sits at zero runners with no error. Always explicit.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    # Arbitrary PR code executes in this pod.
+    automountServiceAccountToken: false
+    # -100, preemptionPolicy Never (arc-controller/manifests) -- CI yields to
+    # every real workload and never preempts.
+    priorityClassName: ci-runner
+    # v4 posture: NO nodeSelector, NO tolerations -- runners schedule
+    # cluster-wide. The reserve dedication switch is
+    # ansible/playbooks/50-ci-taint.yml; flipping it to `present` requires
+    # re-adding here (see that playbook's half-a-switch warning):
+    #   nodeSelector: {node-role.home-lab/ci: "true"}
+    #   tolerations: [{key: dedicated, operator: Equal, value: ci, effect: NoSchedule}]
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        resources:
+          # Sized for the Necronia Grains/Scripting/Simulation suites -- the
+          # hosted-runner exit-143 kill class is the reason this scale set
+          # exists. ephemeral-storage in BOTH requests and limits: emptyDir
+          # lives under /var/lib/kubelet, which shares a filesystem with the
+          # containerd image store and (on server nodes) the etcd WAL --
+          # these are the first ephemeral-storage requests in the cluster.
+          requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 4Gi}
+          # NO cpu limit -- repo standing rule (CFS throttling, the
+          # trident-operator lesson). Memory + ephemeral-storage bound the
+          # dangerous dimensions.
+          limits: {memory: 8Gi, ephemeral-storage: 12Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 10Gi}}
