@@ -1,0 +1,12 @@
+#Notice chart name has to be a part of repoURL for oci
+# Mutation-testing runner scale set (runs-on: arc-linux-mutation). Exists so
+# the weekly hours-long Stryker job stops camping on the SINGLE dind runner
+# that every Quality run needs (operator request, 2026-08-21). Same 0.14.2
+# pin + chart-bump warning as arc-controller/app.yaml. Shares
+# ns arc-runners-lanternfyre (github-app + ghcr-pull secrets owned by the
+# arc-lanternfyre app dir).
+repoURL: "ghcr.io/actions/actions-runner-controller-charts"
+chart: "gha-runner-scale-set"
+targetRevision: "0.14.2"
+releaseName: "arc-lanternfyre-mutation"
+namespace: "arc-runners-lanternfyre"

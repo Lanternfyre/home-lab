@@ -1,0 +1,48 @@
+# Mutation runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux-mutation`.
+#
+# Why a third set: mutation (Stryker) is plain dotnet — no docker — but needs
+# the big-runner sizing (the 8Gi arc-linux runner was OOM-killed on both
+# pilot attempts), and parking it on arc-linux-ndepend starved every Quality
+# run of the single dind slot for hours. This set = ndepend-runner sizing
+# WITHOUT the dind sidecar, maxRunners 1 (one mutation campaign at a time).
+
+githubConfigUrl: "https://github.com/Lanternfyre"
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux-mutation"
+
+minRunners: 0
+maxRunners: 1
+
+# P0 #3 — explicit, helm-template lookup returns empty under ArgoCD.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    priorityClassName: ci-runner
+    # v4 posture: cluster-wide, no nodeSelector/tolerations (reserve switch:
+    # ansible/playbooks/50-ci-taint.yml).
+    imagePullSecrets:
+      - name: ghcr-pull
+    containers:
+      - name: runner
+        # Custom image: gh/oras/trivy/python3 + dotnet SDK baked.
+        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        command: ["/home/runner/run.sh"]
+        resources:
+          # Same envelope that let the Debug build + full test suites survive
+          # on the ndepend set; requests steer to k8s-4/5 and off the
+          # 4-CPU/16Gi members + 2-CPU k8s-6. No CPU limit — standing rule.
+          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
+          limits: {memory: 16Gi, ephemeral-storage: 16Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 20Gi}}
