@@ -68,12 +68,16 @@ spec:
         - matchName: codeload.github.com
         - matchName: uploads.github.com
         # The whole *.githubusercontent.com constellation, not hand-picked
-        # hosts: the first CNP-enforced run timed out in setup-oras because
-        # release downloads redirect to release-assets.githubusercontent.com,
-        # which the initial cherry-picked list missed (2026-08-21). Every
-        # host under this suffix is GitHub-operated content delivery; listing
-        # them individually is a treadmill.
+        # hosts (release-assets, raw, objects, pipelines*, results-receiver…
+        # — all GitHub-operated CDN; enumerating them is a treadmill).
+        # ⚠️ Cilium's `*` matches EXACTLY ONE DNS label (it cannot span a
+        # dot), so BOTH patterns are required: the first for
+        # release-assets.githubusercontent.com-class hosts, the second for
+        # pipelinesghubeus3.actions.githubusercontent.com-class broker hosts.
+        # Dropping the second silently killed the runner long-poll while DNS
+        # still resolved — connection timeouts, not NXDOMAIN (2026-08-21).
         - matchPattern: "*.githubusercontent.com"
+        - matchPattern: "*.actions.githubusercontent.com"
         - matchName: ghcr.io
         - matchPattern: "*.ghcr.io"
         - matchName: api.nuget.org
