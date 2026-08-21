@@ -67,13 +67,15 @@ spec:
         - matchName: api.github.com
         - matchName: codeload.github.com
         - matchName: uploads.github.com
-        - matchName: objects.githubusercontent.com
-        - matchName: raw.githubusercontent.com
-        - matchPattern: "*.actions.githubusercontent.com"
-        - matchName: results-receiver.actions.githubusercontent.com
+        # The whole *.githubusercontent.com constellation, not hand-picked
+        # hosts: the first CNP-enforced run timed out in setup-oras because
+        # release downloads redirect to release-assets.githubusercontent.com,
+        # which the initial cherry-picked list missed (2026-08-21). Every
+        # host under this suffix is GitHub-operated content delivery; listing
+        # them individually is a treadmill.
+        - matchPattern: "*.githubusercontent.com"
         - matchName: ghcr.io
         - matchPattern: "*.ghcr.io"
-        - matchName: pkg-containers.githubusercontent.com
         - matchName: api.nuget.org
         - matchName: www.nuget.org
         - matchName: registry.npmjs.org
