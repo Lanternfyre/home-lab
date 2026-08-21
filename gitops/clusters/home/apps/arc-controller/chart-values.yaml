@@ -27,4 +27,10 @@ flags:
   # Off by default, which leaves a wedged controller looking Ready forever.
   healthProbeBindAddress: ":8081"
 
-# metrics stay default-off until C9 (PodMonitor + panels + etcd WAL canary).
+# Metrics ports open (C9). Collection is declared in
+# prometheus/manifests/arc.podmonitor.yaml — monitors must live where the
+# release:prometheus-operator label convention is enforced, see that file.
+metrics:
+  controllerManagerAddr: ":8080"
+  listenerAddr: ":8080"
+  listenerEndpoint: "/metrics"

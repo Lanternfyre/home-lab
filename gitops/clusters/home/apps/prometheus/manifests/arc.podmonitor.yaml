@@ -1,0 +1,26 @@
+# ARC controller + listener metrics (ARC v4, C9).
+#
+# Owned HERE (not in arc-controller/manifests) for the same reason as
+# cnpg.podmonitor.yaml above: this cluster's Prometheus selects
+# podMonitorSelector {release: prometheus-operator}, and monitors that live
+# with their app but without that label are decoration. The ARC chart's
+# metrics block only opens the ports (arc-controller/chart-values.yaml);
+# collection is declared here.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: arc-controller
+  namespace: monitoring
+  labels:
+    # Mandatory — see above.
+    release: prometheus-operator
+spec:
+  namespaceSelector:
+    matchNames:
+      - arc-systems
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: gha-rs-controller
+  podMetricsEndpoints:
+    - targetPort: 8080
+      path: /metrics
