@@ -203,14 +203,25 @@
 # ContainerCreating forever.
 #
 # Uses on-node `k3s kubectl` rather than the workstation's client, which is
-# v1.27.2 against a v1.32 server -- five minors of skew now, eight after the
-# upgrade campaign.
+# v1.27.2 against a v1.35 server -- EIGHT minors of skew (the upgrade
+# campaign landed; count corrected 2026-08-22).
+#
+# ⚠️ RETRIES ARE LOAD-BEARING (added 2026-08-22). A node that has just
+# rejoined -- e.g. every 45-change-node-role.yml demotion -- is Ready before
+# its trident-node DaemonSet pod has started and registered the driver, so a
+# single-shot check fails on a perfectly healthy node and aborts the role
+# change half-done (cordoned, unverified). The k8s-4 condition this gate
+# exists for is PERMANENT, so waiting a minute costs nothing and only the
+# real fault survives it.
 - name: Node has at least one registered CSI driver
   ansible.builtin.shell: >-
     /usr/local/bin/k3s kubectl get csinode {{ k8s_node_name }}
     -o jsonpath='{.spec.drivers[*].name}'
   register: csinode_check
   changed_when: false
+  until: csinode_check.stdout | trim | length > 0
+  retries: 12
+  delay: 10
   failed_when: csinode_check.stdout | trim | length == 0
   check_mode: false
   delegate_to: "{{ k3s_control_plane_host }}"

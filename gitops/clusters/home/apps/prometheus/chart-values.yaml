@@ -34,7 +34,8 @@ crds:
 #      etcd listens on 0.0.0.0:2381 instead of localhost-only.
 #   2. The endpoints below point the chart's kube-etcd Service at the SERVER
 #      nodes. ⚠️ Every k3s server is an etcd member, so this list is the
-#      CURRENT server set — a node demotion (45-change-node-role.yml) must
+#      CURRENT server set (k8s-5 removed 2026-08-22 on demotion) — a node
+#      demotion (45-change-node-role.yml) must
 #      remove its IP here, and a promotion must add it.
 # This scrape feeds the ARC CI etcd WAL-fsync p99 canary
 # (manifests/ci-guards.prometheusrule.yaml) — the standing guard for CI
@@ -179,7 +180,6 @@ prometheus:
               - 192.168.33.2:2381    # k8s-2
               - 192.168.33.7:2381    # k8s-3
               - 192.168.33.21:2381   # k8s-4
-              - 192.168.33.22:2381   # k8s-5
               - 192.168.33.20:2381   # k8s-6
 
 # ── Alerts actually reach a human ────────────────────────────────────────────
