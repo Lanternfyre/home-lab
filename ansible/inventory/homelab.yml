@@ -78,7 +78,6 @@ all:
             k8s-1.home:
             k8s-2.home:
             k8s-3.home:
-            k8s-4.home:
 
         # Workers. No etcd, no apiserver, no server/manifests directory. They
         # run `k3s-agent.service`, not `k3s.service` -- see k3s_unit in
@@ -97,11 +96,16 @@ all:
         # Topology is the only real protection: heavy CI must not run on an
         # etcd member. Hence the beefy nodes become agents.
         #
+        # TARGET STATE REACHED 2026-08-22 (k8s-5, then k8s-6, then k8s-4).
         # Demote ONE AT A TIME, moving one line here per run:
         #   ansible-playbook playbooks/45-change-node-role.yml \
         #     --ask-become-pass -e target=k8s-5.home
-        # The playbook REFUSES to shrink below 3 servers by design.
+        # The playbook REFUSES to shrink below 3 servers by design — going
+        # to a single master would pass through the 2-member state, where
+        # quorum is 2 and losing either node is an etcd-restore-only
+        # recovery. 3 is the floor on purpose.
         k3s_agents:
           hosts:
+            k8s-4.home:
             k8s-5.home:
             k8s-6.home:
