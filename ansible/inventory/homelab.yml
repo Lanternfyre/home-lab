@@ -79,16 +79,29 @@ all:
             k8s-2.home:
             k8s-3.home:
             k8s-4.home:
-            k8s-5.home:
             k8s-6.home:
 
         # Workers. No etcd, no apiserver, no server/manifests directory. They
         # run `k3s-agent.service`, not `k3s.service` -- see k3s_unit in
         # group_vars/all.yml.
         #
-        # Deliberately empty right now: k8s-2, k8s-3 and k8s-5 are still
-        # servers, and each moves down here one at a time as
-        # 45-change-node-role.yml demotes it. Target end state is
-        # servers {k8s-1, k8s-4, k8s-6} and agents {k8s-2, k8s-3, k8s-5}.
+        # ⚠️ TARGET REVISED 2026-08-22 after the k8s-5 incident: servers
+        # {k8s-1, k8s-2, k8s-3} (the three identical 4-CPU/16GB boxes),
+        # agents {k8s-4, k8s-5, k8s-6} (the big/new ones — 32GB, 20-CPU,
+        # 30GB — which is where CI belongs).
+        #
+        # Why the change from {1,4,6}: a mutation-testing job on k8s-5 took
+        # the NODE down (k3s + sshd dead, containers alive; memory, disk,
+        # iowait and disk-busy all provably fine — a node-level resource pod
+        # limits cannot bound). It was an etcd member, so the cluster lost a
+        # member AND the LAN lost DNS (Pi-hole's local-path PVC pinned it).
+        # Topology is the only real protection: heavy CI must not run on an
+        # etcd member. Hence the beefy nodes become agents.
+        #
+        # Demote ONE AT A TIME, moving one line here per run:
+        #   ansible-playbook playbooks/45-change-node-role.yml \
+        #     --ask-become-pass -e target=k8s-5.home
+        # The playbook REFUSES to shrink below 3 servers by design.
         k3s_agents:
-          hosts: {}
+          hosts:
+            k8s-5.home:
