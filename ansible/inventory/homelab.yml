@@ -79,7 +79,6 @@ all:
             k8s-2.home:
             k8s-3.home:
             k8s-4.home:
-            k8s-6.home:
 
         # Workers. No etcd, no apiserver, no server/manifests directory. They
         # run `k3s-agent.service`, not `k3s.service` -- see k3s_unit in
@@ -105,3 +104,4 @@ all:
         k3s_agents:
           hosts:
             k8s-5.home:
+            k8s-6.home:
