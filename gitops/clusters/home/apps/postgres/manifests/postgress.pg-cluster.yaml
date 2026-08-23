@@ -54,8 +54,23 @@ spec:
         createdb: false
         passwordSecret:
           name: pg-role-techyon
+      # Owner of the `reportportal` database (reportportal.database.yaml).
+      # Not a superuser and cannot createdb: ReportPortal's migrations service
+      # only ever needs DDL inside its own database, which ownership grants.
+      - name: reportportal
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        passwordSecret:
+          name: pg-role-reportportal
 
   bootstrap:
+    # ⚠️ postInitSQL runs EXACTLY ONCE, at initdb, and this cluster bootstrapped
+    # long ago -- adding a line here now is a no-op that would only take effect
+    # if the cluster were rebuilt from scratch. New databases are declared as
+    # Database objects instead (reportportal.database.yaml), which the operator
+    # reconciles continuously against a running cluster.
     initdb:
       postInitSQL:
         - CREATE DATABASE necronia;

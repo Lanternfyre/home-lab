@@ -1,0 +1,9 @@
+#Notice chart name has to be a part of repoURL for oci
+# t3chy0n org runner scale set (runs-on: arc-linux). Same 0.14.2 pin +
+# chart-bump warning as arc-controller/app.yaml. MUST NOT sync before
+# arc-controller is green -- CRDs + controller SA dependency (ARC v4, C5).
+repoURL: "ghcr.io/actions/actions-runner-controller-charts"
+chart: "gha-runner-scale-set"
+targetRevision: "0.14.2"
+releaseName: "arc-t3chy0n"
+namespace: "arc-runners-t3chy0n"

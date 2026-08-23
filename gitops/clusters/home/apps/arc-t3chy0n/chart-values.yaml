@@ -1,0 +1,76 @@
+# t3chy0n org runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux`.
+#
+# Cloned from ../arc-lanternfyre. Every comment there still applies; the notes
+# below cover only what DIFFERS, because this scale set exists for a different
+# repo with a different problem.
+
+githubConfigUrl: "https://github.com/t3chy0n"
+
+# The 3-key Secret materialized by manifests/github-app.external-secret.yaml.
+# Same GitHub App as Lanternfyre (same app-id, same private key) installed on a
+# SECOND org, so only the installation-id differs -- see that file.
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux"
+
+minRunners: 0
+maxRunners: 3
+
+# 🔴 P0 #3 -- the chart auto-discovers the controller SA via a Helm `lookup`,
+# and ArgoCD renders with `helm template`, which has NO cluster access: the
+# lookup silently returns empty, the RoleBinding binds to nothing, and the
+# scale set sits at zero runners with no error. Always explicit.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    # Arbitrary PR code executes in this pod.
+    automountServiceAccountToken: false
+    priorityClassName: ci-runner
+    imagePullSecrets:
+      - name: ghcr-pull
+    containers:
+      - name: runner
+        # ── Toolchains: four stacks, one existing image, two downloads ───────
+        # claude-workbench builds .NET, Rust, Node and Python. Reusing
+        # Lanternfyre's actions-runner-dotnet image covers TWO of the four for
+        # free (python3 and the dotnet SDK are already baked, along with
+        # gh/oras/trivy). Node and Rust are fetched per job by setup-node and
+        # rustup.
+        #
+        # The alternative was a new four-toolchain image in docker-compedium.
+        # Rejected for now: it is a second image to build, publish and keep
+        # current, in exchange for saving a couple of minutes on a suite that
+        # runs a handful of times a day. If Rust toolchain downloads become the
+        # dominant cost, that is the moment to bake them -- and the measurement
+        # to make that call is the job timings, not a guess made here.
+        #
+        # ⚠️ Those two downloads are the reason the egress policy in manifests/
+        # is WIDER than Lanternfyre's. Removing an entry there does not slow a
+        # job down; it hangs it until timeout.
+        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        command: ["/home/runner/run.sh"]
+        resources:
+          # Lighter than Lanternfyre's: that scale set is sized for the
+          # Necronia suites whose hosted-runner OOM kills created it. The
+          # workbench suites are a .NET test project, a Rust workspace and a
+          # jest run -- none of which approached the hosted 7GB limit.
+          # ephemeral-storage in BOTH requests and limits, for the reason given
+          # in ../arc-lanternfyre/chart-values.yaml (emptyDir shares a
+          # filesystem with the containerd image store and the etcd WAL).
+          #
+          # Rust is the one to watch: a cargo target/ directory plus the
+          # registry cache is the largest ephemeral consumer of the four.
+          requests: {cpu: "1", memory: 2Gi, ephemeral-storage: 4Gi}
+          # NO cpu limit -- repo standing rule (CFS throttling).
+          limits: {memory: 6Gi, ephemeral-storage: 12Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 10Gi}}

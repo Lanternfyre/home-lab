@@ -1,0 +1,28 @@
+# OpenSearch Dashboards on Envoy Gateway.
+#
+# Attached to `homelab-gated`, and not optionally: Dashboards has no login of
+# its own in this deployment, and it fronts a data node running with the
+# security plugin disabled (../../opensearch/chart-values.yaml explains why).
+# The edge gate IS the authentication for both. Never move this to `homelab`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: opensearch-dashboards
+  namespace: opensearch
+  annotations:
+    gethomepage.dev/description: Search + analytics console
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Monitoring
+    gethomepage.dev/icon: opensearch.png
+    gethomepage.dev/name: OpenSearch
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - opensearch.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: opensearch-dashboards
+          port: 5601

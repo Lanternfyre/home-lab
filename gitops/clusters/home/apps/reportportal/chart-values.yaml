@@ -1,0 +1,114 @@
+# ReportPortal 26.8.12 (app 26.0.5).
+#
+# ── The shape of this file ───────────────────────────────────────────────────
+# The chart ships as an all-in-one: it bundles its own Postgres, RabbitMQ,
+# OpenSearch and MinIO as subcharts. ALL FOUR are switched off here and pointed
+# at real infrastructure instead, which is why the four `install: false` blocks
+# at the bottom are the most load-bearing lines in the file:
+#
+#   postgresql -> the shared CloudNativePG cluster (../postgres)
+#   rabbitmq   -> ../rabbitmq          (same chart + version RP would have used)
+#   opensearch -> ../opensearch        (same chart + version RP would have used)
+#   minio      -> nothing; binary data goes on the NAS RWX share instead
+#
+# The MinIO one is a bonus: RP's subchart pulls `bitnamilegacy/minio`, and this
+# repo left Bitnami deliberately (../redis/chart-values.yaml has that story).
+
+# ── Postgres ─────────────────────────────────────────────────────────────────
+# Database + owner role are declared in ../postgres/manifests/ (a CNPG Database
+# object and a managed role). The password arrives via
+# manifests/reportportal-db.external-secret.yaml; passwordKeyName below must
+# match the key that ExternalSecret writes.
+database:
+  endpoint: postgres-ha-rw.databases.svc.cluster.local
+  port: 5432
+  user: reportportal
+  dbName: reportportal
+  secretName: reportportal-db
+  passwordKeyName: postgresql-password
+  # The CNPG cluster does not require TLS on in-cluster connections.
+  ssl: disable
+
+# ── RabbitMQ ─────────────────────────────────────────────────────────────────
+# ⚠️ msgbroker.secretName expects the key `rabbitmq-password` and that name is
+# HARDCODED in the chart templates -- it has no *KeyName override, unlike the
+# database and searchengine blocks. manifests/rabbitmq-auth-replicated.external-secret.yaml
+# exists purely to republish the RabbitMQ credential under that exact key.
+#
+# The `analyzer` vhost is created by RP itself over the management API on
+# startup, which is what apiport/apiuser are for. ../rabbitmq/chart-values.yaml
+# documents why it is NOT pre-declared there.
+msgbroker:
+  endpoint: rabbitmq.rabbitmq.svc.cluster.local
+  port: 5672
+  apiport: 15672
+  user: rabbitmq
+  apiuser: rabbitmq
+  vhost: analyzer
+  secretName: rabbitmq-auth
+  ssl: false
+
+# ── OpenSearch ───────────────────────────────────────────────────────────────
+# Endpoint is a HOST ONLY -- no scheme, no port (the chart appends both from
+# ssl/port). ssl false and empty credentials because the data node runs with the
+# security plugin disabled, which is RP's own subchart posture, not a local
+# shortcut; ../opensearch/chart-values.yaml has the full reasoning.
+searchengine:
+  endpoint: opensearch-cluster-master.opensearch.svc.cluster.local
+  port: 9200
+  ssl: false
+
+# ── Binary storage: the NAS, not a bucket ────────────────────────────────────
+# Attachments, screenshots and logs land on the qnap-samba RWX share. With a NAS
+# already mounted cluster-wide, an object store would be a second storage system
+# to run and back up for no gain.
+#
+# ⚠️ The chart PROVISIONS this PVC (templates/volumes/pvc.yaml) -- there is no
+# `existingClaim` option, so it is configured here rather than hand-written into
+# manifests/. RWX is mandatory and not merely preferred: FOUR workloads mount
+# this claim concurrently -- api, uat, jobs and the analyzer StatefulSet
+# (verified by rendering, 2026-08-23) -- and nothing co-schedules them. `jobs`
+# is on that list because it is the retention worker: it needs write access to
+# delete expired attachments, which is the reclaim path C′ in the plan exists to
+# verify.
+#
+# ⚠️ `reclaimPolicy` below is INERT in this configuration. The chart only honours
+# it when volumeConfig.type is set (i.e. when it also provisions the PV). With
+# dynamic provisioning the StorageClass decides -- and qnap-samba is already
+# Retain, which is the outcome we want. Left visible rather than deleted so
+# nobody re-adds it believing it does something.
+#
+# Growing this later is cheap, unlike the two StatefulSet volumes: it is a plain
+# PVC on a class with allowVolumeExpansion, so raise `capacity` and re-sync.
+# Hence a modest starting size.
+storage:
+  type: filesystem
+  volume:
+    storageClassName: qnap-samba
+    accessModes:
+      - ReadWriteMany
+    capacity: 20Gi
+    reclaimPolicy: Retain
+
+# ── Initial superadmin password ──────────────────────────────────────────────
+# ⚠️ Applied on FIRST LAUNCH ONLY. Changing this value later does nothing; the
+# password lives in the database from then on and is changed through the UI.
+uat:
+  superadminInitPasswd:
+    secretName: reportportal-admin
+    passwordKeyName: superadmin-password
+
+# The chart's own Ingress: off. This cluster does Gateway API; see
+# manifests/reportportal.httproute.yaml.
+ingress:
+  enable: false
+
+# ── The four externalised dependencies ───────────────────────────────────────
+postgresql:
+  install: false
+rabbitmq:
+  install: false
+opensearch:
+  install: false
+minio:
+  install: false

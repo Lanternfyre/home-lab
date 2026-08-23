@@ -1,0 +1,86 @@
+# OpenSearch 3.8.0 — single node, backing ReportPortal's auto-analyzer.
+#
+# Every non-default below is either a homelab storage rule or a setting copied
+# from ReportPortal's OWN opensearch subchart values (reportportal 26.8.12), so
+# that externalising the dependency changes the lifecycle and NOT the software.
+
+# ── Single node, deliberately ────────────────────────────────────────────────
+# RP's own subchart sets singleNode: true. Three nodes would triple the biggest
+# memory consumer in the cluster to give HA to a reporting sidecar whose data is
+# reconstructible by re-importing launches. `singleNode` also flips the cluster
+# bootstrap to single-node discovery -- setting replicas: 1 alone would leave it
+# waiting for peers that never arrive.
+singleNode: true
+replicas: 1
+
+# ── Security plugin OFF, and this is upstream's posture, not a shortcut ──────
+# ReportPortal's bundled opensearch runs with exactly these two env vars. RP
+# then talks plain HTTP with no credentials (searchengine.ssl: false and empty
+# user/password are the chart defaults, and there is no code path that
+# negotiates the demo certs).
+#
+# What it costs: any pod in the cluster that can reach this Service can read and
+# write the indices. The mitigations are that there is NO HTTPRoute for this
+# Service (only opensearch-dashboards is routed) and the contents are test
+# reports, not credentials. Turning security on means provisioning real certs
+# AND flipping RP's searchengine.ssl -- a joint change, never one side alone.
+extraEnvs:
+  - name: DISABLE_INSTALL_DEMO_CONFIG
+    value: "true"
+  - name: DISABLE_SECURITY_PLUGIN
+    value: "true"
+
+# The chart defaults to https. With the security plugin gone the node only
+# speaks http, and this value is interpolated into the curl the pod's own
+# pre-stop drain hook uses to poll cluster health -- left at https it fails
+# every call. (The liveness/readiness probes are plain tcpSocket checks and
+# would NOT have caught this: they pass against a listener speaking anything.)
+protocol: http
+
+securityConfig:
+  enabled: false
+
+# RP's subchart raises this too: OpenSearch takes well over the default grace
+# period to open its HTTP port on a cold start with an empty data volume.
+startupProbe:
+  initialDelaySeconds: 30
+
+# ── Storage ──────────────────────────────────────────────────────────────────
+# ⚠️ storageClass MUST be set. Unset, the chart omits storageClassName and the
+# claim lands on `local-path` -- node-local with reclaimPolicy Delete, so a
+# reschedule silently loses every index.
+#
+# ⚠️ This is a StatefulSet volumeClaimTemplate, and those are IMMUTABLE. Growing
+# it later means patching the PVC directly and leaving this value drifted from
+# reality until the StatefulSet is recreated. qnap-iscsi does carry
+# allowVolumeExpansion: true, so the escape hatch exists -- it is just not a
+# clean GitOps operation. Hence 20Gi up front rather than the chart's 8Gi.
+persistence:
+  enabled: true
+  storageClass: qnap-iscsi
+  size: 20Gi
+  # The fsgroup-volume initContainer defaults to `busybox:latest`. This repo
+  # does not run moving tags: an image that silently moved under a running
+  # workload is exactly how the Bitnami redis outage happened
+  # (../redis/chart-values.yaml). Pinned to a real version.
+  image: busybox
+  imageTag: "1.37.0"
+
+# ── Heap ─────────────────────────────────────────────────────────────────────
+# Explicit, because the chart default (-Xmx512M) and the resource limit below
+# are set in two different places and drift apart silently. Rule of thumb is
+# heap <= half the container limit, leaving the rest for Lucene's off-heap
+# file cache: 1G heap against a 2Gi limit.
+opensearchJavaOpts: "-Xmx1g -Xms1g"
+
+resources:
+  requests: {cpu: 200m, memory: 1Gi}
+  # NO cpu limit -- repo standing rule (CFS throttling).
+  limits: {memory: 2Gi}
+
+service:
+  type: ClusterIP
+
+# No HTTPRoute for this app on purpose. The human-facing surface is
+# ../opensearch-dashboards; nothing outside the cluster should reach the data
+# node directly, least of all with the security plugin disabled.
