@@ -1,0 +1,151 @@
+# Egress allowlist for the t3chy0n CI runner pods.
+#
+# Cloned from ../../arc-lanternfyre/manifests/runner-egress.ciliumnetworkpolicy.yaml
+# — read that file first, it carries the reasoning for the structure (why a CNP
+# and not a NetworkPolicy, and why the node-admit ingress rule is
+# non-negotiable). This file documents only what is DIFFERENT, and both
+# differences matter.
+#
+# ── Difference 1: this policy is NOT cluster-local-deny ──────────────────────
+# Lanternfyre's file states the invariant plainly: "Everything else — INCLUDING
+# the cluster-local pod and service space — is denied", and its V6 check proves
+# it with a cluster-local curl that must time out. That invariant does NOT hold
+# here, deliberately: these runners post test results to ReportPortal over
+# cluster DNS, so there is exactly one cluster-local egress rule below.
+#
+# The narrowing is one namespace wide, and it is the whole point of running
+# these jobs in-cluster rather than on GitHub-hosted runners. Lanternfyre's
+# policy is untouched and its V6 assertion remains true for that scale set.
+#
+# ── Difference 2: four toolchains, not one ───────────────────────────────────
+# Lanternfyre builds .NET. This scale set also builds Rust, Node and Python, so
+# the FQDN list is wider. Each added host is load-bearing: a missing entry does
+# not degrade a job, it hangs it until timeout, and it does so as a connection
+# timeout rather than anything that names DNS or a policy. That failure mode is
+# why the additions are grouped and labelled by toolchain below.
+#
+# ⚠️ Extend this list from `hubble observe --verdict DROPPED` evidence, not
+# guesswork — the same instruction the Lanternfyre file gives, earned there by
+# an OCSP hang that cost a debugging session.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: runner-egress
+  namespace: arc-runners-t3chy0n
+spec:
+  endpointSelector: {}   # every pod in this namespace (runners + dind)
+
+  ingress:
+    # Node-admit: kubelet startup/liveness probes originate from the host
+    # (this node) or, under some topologies, another node. A policy that
+    # selects a pod without this admits nothing and the pod crash-loops.
+    - fromEntities:
+        - host
+        - remote-node
+
+  egress:
+    # DNS to kube-dns, with the DNS proxy engaged so toFQDNs below works.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ── ReportPortal, in-cluster ─────────────────────────────────────────────
+    # The reason this scale set exists in the cluster at all. Ingestion never
+    # traverses the edge gateway: runners post JUnit XML straight at the
+    # in-cluster Service.
+    #
+    # ⚠️ Port 8585, NOT 8080. ReportPortal has no front-end service that proxies
+    # the others — `reportportal-index` serves only the root path. The import
+    # endpoint lives on `reportportal-api`, which listens on 8585. An 8080 rule
+    # here would look right and pass nothing.
+    #
+    # Scoped to the namespace rather than a pod label, because pinning component
+    # labels would break on any chart-side rename; the namespace boundary is the
+    # meaningful one.
+    #
+    # ⚠️ Without this rule the symptom is a HANG, not a refusal: curl sits until
+    # its timeout and the workflow step reports a network error with no hint
+    # that a policy is involved. If imports mysteriously stop after a namespace
+    # rename, look here first.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: reportportal
+      toPorts:
+        - ports:
+            - port: "8585"
+              protocol: TCP
+
+    # The GitHub + package-registry surface the workflows actually use.
+    - toFQDNs:
+        - matchName: github.com
+        - matchName: api.github.com
+        - matchName: codeload.github.com
+        - matchName: uploads.github.com
+        # ⚠️ Cilium's `*` matches EXACTLY ONE DNS label (it cannot span a dot),
+        # so BOTH patterns are required — dropping the second silently killed
+        # the runner long-poll on the Lanternfyre set (2026-08-21).
+        - matchPattern: "*.githubusercontent.com"
+        - matchPattern: "*.actions.githubusercontent.com"
+        - matchName: ghcr.io
+        - matchPattern: "*.ghcr.io"
+
+        # ── .NET (inherited from Lanternfyre) ────────────────────────────────
+        - matchName: api.nuget.org
+        - matchName: www.nuget.org
+        - matchName: dot.net
+        - matchName: builds.dotnet.microsoft.com
+        - matchName: ci.dot.net
+        - matchPattern: "*.blob.core.windows.net"
+
+        # ── Node ─────────────────────────────────────────────────────────────
+        # npmjs for packages; nodejs.org because the runner image does not bake
+        # a Node toolchain and setup-node fetches the tarball per job.
+        - matchName: registry.npmjs.org
+        - matchName: nodejs.org
+
+        # ── Rust ─────────────────────────────────────────────────────────────
+        # static.rust-lang.org serves rustup and the toolchain itself.
+        # index.crates.io is the one people forget: modern cargo uses the SPARSE
+        # registry protocol and talks to it, NOT to github.com/rust-lang/crates.io-index.
+        # A policy with crates.io but no index.crates.io fails at dependency
+        # resolution, before a single crate is downloaded.
+        - matchName: static.rust-lang.org
+        - matchName: index.crates.io
+        - matchName: crates.io
+        - matchName: static.crates.io
+
+        # ── Python ───────────────────────────────────────────────────────────
+        # pypi.org resolves and files.pythonhosted.org serves the wheels; pip
+        # needs both, and an allowlist with only the first fails at download
+        # having already printed a reassuring "Collecting ..." line.
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # Certificate revocation infrastructure — plain HTTP :80 by design (CRL and
+    # OCSP are pre-TLS protocols). Inherited wholesale from Lanternfyre, where
+    # it was found the hard way: .NET validates Authenticode chains and the
+    # 443-only policy silently dropped the OCSP call. Port 80 ONLY here.
+    - toFQDNs:
+        - matchPattern: "*.digicert.com"
+        - matchPattern: "*.ws.symantec.com"
+        - matchName: crl.microsoft.com
+        - matchName: oneocsp.microsoft.com
+        - matchName: www.microsoft.com
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP

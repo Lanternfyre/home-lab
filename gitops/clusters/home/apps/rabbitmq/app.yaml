@@ -1,0 +1,14 @@
+# RabbitMQ — the message broker between ReportPortal's api, jobs and analyzer.
+#
+# This is the SAME chart and version ReportPortal would have installed as its
+# own subchart (reportportal 26.8.12 depends on cloudpirates/rabbitmq 0.21.15),
+# so externalising it changes the lifecycle and not the software. cloudpirates
+# packages the OFFICIAL rabbitmq image at a pinned digest -- deliberately not
+# Bitnami, for the reasons in ../redis/chart-values.yaml.
+#
+# ⚠️ ReportPortal MUST NOT sync before this is green.
+repoURL: "registry-1.docker.io/cloudpirates"
+chart: "rabbitmq"
+targetRevision: "0.21.15"
+releaseName: "rabbitmq"
+namespace: "rabbitmq"

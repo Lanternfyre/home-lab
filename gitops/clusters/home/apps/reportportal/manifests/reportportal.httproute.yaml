@@ -1,0 +1,74 @@
+# ReportPortal on Envoy Gateway. The chart's Ingress is disabled in
+# chart-values.yaml.
+#
+# ⚠️ FOUR RULES, NOT ONE — and this is the whole reason this file is easy to get
+# wrong. ReportPortal has no single front-end service that proxies the rest: the
+# path fan-out IS the routing layer, and it is done by whatever ingress sits in
+# front. Point everything at `-index` and you get the landing page while the UI
+# assets, the login flow and the entire API 404.
+#
+# The mapping and the ports below are copied from the chart's OWN
+# templates/ingress/gateway-http-route.yaml, which is the authoritative source:
+#
+#     /      -> reportportal-index   8080
+#     /ui    -> reportportal-ui      8080
+#     /uat   -> reportportal-uat     9999   (authorization / login)
+#     /api   -> reportportal-api     8585
+#
+# Note the three DIFFERENT ports; only two of the four services listen on 8080.
+#
+# No URLRewrite filter anywhere, deliberately: the chart's own route has none,
+# so each service receives the full original path INCLUDING its prefix. That is
+# why the API's own routes are `/api/v1/...` and not `/v1/...`. Adding a rewrite
+# here would break every one of them.
+#
+# Gateway API matches by longest path prefix, not document order, so `/` does
+# not shadow the three specific rules.
+#
+# Attached to `homelab-gated`. RP has its own login, so this is defence in depth
+# rather than the only lock — the same posture as ../../rabbitmq.
+#
+# ⚠️ CI runners do NOT come through here. They post to the in-cluster
+# reportportal-api Service over cluster DNS, which is why the ../../arc-t3chy0n
+# egress policy opens port 8585 into this namespace. Ingestion never leaves the
+# cluster and this hostname is for humans only.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: reportportal
+  namespace: reportportal
+  annotations:
+    gethomepage.dev/description: Test results + history
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: CI/CD
+    gethomepage.dev/icon: reportportal.png
+    gethomepage.dev/name: ReportPortal
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - reports.lab.techyon.dev
+  rules:
+    - matches:
+        - path: {type: PathPrefix, value: /ui}
+      backendRefs:
+        - name: reportportal-ui
+          port: 8080
+    - matches:
+        - path: {type: PathPrefix, value: /uat}
+      backendRefs:
+        - name: reportportal-uat
+          port: 9999
+    - matches:
+        - path: {type: PathPrefix, value: /api}
+      backendRefs:
+        - name: reportportal-api
+          port: 8585
+    # Root last, for readability only — Gateway API resolves by longest prefix.
+    - matches:
+        - path: {type: PathPrefix, value: /}
+      backendRefs:
+        - name: reportportal-index
+          port: 8080

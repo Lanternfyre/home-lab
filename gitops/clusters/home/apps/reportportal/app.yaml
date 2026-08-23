@@ -1,0 +1,16 @@
+# ReportPortal — test-results history keyed by repo + commit.
+#
+# ⚠️ SYNC ORDER. Every one of RP's four dependencies is external, so this app is
+# the LAST of the set to come up and it needs all of them green first:
+#   ../opensearch      (analyzer indices)
+#   ../rabbitmq        (api <-> analyzer messaging)
+#   ../postgres        (the `reportportal` Database + managed role)
+#   the qnap-samba RWX share (binary storage; no object store, see chart-values)
+# ArgoCD will retry, so an early sync self-corrects rather than wedging -- but a
+# first deploy against a missing dependency produces CrashLoops that look like
+# RP bugs and are not.
+repoURL: "https://k8s.reportportal.io"
+chart: "reportportal"
+targetRevision: "26.8.12"
+releaseName: "reportportal"
+namespace: "reportportal"

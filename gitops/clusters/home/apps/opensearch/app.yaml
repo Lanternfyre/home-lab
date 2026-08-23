@@ -1,0 +1,13 @@
+# OpenSearch data node — the search/analytics engine behind ReportPortal.
+#
+# Standalone rather than RP's `opensearch.install: true` subchart (RP pins the
+# same chart at the same 3.8.0, so this is the identical software with its own
+# lifecycle, its own values file, and a version we bump on our schedule).
+#
+# ⚠️ ReportPortal MUST NOT sync before this is green — RP's analyzer connects at
+# startup. See ../reportportal/chart-values.yaml (searchengine.endpoint).
+repoURL: "https://opensearch-project.github.io/helm-charts/"
+chart: "opensearch"
+targetRevision: "3.8.0"
+releaseName: "opensearch"
+namespace: "opensearch"

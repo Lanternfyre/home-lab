@@ -1,0 +1,13 @@
+# OpenSearch Dashboards — the web console for ../opensearch.
+#
+# Separate app from the data node on purpose: two charts, two lifecycles, and
+# only this one has a UI to route. Lands in the SAME namespace as the data node
+# (see namespace below) so the default in-cluster Service name resolves.
+#
+# ⚠️ MUST NOT sync before ../opensearch is green -- it connects at startup and
+# CrashLoops against a missing backend.
+repoURL: "https://opensearch-project.github.io/helm-charts/"
+chart: "opensearch-dashboards"
+targetRevision: "3.8.0"
+releaseName: "opensearch-dashboards"
+namespace: "opensearch"

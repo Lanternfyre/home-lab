@@ -1,0 +1,84 @@
+# RabbitMQ 4.3 (cloudpirates chart 0.21.15) — ReportPortal's message broker.
+#
+# ⚠️ READ BEFORE EDITING: three settings below are NOT generic RabbitMQ
+# hygiene. They are copied from ReportPortal's own subchart values (reportportal
+# 26.8.12) and RP does not start correctly without them. Externalising a
+# dependency means carrying its requirements across, and these are the ones that
+# would otherwise fail late and obscurely rather than at deploy time.
+
+# ── RP requirement 1: the plugins ────────────────────────────────────────────
+# RP's exchanges are consistent-hash exchanges, and it uses shovel to move
+# messages between them. Without these the analyzer's queues never bind and
+# test results are simply never analysed -- with no error at the RP UI.
+additionalPlugins:
+  - rabbitmq_consistent_hash_exchange
+  - rabbitmq_shovel
+  - rabbitmq_shovel_management
+
+config:
+  # ── RP requirement 2: an option RabbitMQ 4.3 deprecated ────────────────────
+  # RabbitMQ 4.3 denies queue_master_locator by default; the ReportPortal API
+  # still sets it and its queue declarations fail without this permit.
+  extraConfiguration: |
+    deprecated_features.permit.queue_master_locator = true
+
+# ── The `analyzer` vhost is created by RP, NOT declared here ─────────────────
+# RP publishes into vhost `analyzer` (msgbroker.vhost) and creates it over the
+# management API on startup -- that is what msgbroker.apiport/apiuser are for,
+# and it is how RP's own bundled subchart works (it never enables definitions).
+#
+# ⚠️ Do NOT "improve" this by switching on `definitions.enabled` to declare the
+# vhost declaratively. The chart renders the definitions ConfigMap with
+#     "users": [{"name": "rabbitmq", "password": "", ...}]
+# and it does so EVEN WITH auth.existingSecret set, because Helm cannot read a
+# Secret at template time. Importing that file on startup fights the credential
+# ESO just provisioned. Verified by rendering the chart both ways, 2026-08-23.
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+# From manifests/rabbitmq-auth.external-secret.yaml (1Password -> ESO). The same
+# 1Password item is materialised a second time INTO the reportportal namespace
+# by ../reportportal/manifests/rabbitmq-auth-replicated.external-secret.yaml --
+# a Secret cannot be mounted across namespaces, so it is replicated at the ESO
+# layer rather than copied by hand (the ../immich redis-auth precedent).
+#
+# ⚠️ The username here must match msgbroker.user in ../reportportal.
+auth:
+  enabled: true
+  username: rabbitmq
+  existingSecret: rabbitmq-auth
+  existingPasswordKey: password
+  existingErlangCookieKey: erlang-cookie
+
+# ── Storage ──────────────────────────────────────────────────────────────────
+# ⚠️ storageClass MUST be set: unset lands on `local-path`, which is node-local
+# with reclaimPolicy Delete -- a reschedule would lose undelivered messages and,
+# worse, the vhost/user definitions.
+#
+# ⚠️ StatefulSet volumeClaimTemplate: IMMUTABLE. See the same warning in
+# ../opensearch/chart-values.yaml. 8Gi is the chart default and is generous for
+# a broker whose queues drain in seconds; the risk here is a stuck consumer
+# backing up, not steady growth.
+persistence:
+  enabled: true
+  storageClass: qnap-iscsi
+  size: 8Gi
+
+service:
+  type: ClusterIP
+  amqpPort: 5672
+  managementPort: 15672
+
+# Management UI stays on by default (chart default) -- it is the operational
+# window onto queue depth, which is the first thing to look at when RP stops
+# analysing. Routed by manifests/rabbitmq.httproute.yaml.
+managementPlugin:
+  enabled: true
+
+# The chart's own Ingress: off. This cluster does Gateway API; see manifests/.
+ingress:
+  enabled: false
+
+resources:
+  requests: {cpu: 100m, memory: 256Mi}
+  # NO cpu limit -- repo standing rule (CFS throttling).
+  limits: {memory: 1Gi}

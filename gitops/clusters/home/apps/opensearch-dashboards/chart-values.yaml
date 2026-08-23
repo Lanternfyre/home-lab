@@ -1,0 +1,38 @@
+# OpenSearch Dashboards 3.8.0 — the human-facing console for ../opensearch.
+#
+# What it is for here: ReportPortal has its own UI for launches and test
+# history, but everything RP stores lands in OpenSearch indices. This is the
+# window onto those indices directly -- ad-hoc queries, index sizes, and the
+# "what is actually on disk" question that RP's UI cannot answer.
+
+# ── The one setting that matters ─────────────────────────────────────────────
+# The chart default is https://opensearch-cluster-master:9200. The data node
+# runs with the security plugin disabled (see ../opensearch/chart-values.yaml
+# for why that is upstream's own posture), so it speaks plain http and the
+# default URL fails the connection check on every startup.
+#
+# Fully-qualified rather than the bare service name: harmless within the same
+# namespace, and it survives someone moving this release elsewhere.
+opensearchHosts: "http://opensearch-cluster-master.opensearch.svc.cluster.local:9200"
+
+replicaCount: 1
+
+# ── Sizing, against the vendor's own numbers ─────────────────────────────────
+# The chart README quotes a 4GiB minimum and recommends 8GiB. That figure is
+# written for a production install serving many analysts against a large
+# cluster; this instance serves one person against a single-node backend. 1Gi
+# is the honest floor for a Node process rendering dashboards -- if the pod
+# starts OOMKilling under real use, raise the limit rather than assuming the
+# vendor number was wrong.
+resources:
+  requests: {cpu: 100m, memory: 512Mi}
+  # NO cpu limit -- repo standing rule (CFS throttling).
+  limits: {memory: 1Gi}
+
+service:
+  type: ClusterIP
+  port: 5601
+
+# Routed by manifests/opensearch-dashboards.httproute.yaml on the GATED
+# gateway: Dashboards has no authentication of its own here, because the
+# backend it fronts has none either.

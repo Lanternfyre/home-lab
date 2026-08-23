@@ -1,0 +1,28 @@
+# The `reportportal` database on postgres-ha.
+#
+# Lives HERE, in the postgres app, and not in ../../reportportal/manifests/:
+# a CNPG Database object must sit in the same namespace as the Cluster it names,
+# and the ReportPortal app deploys into the `reportportal` namespace.
+#
+# Why a Database object rather than a postInitSQL line: postInitSQL runs once at
+# initdb and this cluster bootstrapped in January. The Database CRD (operator
+# 1.29) reconciles against a live cluster, which is the only mechanism that can
+# add a database to it now.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: reportportal
+  namespace: databases
+spec:
+  cluster:
+    name: postgres-ha
+  name: reportportal
+  # The managed role declared in postgress.pg-cluster.yaml. Ownership is what
+  # lets RP's migrations service create its own schema without a superuser.
+  owner: reportportal
+
+  # ⚠️ retain, not delete. `delete` would DROP the database if this object is
+  # ever removed from git -- and ArgoCD prunes. Every other volume in this
+  # cluster is on a Retain storage class for the same reason; this is the same
+  # rule expressed at the database layer.
+  databaseReclaimPolicy: retain

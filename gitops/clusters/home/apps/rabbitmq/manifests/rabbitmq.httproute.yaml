@@ -1,0 +1,33 @@
+# RabbitMQ management UI on Envoy Gateway. The chart's own Ingress is disabled
+# in chart-values.yaml.
+#
+# Attached to `homelab-gated`. The management UI DOES have its own login (the
+# `rabbitmq` administrator user), so unlike OpenSearch Dashboards this is not
+# the only thing standing between the internet and the data -- but it is a
+# broker admin console with full queue and vhost control, so it gets the gate
+# anyway. Defence in depth is the cheap option here.
+#
+# NOTE this routes the management port only (15672). AMQP (5672) is deliberately
+# NOT exposed: producers and consumers are all in-cluster.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: rabbitmq
+  namespace: rabbitmq
+  annotations:
+    gethomepage.dev/description: Message broker
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/icon: rabbitmq.png
+    gethomepage.dev/name: RabbitMQ
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - rabbitmq.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: rabbitmq
+          port: 15672
