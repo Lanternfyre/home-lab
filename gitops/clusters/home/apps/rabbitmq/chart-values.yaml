@@ -78,7 +78,9 @@ managementPlugin:
 ingress:
   enabled: false
 
+# 1 core: RabbitMQ here brokers a handful of messages per test import and is
+# idle the rest of the time. The limit exists to bound a runaway, not to ration
+# a busy broker — and it is comfortably above anything this workload reaches.
 resources:
   requests: {cpu: 100m, memory: 256Mi}
-  # NO cpu limit -- repo standing rule (CFS throttling).
-  limits: {memory: 1Gi}
+  limits: {cpu: "1", memory: 1Gi}
