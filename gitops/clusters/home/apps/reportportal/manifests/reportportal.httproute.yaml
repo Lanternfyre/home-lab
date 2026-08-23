@@ -1,32 +1,51 @@
 # ReportPortal on Envoy Gateway. The chart's Ingress is disabled in
 # chart-values.yaml.
 #
-# ⚠️ FOUR RULES, NOT ONE — and this is the whole reason this file is easy to get
-# wrong. ReportPortal has no single front-end service that proxies the rest: the
-# path fan-out IS the routing layer, and it is done by whatever ingress sits in
-# front. Point everything at `-index` and you get the landing page while the UI
-# assets, the login flow and the entire API 404.
+# ⚠️ THIS DELIBERATELY DIFFERS FROM THE CHART'S OWN ROUTE, and the difference is
+# the fix for a real bug. Read before "correcting" it back.
 #
-# The mapping and the ports below are copied from the chart's OWN
-# templates/ingress/gateway-http-route.yaml, which is the authoritative source:
+# The chart's templates/ingress/gateway-http-route.yaml sends `/` to
+# reportportal-index. That breaks the UI: the SPA requests several of its
+# bundles at the ROOT (/polyfills.app.<hash>.js, /main.app.<hash>.js,
+# /main_app.app.<hash>.js, /favicon.ico), index does not serve them, and it
+# answers with `302 -> /ui/#notfound`. The browser gets a redirect where it
+# expects JavaScript, the SPA never boots, and the user is dropped on uat's bare
+# Spring login page — which offers only a SAML button, because no SAML provider
+# is registered. It looks like a broken login; it is a broken asset route.
+# Observed 2026-08-23; the login itself was never at fault.
 #
-#     /      -> reportportal-index   8080
-#     /ui    -> reportportal-ui      8080
-#     /uat   -> reportportal-uat     9999   (authorization / login)
-#     /api   -> reportportal-api     8585
+# ── Why the root belongs to `ui` ─────────────────────────────────────────────
+# reportportal-ui is an nginx SPA catch-all: it serves the real bundles at root
+# (verified: /polyfills.app.<hash>.js returns 39679 bytes of
+# application/javascript, byte-identical to the /ui/ copy) and falls back to
+# index.html for anything it does not recognise.
 #
-# Note the three DIFFERENT ports; only two of the four services listen on 8080.
+# ⚠️ That fallback is exactly why `/` alone is NOT enough. ui answers 200 +
+# text/html for ANY path, including /composite/info and a deliberately bogus
+# one. Routing everything to it would silently turn index's JSON endpoints into
+# HTML — a 200 that looks healthy and is wrong. So index keeps its four real
+# endpoints, enumerated explicitly below, and ui gets the rest.
 #
-# No URLRewrite filter anywhere, deliberately: the chart's own route has none,
-# so each service receives the full original path INCLUDING its prefix. That is
-# why the API's own routes are `/api/v1/...` and not `/v1/...`. Adding a rewrite
-# here would break every one of them.
+#     /composite  -> index  8080   JSON (info + health; the SPA reads these)
+#     /info       -> index  8080   JSON
+#     /health     -> index  8080   JSON
+#     /ui         -> ui     8080
+#     /uat        -> uat    9999   authorization / login
+#     /api        -> api    8585
+#     /           -> ui     8080   SPA + its root-level assets
 #
-# Gateway API matches by longest path prefix, not document order, so `/` does
-# not shadow the three specific rules.
+# Note the three DIFFERENT ports; only ui and index listen on 8080.
 #
-# Attached to `homelab-gated`. RP has its own login, so this is defence in depth
-# rather than the only lock — the same posture as ../../rabbitmq.
+# Gateway API resolves Exact before PathPrefix, and longer prefixes before
+# shorter, so /info and /health beat the `/` catch-all and the order below is
+# for human readability only.
+#
+# No URLRewrite filter anywhere, matching the chart: each service receives the
+# full original path INCLUDING its prefix. That is why the API's own routes are
+# `/api/v1/...` and not `/v1/...`. Adding a rewrite would break every one.
+#
+# Attached to `homelab-gated`. RP has its own login, so the gate is defence in
+# depth rather than the only lock — the same posture as ../../rabbitmq.
 #
 # ⚠️ CI runners do NOT come through here. They post to the in-cluster
 # reportportal-api Service over cluster DNS, which is why the ../../arc-t3chy0n
@@ -52,9 +71,15 @@ spec:
     - reports.lab.techyon.dev
   rules:
     - matches:
-        - path: {type: PathPrefix, value: /ui}
+        - path: {type: PathPrefix, value: /composite}
       backendRefs:
-        - name: reportportal-ui
+        - name: reportportal-index
+          port: 8080
+    - matches:
+        - path: {type: Exact, value: /info}
+        - path: {type: Exact, value: /health}
+      backendRefs:
+        - name: reportportal-index
           port: 8080
     - matches:
         - path: {type: PathPrefix, value: /uat}
@@ -66,9 +91,14 @@ spec:
       backendRefs:
         - name: reportportal-api
           port: 8585
-    # Root last, for readability only — Gateway API resolves by longest prefix.
+    - matches:
+        - path: {type: PathPrefix, value: /ui}
+      backendRefs:
+        - name: reportportal-ui
+          port: 8080
+    # Catch-all LAST for readability; Gateway API resolves by specificity.
     - matches:
         - path: {type: PathPrefix, value: /}
       backendRefs:
-        - name: reportportal-index
+        - name: reportportal-ui
           port: 8080
