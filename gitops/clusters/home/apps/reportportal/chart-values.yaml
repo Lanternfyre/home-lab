@@ -14,6 +14,75 @@
 # The MinIO one is a bonus: RP's subchart pulls `bitnamilegacy/minio`, and this
 # repo left Bitnami deliberately (../redis/chart-values.yaml has that story).
 
+# ── 🔴 Required under ArgoCD, and the deploy WEDGES without it ───────────────
+# The chart's `pre-upgrade-cleanup` Job is a `helm.sh/hook: pre-upgrade`, which
+# ArgoCD translates into a PreSync hook. That Job runs as the `reportportal`
+# ServiceAccount — but with this flag off, the ServiceAccount, Role and
+# RoleBinding render as ORDINARY resources, which ArgoCD syncs in the main phase
+# AFTER PreSync completes.
+#
+# So the hook waits for a ServiceAccount that cannot be created until the hook
+# finishes. The observed failure is not a crash or a timeout, it is silence:
+#
+#   Error creating: pods "reportportal-pre-upgrade-cleanup-" is forbidden:
+#   error looking up service account reportportal/reportportal: not found
+#
+# repeated forever on the Job, the Application stuck OutOfSync/Missing, and NOT
+# ONE application pod ever created. Diagnosed on the first deploy, 2026-08-23.
+#
+# Setting this puts the three RBAC objects on `pre-install,pre-upgrade` hooks at
+# weights 3/4/5, ahead of the cleanup Job at weight 10 — so they exist before it
+# runs. That is the flag's entire purpose; its own doc line reads "Enable ArgoCD
+# webhooks for ServiceAccount, Role, RoleBinding, and pre-upgrade cleanup", and
+# it touches nothing else in the chart.
+global:
+  argocd:
+    enabled: true
+
+# ── CPU limits raised, because this chart will not let us remove them ────────
+# The repo's standing rule is NO cpu limits — CFS throttling turns a busy
+# moment into a hang, and the memory limit is what bounds the dangerous
+# dimension. This chart makes that rule unenforceable: its deployment templates
+# interpolate the field directly,
+#     cpu: {{ .Values.serviceindex.resources.limits.cpu }}
+# so the key is emitted unconditionally and no value can delete it.
+#
+# ⚠️ Do NOT "fix" this with `cpu: null`. That was tried. It renders a bare
+# `cpu:`, which Kubernetes reads as a limit of ZERO, and the API server rejects
+# the object outright:
+#     spec.template.spec.containers[0].resources.requests: Invalid value:
+#     "150m": must be less than or equal to cpu limit of 0
+# Proven with `kubectl apply --dry-run=server`, 2026-08-23.
+#
+# So the limits are raised to a ceiling nothing here will reach, which buys what
+# the rule is actually for: no throttling under normal load. Limits do not
+# reserve capacity, so a high ceiling costs nothing on a quiet cluster; requests
+# are left at the vendor's numbers, since those are what the scheduler uses.
+#
+# The chart's own defaults were the problem worth fixing: index and ui shipped
+# at 200m, and 100m is precisely what crash-looped ../opensearch-dashboards nine
+# times on the first deploy.
+serviceindex:
+  resources:
+    requests: {cpu: 150m, memory: 128Mi}
+    limits: {cpu: "2", memory: 256Mi}
+serviceui:
+  resources:
+    requests: {cpu: 100m, memory: 64Mi}
+    limits: {cpu: "2", memory: 128Mi}
+serviceapi:
+  resources:
+    requests: {cpu: 500m, memory: 1Gi}
+    limits: {cpu: "4", memory: 2Gi}
+serviceanalyzer:
+  resources:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits: {cpu: "2", memory: 1Gi}
+servicejobs:
+  resources:
+    requests: {cpu: 100m, memory: 248Mi}
+    limits: {cpu: "2", memory: 512Mi}
+
 # ── Postgres ─────────────────────────────────────────────────────────────────
 # Database + owner role are declared in ../postgres/manifests/ (a CNPG Database
 # object and a managed role). The password arrives via
@@ -97,6 +166,12 @@ uat:
   superadminInitPasswd:
     secretName: reportportal-admin
     passwordKeyName: superadmin-password
+  # uat's cpu limit is stripped here rather than in the block above, because a
+  # second top-level `uat:` key would silently REPLACE this one — YAML keeps the
+  # last duplicate, and the superadmin password would vanish with no error.
+  resources:
+    requests: {cpu: 100m, memory: 512Mi}
+    limits: {cpu: "2", memory: 1Gi}
 
 # The chart's own Ingress: off. This cluster does Gateway API; see
 # manifests/reportportal.httproute.yaml.

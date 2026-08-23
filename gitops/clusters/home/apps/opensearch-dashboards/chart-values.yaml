@@ -24,10 +24,29 @@ replicaCount: 1
 # is the honest floor for a Node process rendering dashboards -- if the pod
 # starts OOMKilling under real use, raise the limit rather than assuming the
 # vendor number was wrong.
+# 🔴 `cpu: null` is LOAD-BEARING — deleting that line breaks the deployment.
+#
+# Helm DEEP-MERGES maps. This chart's default is
+#     limits: {cpu: 100m, memory: 512M}
+# so writing `limits: {memory: 1Gi}` and trusting a "no cpu limit" comment
+# leaves the default `cpu: 100m` in place underneath, silently. Explicitly
+# setting it to null is what removes the key.
+#
+# What 100m did, observed on the first deploy (2026-08-23): Dashboards' Node
+# startup bundles its assets, which is CPU-bound. Throttled to a tenth of a
+# core it could not open port 5601 inside the startup probe's 200s budget, so
+# the kubelet SIGKILLed it (exit 137) and restarted it — nine times, with EMPTY
+# logs, because it never reached the point of logging. It reads like a hang or
+# an OOM and is neither; it is CFS throttling, which is exactly why this repo
+# has a standing no-cpu-limit rule.
+#
+# ⚠️ The lesson generalises: a `limits:` block that omits cpu does NOT mean no
+# cpu limit. Check the RENDERED output, not the values file.
 resources:
   requests: {cpu: 100m, memory: 512Mi}
-  # NO cpu limit -- repo standing rule (CFS throttling).
-  limits: {memory: 1Gi}
+  limits:
+    cpu: null
+    memory: 1Gi
 
 service:
   type: ClusterIP
