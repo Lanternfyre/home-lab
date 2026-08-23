@@ -24,29 +24,28 @@ replicaCount: 1
 # is the honest floor for a Node process rendering dashboards -- if the pod
 # starts OOMKilling under real use, raise the limit rather than assuming the
 # vendor number was wrong.
-# 🔴 `cpu: null` is LOAD-BEARING — deleting that line breaks the deployment.
+# 🔴 The cpu limit here is the setting that broke this app. Read before editing.
 #
-# Helm DEEP-MERGES maps. This chart's default is
-#     limits: {cpu: 100m, memory: 512M}
-# so writing `limits: {memory: 1Gi}` and trusting a "no cpu limit" comment
-# leaves the default `cpu: 100m` in place underneath, silently. Explicitly
-# setting it to null is what removes the key.
+# This chart's DEFAULT is `limits: {cpu: 100m, memory: 512M}`, and 100m is not
+# survivable: Dashboards' Node startup bundles its assets, which is CPU-bound.
+# Throttled to a tenth of a core it could not open port 5601 inside the startup
+# probe's 200s budget, so the kubelet SIGKILLed it (exit 137) and restarted it —
+# nine times, with EMPTY logs, because it never reached the point of logging.
+# It reads like a hang or an OOM and is neither; it is CFS throttling.
+# Observed on the first deploy, 2026-08-23.
 #
-# What 100m did, observed on the first deploy (2026-08-23): Dashboards' Node
-# startup bundles its assets, which is CPU-bound. Throttled to a tenth of a
-# core it could not open port 5601 inside the startup probe's 200s budget, so
-# the kubelet SIGKILLed it (exit 137) and restarted it — nine times, with EMPTY
-# logs, because it never reached the point of logging. It reads like a hang or
-# an OOM and is neither; it is CFS throttling, which is exactly why this repo
-# has a standing no-cpu-limit rule.
+# 1 core is sized for that STARTUP burst, not for steady state — Dashboards
+# idles at almost nothing once it is up. Do not "optimise" this down to observed
+# idle usage; that is precisely the mistake that produced the crash-loop.
 #
-# ⚠️ The lesson generalises: a `limits:` block that omits cpu does NOT mean no
-# cpu limit. Check the RENDERED output, not the values file.
+# ⚠️ And note HOW it went wrong, because the trap is generic: the values file
+# said `limits: {memory: 1Gi}` under a comment claiming no cpu limit. Helm
+# DEEP-MERGES maps, so the chart's `cpu: 100m` survived underneath and the
+# comment documented an intention the file did not implement. A `limits:` block
+# that omits cpu does NOT mean no cpu limit — check the RENDERED output.
 resources:
   requests: {cpu: 100m, memory: 512Mi}
-  limits:
-    cpu: null
-    memory: 1Gi
+  limits: {cpu: "1", memory: 1Gi}
 
 service:
   type: ClusterIP

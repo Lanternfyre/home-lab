@@ -39,41 +39,57 @@ global:
   argocd:
     enabled: true
 
-# ── CPU limits raised, because this chart will not let us remove them ────────
-# The repo's standing rule is NO cpu limits — CFS throttling turns a busy
-# moment into a hang, and the memory limit is what bounds the dangerous
-# dimension. This chart makes that rule unenforceable: its deployment templates
-# interpolate the field directly,
+# ── CPU limits: deliberate, and sized for STARTUP not steady state ───────────
+# Operator decision (2026-08-23): keep cpu limits on these services rather than
+# stripping them, but pick reasonable numbers. This is a considered deviation
+# from the repo's standing no-cpu-limit rule, scoped to ReportPortal, and it
+# does buy something — a runaway service is bounded instead of taking a node's
+# CPU with it.
+#
+# The chart would not let us remove them anyway. Its templates interpolate the
+# field directly,
 #     cpu: {{ .Values.serviceindex.resources.limits.cpu }}
 # so the key is emitted unconditionally and no value can delete it.
 #
-# ⚠️ Do NOT "fix" this with `cpu: null`. That was tried. It renders a bare
-# `cpu:`, which Kubernetes reads as a limit of ZERO, and the API server rejects
-# the object outright:
+# ⚠️ Do NOT try `cpu: null`. It renders a bare `cpu:`, which Kubernetes reads as
+# a limit of ZERO and rejects the object outright:
 #     spec.template.spec.containers[0].resources.requests: Invalid value:
 #     "150m": must be less than or equal to cpu limit of 0
 # Proven with `kubectl apply --dry-run=server`, 2026-08-23.
 #
-# So the limits are raised to a ceiling nothing here will reach, which buys what
-# the rule is actually for: no throttling under normal load. Limits do not
-# reserve capacity, so a high ceiling costs nothing on a quiet cluster; requests
-# are left at the vendor's numbers, since those are what the scheduler uses.
+# ── How these numbers were chosen ────────────────────────────────────────────
+# Size the limit for the STARTUP burst, not the steady state. That is the whole
+# lesson of the ../opensearch-dashboards crash-loop: its steady-state need is
+# tiny, but its Node asset-bundling phase is CPU-bound, and a 100m limit meant
+# it could never finish inside the startup probe's budget. It died nine times
+# with empty logs.
 #
-# The chart's own defaults were the problem worth fixing: index and ui shipped
-# at 200m, and 100m is precisely what crash-looped ../opensearch-dashboards nine
-# times on the first deploy.
+# The same shape applies here: api and uat are Spring Boot and spend their first
+# seconds JIT-compiling, analyzer is Python doing model setup. Steady-state
+# numbers would throttle exactly the phase that must not be slow.
+#
+#   api       2    heaviest service; JIT warmup + request handling
+#   analyzer  2    Python ML work
+#   uat       1    Spring Boot, but only handles logins
+#   jobs      1    retention sweeps, bursty then idle
+#   index     500m tiny routing gateway
+#   ui        500m serves static assets
+#
+# Requests stay at the vendor's numbers — those are what the scheduler reserves,
+# and the vendor knows the workload better than a guess would. Limits do not
+# reserve, so the ceilings above cost nothing while idle.
 serviceindex:
   resources:
     requests: {cpu: 150m, memory: 128Mi}
-    limits: {cpu: "2", memory: 256Mi}
+    limits: {cpu: 500m, memory: 256Mi}
 serviceui:
   resources:
     requests: {cpu: 100m, memory: 64Mi}
-    limits: {cpu: "2", memory: 128Mi}
+    limits: {cpu: 500m, memory: 128Mi}
 serviceapi:
   resources:
     requests: {cpu: 500m, memory: 1Gi}
-    limits: {cpu: "4", memory: 2Gi}
+    limits: {cpu: "2", memory: 2Gi}
 serviceanalyzer:
   resources:
     requests: {cpu: 500m, memory: 512Mi}
@@ -81,7 +97,7 @@ serviceanalyzer:
 servicejobs:
   resources:
     requests: {cpu: 100m, memory: 248Mi}
-    limits: {cpu: "2", memory: 512Mi}
+    limits: {cpu: "1", memory: 512Mi}
 
 # ── Postgres ─────────────────────────────────────────────────────────────────
 # Database + owner role are declared in ../postgres/manifests/ (a CNPG Database
@@ -171,7 +187,7 @@ uat:
   # last duplicate, and the superadmin password would vanish with no error.
   resources:
     requests: {cpu: 100m, memory: 512Mi}
-    limits: {cpu: "2", memory: 1Gi}
+    limits: {cpu: "1", memory: 1Gi}
 
 # The chart's own Ingress: off. This cluster does Gateway API; see
 # manifests/reportportal.httproute.yaml.

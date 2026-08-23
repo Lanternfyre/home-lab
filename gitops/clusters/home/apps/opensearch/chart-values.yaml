@@ -73,10 +73,15 @@ persistence:
 # file cache: 1G heap against a 2Gi limit.
 opensearchJavaOpts: "-Xmx1g -Xms1g"
 
+# Sized for the STARTUP burst, not steady state: a JVM spends its first
+# seconds JIT-compiling and, on a cold data volume, recovering shards. That is
+# the phase a tight limit would throttle, and ../opensearch-dashboards is the
+# cautionary tale (its 100m default crash-looped it nine times). 2 cores against
+# a 1G heap is generous for a single-node index serving one reporting service;
+# limits do not reserve, so it costs nothing while idle.
 resources:
   requests: {cpu: 200m, memory: 1Gi}
-  # NO cpu limit -- repo standing rule (CFS throttling).
-  limits: {memory: 2Gi}
+  limits: {cpu: "2", memory: 2Gi}
 
 service:
   type: ClusterIP
