@@ -1,0 +1,16 @@
+# Object storage for CI artifacts — quality reports, and the baselines the
+# regression gates compare against.
+#
+# Chart source is the OFFICIAL MinIO repo, deliberately NOT bitnami/minio: this
+# cluster left Bitnami after bitnami/redis moved `latest` backwards and produced
+# an RDB the running server could not read (../redis/chart-values.yaml, first 25
+# lines). The reportportal chart's bundled MinIO subchart is disabled for the
+# same reason.
+#
+# ⚠️ Chart 5.4.0 is the last release (Jan 2025); MinIO now steers people at the
+# Operator. It works and is pinned, but do not expect upstream fixes.
+repoURL: "https://charts.min.io/"
+chart: "minio"
+targetRevision: "5.4.0"
+releaseName: "minio"
+namespace: "minio"

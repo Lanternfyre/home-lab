@@ -1,0 +1,32 @@
+# MinIO backing volume.
+#
+# Declared here rather than by the chart because a chart can annotate its own PVC
+# but cannot LABEL it, and `homelab.techyon.dev/protect` has to be declarative
+# for the Kyverno policy and the audit script to see it. Same pattern as
+# ../../pihole/manifests/pihole-data.pvc.yaml and ../../mealie/manifests/qnap-mealie.pvc.yaml.
+#
+# qnap-iscsi, not qnap-samba: an object store wants block semantics underneath.
+# Explicitly NOT local-path — that pins the volume to one node by nodeAffinity,
+# which is how LAN DNS went down once already (see the pihole PVC).
+#
+# ⚠️ What is on here is NOT uniformly disposable. reports/ regenerates on the
+# next CI run; baseline/ does not — the NDepend .ndar, the BADASS history and the
+# Stryker baseline are the record of how quality moved over time and cannot be
+# recomputed from source. Registered in protected-volumes.yaml accordingly.
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: minio-data
+  labels:
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    trident.qnap.io/threshold: "90"
+    trident.qnap.io/ThinAllocate: "true"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: qnap-iscsi

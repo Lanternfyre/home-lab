@@ -1,0 +1,84 @@
+# MinIO — S3-compatible object store for CI artifacts.
+#
+# Two consumers, two very different access needs, which is what most of the
+# configuration below is about:
+#
+#   reports/   rendered HTML quality reports (NDepend, Stryker, BADASS).
+#              ANONYMOUSLY READABLE so a browser can open them: an HTML report
+#              pulls its CSS and JS through relative links, and a presigned URL
+#              signs exactly one object, so every sub-request would 403 and the
+#              page would render broken.
+#   baseline/  the .ndar analysis result, the trend history, the Stryker
+#              baseline. PRIVATE, and the only data here that is NOT
+#              regenerable — see protected-volumes.yaml.
+#
+# The access scope is the FIRST key segment on purpose. `mc anonymous set` takes
+# a literal prefix and cannot wildcard, so scope-first makes "every report is
+# readable" one fixed prefix that never changes as projects are added.
+
+mode: standalone          # one node; this is a CI artifact store, not a fleet
+replicas: 1
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+# From 1Password via manifests/minio-auth.external-secret.yaml. NEVER let the
+# chart generate these: it writes them into a Secret it owns, so an upgrade can
+# regenerate them and every stored credential elsewhere stops matching.
+existingSecret: minio-auth
+rootUser: ""
+rootPassword: ""
+
+# ── Storage ──────────────────────────────────────────────────────────────────
+# The PVC is declared in manifests/, not by the chart, because a chart cannot put
+# LABELS on its own PVC and `homelab.techyon.dev/protect` must be declarative —
+# the same reason pihole and mealie do it this way.
+persistence:
+  enabled: true
+  existingClaim: minio-data
+  accessMode: ReadWriteOnce
+
+# ── Buckets ──────────────────────────────────────────────────────────────────
+# policy: none — the chart's bucket policies are BUCKET-WIDE, which would expose
+# baseline/ alongside reports/. The prefix-scoped grant is in customCommands.
+buckets:
+  - name: ci-reports
+    policy: none
+    purge: false
+    versioning: false
+
+# Runs as a post-install/upgrade Job. Idempotent, so re-running on every sync is
+# harmless.
+#
+# ⚠️ This one line is what makes report links openable in a browser. Remove it
+# and every link 403s while the pipeline stays green — the failure only shows up
+# when somebody clicks one.
+customCommands:
+  - command: "anonymous set download myminio/ci-reports/reports"
+
+# ── Services ─────────────────────────────────────────────────────────────────
+# ClusterIP both: exposure is via HTTPRoutes in manifests/, not LoadBalancers.
+service:
+  type: ClusterIP
+  port: 9000
+consoleService:
+  type: ClusterIP
+  port: 9001
+
+# Routing lives in manifests/*.httproute.yaml, on Envoy Gateway. The chart's own
+# Ingress objects would be a second, conflicting source of truth.
+ingress:
+  enabled: false
+consoleIngress:
+  enabled: false
+
+resources:
+  requests:
+    memory: 512Mi
+    cpu: 100m
+  limits:
+    memory: 2Gi
+
+environment:
+  TZ: "Europe/Warsaw"
+  # Path-style addressing only. The wildcard cert covers *.lab.techyon.dev, which
+  # is ONE label — bucket.s3.lab.techyon.dev would need a new cert and a new
+  # listener. Leaving MINIO_DOMAIN unset keeps MinIO on s3.lab.techyon.dev/<bucket>.

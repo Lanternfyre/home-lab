@@ -190,6 +190,28 @@ protected:
 
 # Deliberately NOT protected. Listed so the audit can distinguish "considered
 # and declined" from "nobody looked at it".
+  - namespace: minio
+    claim: minio-data
+    size: 20Gi
+    class: qnap-iscsi
+    source: gitops/clusters/home/apps/minio/manifests/minio-data.pvc.yaml
+    backup: NONE                 # 2026-08-26 — see warning
+    reason: >-
+      CI artifact store. The reports/ prefix is disposable — it regenerates on
+      the next pipeline run. The baseline/ prefix is NOT: the NDepend .ndar, the
+      BADASS score history and the Stryker baseline are the record of how code
+      quality moved over time, and they cannot be recomputed from source at any
+      price. Losing them does not break a build; it silently turns every
+      regression gate into a no-op, because a gate with no baseline compares
+      against nothing and passes.
+    warning: >-
+      Registered on creation, 2026-08-26. NOT BACKED UP — like everything else in
+      this cluster since the three ad-hoc CronJobs were removed on 2026-08-15.
+      The intended remedy is an rclone sync of baseline/ (only) to the existing
+      Wasabi bucket, which is small, already credentialed, and makes this volume
+      losable. Until that exists, layers 1-3 protect against mistakes and nothing
+      protects against a disk.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning

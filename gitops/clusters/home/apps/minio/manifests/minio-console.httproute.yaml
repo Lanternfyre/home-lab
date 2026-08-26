@@ -1,0 +1,38 @@
+# MinIO Console — on the GATED gateway.
+#
+# Gated for exactly the reason rabbitmq's management UI is
+# (../../rabbitmq/manifests/rabbitmq.httproute.yaml): it has its own login, but it
+# is an object-store admin console with full bucket, policy and credential
+# control, so it gets Google SSO at the edge as well. Defence in depth is the
+# cheap option here — the console is a browser-only surface, so unlike the S3 API
+# it loses nothing by sitting behind an OIDC redirect.
+#
+# ⚠️ A gated hostname needs https://minio.lab.techyon.dev/oauth2/callback added as
+# an authorized redirect URI on the Google OAuth client before it will load. That
+# is a human step and is listed in MANUAL-STEPS.md.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: minio-console
+  namespace: minio
+  annotations:
+    # ⚠️ Dropping these silently removes the app from the homepage dashboard —
+    # no error is raised anywhere. Homepage discovers apps from HTTPRoute
+    # annotations (gateway: true in homepage-widgets.config.yaml), NOT from
+    # services.yaml.
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: MinIO
+    gethomepage.dev/description: S3 object store — CI reports and baselines
+    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/icon: minio.png
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - minio.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: minio-console
+          port: 9001

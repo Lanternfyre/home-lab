@@ -5,9 +5,55 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-17
+Last updated: 2026-08-26
 
 ---
+
+## 🔴 MinIO — two things before the first sync (2026-08-26)
+
+`apps/minio/` is committed but will not come up correctly until both of these
+exist. Do them in this order.
+
+### 1. Create the 1Password item
+
+Vault **Infrastructure**, item titled exactly **`MinIO`**, with two fields:
+
+| Field | Value |
+|---|---|
+| `rootUser` | 40 chars |
+| `rootPassword` | 40 chars |
+
+⚠️ **Generator with symbols OFF — [A-Za-z0-9] only.** These are S3 credentials
+and end up interpolated raw into endpoint URLs and connection strings by tooling
+that does not URL-encode. A `/` in the secret key truncates it silently and
+surfaces as `SignatureDoesNotMatch`, which reads like a clock or region problem
+and sends you looking in entirely the wrong place.
+
+⚠️ **Before first sync, not after.** If `minio-auth` is missing or incomplete the
+chart generates its own root credential into a Secret it owns, and regenerates it
+on some upgrades — at which point every stored credential elsewhere stops
+matching at once.
+
+Then put the same two values into the GitHub org secrets on **Lanternfyre**:
+`OBJECT_STORE_ACCESS_KEY_ID` and `OBJECT_STORE_SECRET_ACCESS_KEY`. CI hard-fails
+on an unreachable store by design, so a half-done rotation reds every pipeline
+rather than degrading quietly.
+
+### 2. Register the console's OAuth redirect URI
+
+`minio.lab.techyon.dev` is on the **gated** gateway, so add
+
+```
+https://minio.lab.techyon.dev/oauth2/callback
+```
+
+as an authorized redirect URI on the Google OAuth client (same client as every
+other gated hostname). Without it the console returns an OAuth error rather than
+a login page.
+
+The S3 API host `s3.lab.techyon.dev` is on the **open** gateway and needs nothing
+here — deliberately, because `mc`, the CI runners and any future Velero or CNPG
+backup cannot complete a browser OIDC redirect.
 
 ## ✅ Done (2026-08-01) — do not repeat
 
