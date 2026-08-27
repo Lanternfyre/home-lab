@@ -65,17 +65,27 @@ browsing.
 every pipeline rather than degrading quietly. That is intended — just do both
 sides in one sitting.
 
-### 2. Register the console's OAuth redirect URI
+### 2. Register TWO OAuth redirect URIs
 
-`minio.lab.techyon.dev` is on the **gated** gateway, so add
+The console needs **both** of these on the Google OAuth client — the same client
+every gated hostname uses. They are different paths and serve different layers:
 
 ```
-https://minio.lab.techyon.dev/oauth2/callback
+https://minio.lab.techyon.dev/oauth2/callback   <- the gateway's SSO gate
+https://minio.lab.techyon.dev/oauth_callback    <- MinIO Console's own OIDC login
 ```
 
-as an authorized redirect URI on the Google OAuth client (same client as every
-other gated hostname). Without it the console returns an OAuth error rather than
-a login page.
+⚠️ Registering only the first is the easy mistake: you get a working gate in
+front of a console that cannot log you in, and it reads as a MinIO bug rather
+than a missing entry in the Google Console.
+
+MinIO does its own OpenID against the same client, so console sign-in is Google
+rather than a shared password. The root credential still works as break-glass —
+which is what you want the day Google is unreachable.
+
+⚠️ Everyone who can authenticate with this client gets `consoleAdmin`. The
+consent screen is Internal, so that is the Workspace, and the console is behind
+the gated Gateway as well. It is coarse authorisation, not per-user permissions.
 
 The S3 API host `s3.lab.techyon.dev` is on the **open** gateway and needs nothing
 here — deliberately, because `mc`, the CI runners and any future Velero or CNPG

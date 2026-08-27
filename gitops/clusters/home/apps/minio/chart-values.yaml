@@ -116,8 +116,27 @@ resources:
   limits:
     memory: 2Gi
 
+# ── Console login: Google, not a shared password ─────────────────────────────
+# Without this the console asks for the ROOT credential, so the admin key gets
+# typed into a browser regularly and shared with whoever needs console access.
+# With it, sign-in is per-person against Google and root stays in 1Password as
+# break-glass — it still works the day Google is unreachable.
+#
+# ⚠️ Configured through extraSecret / config.env, NOT the chart's `oidc:` block.
+# That block has no key for MINIO_IDENTITY_OPENID_ROLE_POLICY, and it always
+# emits MINIO_IDENTITY_OPENID_CLAIM_NAME (defaulting to "policy"). Role policy
+# and claim name are MUTUALLY EXCLUSIVE — MinIO rejects both at startup — and
+# Google never emits a `policy` claim, so the chart's path leads to users who
+# authenticate successfully and then have no permissions at all. config.env sets
+# exactly the variables we want and no others.
+extraSecret: minio-oidc-config
+
 environment:
   TZ: "Europe/Warsaw"
+  # Tells the console which public URL it is served on, so it builds the OIDC
+  # callback as <this>/oauth_callback. Behind a Gateway the console cannot infer
+  # it from the request, and gets the redirect wrong without this.
+  MINIO_BROWSER_REDIRECT_URL: "https://minio.lab.techyon.dev"
   # Path-style addressing only. The wildcard cert covers *.lab.techyon.dev, which
   # is ONE label — bucket.s3.lab.techyon.dev would need a new cert and a new
   # listener. Leaving MINIO_DOMAIN unset keeps MinIO on s3.lab.techyon.dev/<bucket>.
