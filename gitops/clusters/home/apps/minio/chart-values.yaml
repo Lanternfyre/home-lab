@@ -54,6 +54,45 @@ buckets:
 customCommands:
   - command: "anonymous set download myminio/ci-reports/reports"
 
+# ── Least privilege for CI ───────────────────────────────────────────────────
+# CI gets a scoped account, never the root credential. The root key can create
+# and delete buckets and rewrite policies; the pipeline only ever needs to read
+# and write objects in one bucket, and that key is copied into GitHub org secrets
+# where more people and more machines can see it.
+policies:
+  - name: ci-reports-rw
+    statements:
+      # Objects: read/write/delete plus the multipart verbs, because rclone
+      # switches to multipart for anything sizeable and a partial grant fails
+      # only on large uploads -- the worst kind of intermittent.
+      - resources:
+          - "arn:aws:s3:::ci-reports/*"
+        actions:
+          - "s3:GetObject"
+          - "s3:PutObject"
+          - "s3:DeleteObject"
+          - "s3:AbortMultipartUpload"
+          - "s3:ListMultipartUploadParts"
+      # Bucket-level: listing is not optional. The store probes reachability with
+      # a bucket list before every operation, precisely so an unreachable store
+      # fails the build loudly instead of skipping silently.
+      - resources:
+          - "arn:aws:s3:::ci-reports"
+        actions:
+          - "s3:ListBucket"
+          - "s3:GetBucketLocation"
+          - "s3:ListBucketMultipartUploads"
+
+# ⚠️ This list REPLACES the chart default, and it must. The shipped default
+# creates a user `console` with password `console123` and the consoleAdmin
+# policy -- a well-known admin credential, on an admin console, that nobody would
+# think to look for.
+users:
+  - accessKey: ci
+    existingSecret: minio-auth
+    existingSecretKey: ciPassword
+    policy: ci-reports-rw
+
 # ── Services ─────────────────────────────────────────────────────────────────
 # ClusterIP both: exposure is via HTTPRoutes in manifests/, not LoadBalancers.
 service:
