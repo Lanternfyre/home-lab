@@ -22,7 +22,7 @@ Vault **Infrastructure**, item titled exactly **`MinIO`**, with three fields:
 |---|---|---|
 | `rootUser` | 40 chars | the chart and the console — never leaves the cluster |
 | `rootPassword` | 40 chars | as above |
-| `ciPassword` | 40 chars | the scoped `ci` account, copied into GitHub org secrets |
+| `ciPassword` | 40 chars | the scoped `github-ci` account, copied into GitHub org secrets |
 
 CI deliberately does NOT get the root credential. Root can create and delete
 buckets and rewrite policies; the pipeline only needs objects in one bucket, and
@@ -44,7 +44,7 @@ Then set the GitHub org **secrets** on **Lanternfyre**:
 
 | Secret | Value |
 |---|---|
-| `OBJECT_STORE_ACCESS_KEY_ID` | `ci` (literally — it is a username, not a secret) |
+| `OBJECT_STORE_ACCESS_KEY_ID` | `github-ci` (literally — it is a username, not a secret; MinIO requires 3-20 chars) |
 | `OBJECT_STORE_SECRET_ACCESS_KEY` | the `ciPassword` value |
 
 and the org **variables**:

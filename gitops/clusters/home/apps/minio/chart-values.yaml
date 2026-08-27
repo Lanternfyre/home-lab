@@ -87,8 +87,14 @@ policies:
 # creates a user `console` with password `console123` and the consoleAdmin
 # policy -- a well-known admin credential, on an admin console, that nobody would
 # think to look for.
+# ⚠️ accessKey must be 3-20 characters. MinIO rejects anything shorter with
+# "The access key is invalid. (access key length should be between 3 and 20)",
+# and because the make-user container is one of several running CONCURRENTLY in
+# the post-job pod, the bucket and the anonymous grant are created successfully
+# while the job as a whole sits in Error — the store looks half-working rather
+# than plainly broken. `ci` was two characters and did exactly that.
 users:
-  - accessKey: ci
+  - accessKey: github-ci
     existingSecret: minio-auth
     existingSecretKey: ciPassword
     policy: ci-reports-rw
