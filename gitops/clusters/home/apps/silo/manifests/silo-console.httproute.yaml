@@ -1,4 +1,4 @@
-# MinIO Console — on the GATED gateway.
+# Silo Console — on the GATED gateway.
 #
 # Gated for exactly the reason rabbitmq's management UI is
 # (../../rabbitmq/manifests/rabbitmq.httproute.yaml): it has its own login, but it
@@ -7,23 +7,29 @@
 # cheap option here — the console is a browser-only surface, so unlike the S3 API
 # it loses nothing by sitting behind an OIDC redirect.
 #
-# ⚠️ A gated hostname needs https://minio.lab.techyon.dev/oauth2/callback added as
+# ⚠️ A gated hostname needs https://silo.lab.techyon.dev/oauth2/callback added as
 # an authorized redirect URI on the Google OAuth client before it will load. That
 # is a human step and is listed in MANUAL-STEPS.md.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: minio-console
-  namespace: minio
+  name: silo-console
+  namespace: silo
   annotations:
     # ⚠️ Dropping these silently removes the app from the homepage dashboard —
     # no error is raised anywhere. Homepage discovers apps from HTTPRoute
     # annotations (gateway: true in homepage-widgets.config.yaml), NOT from
     # services.yaml.
     gethomepage.dev/enabled: "true"
-    gethomepage.dev/name: MinIO
+    gethomepage.dev/name: Silo
     gethomepage.dev/description: S3 object store — CI reports and baselines
     gethomepage.dev/group: Infrastructure
+    # Still minio.png, and deliberately so: the icon set has no silo entry, Silo
+    # is a MinIO fork so the mark is the right lineage, and minio.png was
+    # VERIFIED to resolve (HTTP 200 on both dashboard-icons mirrors). Note that
+    # a missing icon 404s silently and just renders blank -- reportportal.png
+    # does exactly that today -- so prefer an `mdi-` name over guessing at a
+    # .png that may not exist.
     gethomepage.dev/icon: minio.png
 spec:
   parentRefs:
@@ -31,8 +37,8 @@ spec:
       namespace: gateway-envoy
       sectionName: https
   hostnames:
-    - minio.lab.techyon.dev
+    - silo.lab.techyon.dev
   rules:
     - backendRefs:
-        - name: minio-console
+        - name: silo-console
           port: 9001

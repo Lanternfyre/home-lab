@@ -9,9 +9,9 @@ Last updated: 2026-08-26
 
 ---
 
-## 🔴 MinIO — two things before the first sync (2026-08-26)
+## 🔴 Silo (object store) — two things before the first sync (2026-08-26)
 
-`apps/minio/` is committed but will not come up correctly until both of these
+`apps/silo/` is committed but will not come up correctly until both of these
 exist. Do them in this order.
 
 ### 1. Create the 1Password item
@@ -29,13 +29,18 @@ buckets and rewrite policies; the pipeline only needs objects in one bucket, and
 its key is copied into GitHub where more machines can read it. The `ci` account
 is created by the chart with a policy limited to the `ci-reports` bucket.
 
+⚠️ The 1Password item stays titled **`MinIO`** even though the service is now
+Silo — deliberately, so nothing needs reconfiguring. Rename it later if you
+prefer; it is one `remoteRef.key` line in
+`apps/silo/manifests/silo-auth.external-secret.yaml`.
+
 ⚠️ **Generator with symbols OFF — [A-Za-z0-9] only.** These are S3 credentials
 and end up interpolated raw into endpoint URLs and connection strings by tooling
 that does not URL-encode. A `/` in the secret key truncates it silently and
 surfaces as `SignatureDoesNotMatch`, which reads like a clock or region problem
 and sends you looking in entirely the wrong place.
 
-⚠️ **Before first sync, not after.** If `minio-auth` is missing or incomplete the
+⚠️ **Before first sync, not after.** If `silo-auth` is missing or incomplete the
 chart generates its own root credential into a Secret it owns, and regenerates it
 on some upgrades — at which point every stored credential elsewhere stops
 matching at once.
@@ -71,15 +76,15 @@ The console needs **both** of these on the Google OAuth client — the same clie
 every gated hostname uses. They are different paths and serve different layers:
 
 ```
-https://minio.lab.techyon.dev/oauth2/callback   <- the gateway's SSO gate
-https://minio.lab.techyon.dev/oauth_callback    <- MinIO Console's own OIDC login
+https://silo.lab.techyon.dev/oauth2/callback   <- the gateway's SSO gate
+https://silo.lab.techyon.dev/oauth_callback    <- MinIO Console's own OIDC login
 ```
 
 ⚠️ Registering only the first is the easy mistake: you get a working gate in
 front of a console that cannot log you in, and it reads as a MinIO bug rather
 than a missing entry in the Google Console.
 
-MinIO does its own OpenID against the same client, so console sign-in is Google
+Silo does its own OpenID against the same client, so console sign-in is Google
 rather than a shared password. The root credential still works as break-glass —
 which is what you want the day Google is unreachable.
 

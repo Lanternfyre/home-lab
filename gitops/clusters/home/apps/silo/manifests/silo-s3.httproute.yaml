@@ -1,4 +1,4 @@
-# MinIO S3 API — on the OPEN gateway.
+# Silo S3 API — on the OPEN gateway.
 #
 # ⚠️ This route MUST NOT be gated, and the reason is the same one that keeps
 # immich open (../../immich/manifests/immich.httproute.yaml): the clients are not
@@ -23,8 +23,8 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
-  name: minio-s3
-  namespace: minio
+  name: silo-s3
+  namespace: silo
 spec:
   parentRefs:
     - name: homelab
@@ -34,5 +34,5 @@ spec:
     - s3.lab.techyon.dev
   rules:
     - backendRefs:
-        - name: minio
+        - name: silo
           port: 9000
