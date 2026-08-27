@@ -16,6 +16,55 @@
 # a literal prefix and cannot wildcard, so scope-first makes "every report is
 # readable" one fixed prefix that never changes as projects are added.
 
+# ── Server image: Silo, not upstream MinIO ───────────────────────────────────
+# Silo (github.com/pgsty/silo) is a community fork of MinIO, AGPL-3.0, maintained
+# by Pigsty who run it for Postgres backups. Two reasons it is the better binary
+# here, both of which upstream created deliberately:
+#
+#   1. Upstream stripped the web CONSOLE from the community edition in 2025,
+#      leaving a read-only object browser. Silo restores it — and a console is
+#      most of why this service has a hostname at all.
+#   2. The upstream community chart's last release was 5.4.0 in Jan 2025;
+#      MinIO now steers people at the Operator. Silo ships current releases with
+#      SBOMs and Sigstore signatures.
+#
+# ⚠️ The CHART stays the official minio 5.4.0. Silo publishes no Helm repository
+# — its chart lives only in git — and its chart is a fork of this one with the
+# same keys and different image defaults. So swapping charts would buy nothing
+# and cost a migration. Only the images change.
+#
+# Silo's contract: "the product and its delivery surfaces are renamed; the
+# protocol and your data are not." S3 API, MINIO_* variables and on-disk format
+# are preserved under CI compatibility checks, which is why every value below —
+# and every credential, secret name and hostname — is untouched.
+image:
+  repository: pgsty/silo
+  tag: RELEASE.2026-08-06T00-00-00Z
+  pullPolicy: IfNotPresent
+
+# The post-install jobs run `mc`. The silo image bundles mcli and provides
+# /usr/bin/mc as a compatibility link, so one image serves both and there is no
+# second upstream dependency to go stale.
+mcImage:
+  repository: pgsty/silo
+  tag: RELEASE.2026-08-06T00-00-00Z
+  pullPolicy: IfNotPresent
+
+# ── Rollout strategy ─────────────────────────────────────────────────────────
+# ⚠️ Recreate, NOT RollingUpdate, and this is load-bearing with an RWO volume —
+# the same rule ../pihole/chart-values.yaml documents.
+#
+# The chart defaults to RollingUpdate with maxSurge 100%, which starts the new
+# pod BEFORE terminating the old one. Two pods cannot mount one ReadWriteOnce
+# iSCSI volume, so the new pod sits in ContainerCreating with
+#
+#   Multi-Attach error for volume "pvc-..." Volume is already used by pod(s) ...
+#
+# while the old pod refuses to die. Every future change to this app would
+# deadlock. Observed here on 2026-08-27, exactly as pihole predicted.
+deploymentUpdate:
+  type: Recreate
+
 mode: standalone          # one node; this is a CI artifact store, not a fleet
 replicas: 1
 
