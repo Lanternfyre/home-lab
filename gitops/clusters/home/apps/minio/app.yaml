@@ -1,6 +1,11 @@
 # Object storage for CI artifacts — quality reports, and the baselines the
 # regression gates compare against.
 #
+# ⚠️ The chart is upstream MinIO's; the IMAGE is Silo (see chart-values.yaml).
+# Silo publishes no Helm repository — its chart lives only in git, and is a fork
+# of this one with the same keys — so swapping charts would buy nothing and cost
+# a migration. Only the image changes.
+#
 # Chart source is the OFFICIAL MinIO repo, deliberately NOT bitnami/minio: this
 # cluster left Bitnami after bitnami/redis moved `latest` backwards and produced
 # an RDB the running server could not read (../redis/chart-values.yaml, first 25
