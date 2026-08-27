@@ -60,7 +60,11 @@ metadata:
     gethomepage.dev/description: Test results + history
     gethomepage.dev/enabled: "true"
     gethomepage.dev/group: CI/CD
-    gethomepage.dev/icon: reportportal.png
+    # ⚠️ reportportal.png does not exist in the dashboard-icons set — verified
+    # 404 on both mirrors — and a missing icon fails SILENTLY, rendering a blank
+    # tile rather than an error. mdi- names come from Material Design Icons,
+    # which homepage bundles, so they cannot 404.
+    gethomepage.dev/icon: mdi-clipboard-check-outline
     gethomepage.dev/name: ReportPortal
 spec:
   parentRefs:
