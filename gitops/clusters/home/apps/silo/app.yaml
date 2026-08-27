@@ -1,0 +1,22 @@
+# Silo — S3-compatible object storage for CI artifacts.
+#
+# Silo (github.com/pgsty/silo) is a community fork of MinIO, AGPL-3.0, created
+# after upstream cut the community web console and stopped publishing prebuilt
+# binaries. It preserves the S3 API, the MINIO_* variables and the on-disk format
+# under CI compatibility checks — which is why the environment variables below
+# and in chart-values.yaml still carry MINIO_ prefixes. That is Silo's contract,
+# not a leftover: "the product and its delivery surfaces are renamed; the
+# protocol and your data are not."
+#
+# The chart is VENDORED into helm-compendium, because Silo publishes no Helm
+# repository and no chart tarball — its chart exists only inside its git tree,
+# and this ApplicationSet can only source `chart:` from a Helm repo or an OCI
+# registry. Bumping Silo is therefore a targetRevision change here, with no
+# upstream-MinIO involvement at all.
+#
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/t3chy0n/charts"
+chart: "silo"
+targetRevision: "0.1.0"
+releaseName: "silo"
+namespace: "silo"

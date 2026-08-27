@@ -1,4 +1,4 @@
-# MinIO backing volume.
+# Silo backing volume.
 #
 # Declared here rather than by the chart because a chart can annotate its own PVC
 # but cannot LABEL it, and `homelab.techyon.dev/protect` has to be declarative
@@ -16,7 +16,7 @@
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
-  name: minio-data
+  name: silo-data
   labels:
     homelab.techyon.dev/protect: "true"
   annotations:

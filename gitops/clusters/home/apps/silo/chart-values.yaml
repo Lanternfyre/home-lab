@@ -1,4 +1,4 @@
-# MinIO — S3-compatible object store for CI artifacts.
+# Silo — S3-compatible object store for CI artifacts.
 #
 # Two consumers, two very different access needs, which is what most of the
 # configuration below is about:
@@ -15,40 +15,6 @@
 # The access scope is the FIRST key segment on purpose. `mc anonymous set` takes
 # a literal prefix and cannot wildcard, so scope-first makes "every report is
 # readable" one fixed prefix that never changes as projects are added.
-
-# ── Server image: Silo, not upstream MinIO ───────────────────────────────────
-# Silo (github.com/pgsty/silo) is a community fork of MinIO, AGPL-3.0, maintained
-# by Pigsty who run it for Postgres backups. Two reasons it is the better binary
-# here, both of which upstream created deliberately:
-#
-#   1. Upstream stripped the web CONSOLE from the community edition in 2025,
-#      leaving a read-only object browser. Silo restores it — and a console is
-#      most of why this service has a hostname at all.
-#   2. The upstream community chart's last release was 5.4.0 in Jan 2025;
-#      MinIO now steers people at the Operator. Silo ships current releases with
-#      SBOMs and Sigstore signatures.
-#
-# ⚠️ The CHART stays the official minio 5.4.0. Silo publishes no Helm repository
-# — its chart lives only in git — and its chart is a fork of this one with the
-# same keys and different image defaults. So swapping charts would buy nothing
-# and cost a migration. Only the images change.
-#
-# Silo's contract: "the product and its delivery surfaces are renamed; the
-# protocol and your data are not." S3 API, MINIO_* variables and on-disk format
-# are preserved under CI compatibility checks, which is why every value below —
-# and every credential, secret name and hostname — is untouched.
-image:
-  repository: pgsty/silo
-  tag: RELEASE.2026-08-06T00-00-00Z
-  pullPolicy: IfNotPresent
-
-# The post-install jobs run `mc`. The silo image bundles mcli and provides
-# /usr/bin/mc as a compatibility link, so one image serves both and there is no
-# second upstream dependency to go stale.
-mcImage:
-  repository: pgsty/silo
-  tag: RELEASE.2026-08-06T00-00-00Z
-  pullPolicy: IfNotPresent
 
 # ── Rollout strategy ─────────────────────────────────────────────────────────
 # ⚠️ Recreate, NOT RollingUpdate, and this is load-bearing with an RWO volume —
@@ -69,10 +35,10 @@ mode: standalone          # one node; this is a CI artifact store, not a fleet
 replicas: 1
 
 # ── Credentials ──────────────────────────────────────────────────────────────
-# From 1Password via manifests/minio-auth.external-secret.yaml. NEVER let the
+# From 1Password via manifests/silo-auth.external-secret.yaml. NEVER let the
 # chart generate these: it writes them into a Secret it owns, so an upgrade can
 # regenerate them and every stored credential elsewhere stops matching.
-existingSecret: minio-auth
+existingSecret: silo-auth
 rootUser: ""
 rootPassword: ""
 
@@ -82,7 +48,7 @@ rootPassword: ""
 # the same reason pihole and mealie do it this way.
 persistence:
   enabled: true
-  existingClaim: minio-data
+  existingClaim: silo-data
   accessMode: ReadWriteOnce
 
 # ── Buckets ──────────────────────────────────────────────────────────────────
@@ -101,7 +67,7 @@ buckets:
 # and every link 403s while the pipeline stays green — the failure only shows up
 # when somebody clicks one.
 customCommands:
-  - command: "anonymous set download myminio/ci-reports/reports"
+  - command: "anonymous set download mysilo/ci-reports/reports"
 
 # ── Least privilege for CI ───────────────────────────────────────────────────
 # CI gets a scoped account, never the root credential. The root key can create
@@ -144,7 +110,7 @@ policies:
 # than plainly broken. `ci` was two characters and did exactly that.
 users:
   - accessKey: github-ci
-    existingSecret: minio-auth
+    existingSecret: silo-auth
     existingSecretKey: ciPassword
     policy: ci-reports-rw
 
@@ -184,14 +150,17 @@ resources:
 # Google never emits a `policy` claim, so the chart's path leads to users who
 # authenticate successfully and then have no permissions at all. config.env sets
 # exactly the variables we want and no others.
-extraSecret: minio-oidc-config
+extraSecret: silo-oidc-config
 
+# ⚠️ The MINIO_* variable names are correct and are not leftovers. Silo keeps
+# them deliberately — renaming the product's delivery surfaces, not its protocol
+# or its configuration contract.
 environment:
   TZ: "Europe/Warsaw"
   # Tells the console which public URL it is served on, so it builds the OIDC
   # callback as <this>/oauth_callback. Behind a Gateway the console cannot infer
   # it from the request, and gets the redirect wrong without this.
-  MINIO_BROWSER_REDIRECT_URL: "https://minio.lab.techyon.dev"
+  MINIO_BROWSER_REDIRECT_URL: "https://silo.lab.techyon.dev"
   # Path-style addressing only. The wildcard cert covers *.lab.techyon.dev, which
   # is ONE label — bucket.s3.lab.techyon.dev would need a new cert and a new
   # listener. Leaving MINIO_DOMAIN unset keeps MinIO on s3.lab.techyon.dev/<bucket>.

@@ -190,11 +190,11 @@ protected:
 
 # Deliberately NOT protected. Listed so the audit can distinguish "considered
 # and declined" from "nobody looked at it".
-  - namespace: minio
-    claim: minio-data
+  - namespace: silo
+    claim: silo-data
     size: 20Gi
     class: qnap-iscsi
-    source: gitops/clusters/home/apps/minio/manifests/minio-data.pvc.yaml
+    source: gitops/clusters/home/apps/silo/manifests/silo-data.pvc.yaml
     backup: NONE                 # 2026-08-26 — see warning
     reason: >-
       CI artifact store. The reports/ prefix is disposable — it regenerates on
