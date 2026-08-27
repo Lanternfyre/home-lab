@@ -61,6 +61,31 @@ spec:
             dns:
               - matchPattern: "*"
 
+    # The in-cluster object store. CI publishes quality reports and reads the
+    # baselines its regression gates compare against, so a runner that cannot
+    # reach Silo cannot complete a quality pipeline at all.
+    #
+    # ⚠️ toEndpoints, NOT toFQDNs. This is east-west traffic to a ClusterIP; the
+    # DNS-proxy path that backs toFQDNs only applies to egress leaving the
+    # cluster, so an FQDN rule here would match nothing and the connection would
+    # still be dropped.
+    #
+    # Port 9000 only — the S3 API. The console (9001) is a browser surface
+    # reached through the Gateway by people, and a build runner has no business
+    # talking to it.
+    #
+    # Added 2026-08-27, after a CI store probe failed with
+    #   dial tcp 10.43.122.208:9000: i/o timeout
+    # which is what this allowlist looks like from the outside: not a refusal,
+    # just silence.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: silo
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
     # The GitHub + package-registry surface the workflows actually use.
     - toFQDNs:
         - matchName: github.com
