@@ -140,6 +140,20 @@ prometheus-node-exporter:
     - --collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/containerd/.+|run/k3s/containerd/.+|var/lib/docker/.+|var/lib/kubelet/.+)($|/)
     - --collector.filesystem.fs-types-exclude=^(autofs|binfmt_misc|bpf|cgroup2?|configfs|debugfs|devpts|devtmpfs|fusectl|hugetlbfs|iso9660|mqueue|nsfs|overlay|proc|procfs|pstore|rpc_pipefs|securityfs|selinuxfs|squashfs|sysfs|tracefs|erofs)$
     - --collector.textfile.directory=/host/root/var/lib/node-exporter/textfile_collector
+    # ── PID visibility (added 2026-08-22) ─────────────────────────────────
+    # The `processes` collector is NOT enabled by default. Its absence is why
+    # the k8s-lab5 crash could not be diagnosed: k3s, sshd and journald all
+    # died while memory, disk, iowait and disk-busy were provably healthy and
+    # already-running containers kept serving — the signature of fork/PID
+    # exhaustion, on the one axis we had no metric for. This adds
+    # node_processes_pids / node_processes_max_processes / _threads so the
+    # next occurrence is measurable instead of inferred.
+    #
+    # Cost: one extra /proc walk per scrape. It reads only /proc, which
+    # node-exporter already mounts, so no new volume and no new privilege --
+    # unlike the kubelet-mount attempt documented above, this one is
+    # readable at uid 65534.
+    - --collector.processes
 
 # Accept Prometheus remote_write pushes on the main instance. OTLP metrics from
 # external apps (e.g. the Necronia dev server) are relayed by alloy-gateway via
