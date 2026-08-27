@@ -5,9 +5,81 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-17
+Last updated: 2026-08-26
 
 ---
+
+## 🔴 MinIO — two things before the first sync (2026-08-26)
+
+`apps/minio/` is committed but will not come up correctly until both of these
+exist. Do them in this order.
+
+### 1. Create the 1Password item
+
+Vault **Infrastructure**, item titled exactly **`MinIO`**, with three fields:
+
+| Field | Value | Who uses it |
+|---|---|---|
+| `rootUser` | 40 chars | the chart and the console — never leaves the cluster |
+| `rootPassword` | 40 chars | as above |
+| `ciPassword` | 40 chars | the scoped `ci` account, copied into GitHub org secrets |
+
+CI deliberately does NOT get the root credential. Root can create and delete
+buckets and rewrite policies; the pipeline only needs objects in one bucket, and
+its key is copied into GitHub where more machines can read it. The `ci` account
+is created by the chart with a policy limited to the `ci-reports` bucket.
+
+⚠️ **Generator with symbols OFF — [A-Za-z0-9] only.** These are S3 credentials
+and end up interpolated raw into endpoint URLs and connection strings by tooling
+that does not URL-encode. A `/` in the secret key truncates it silently and
+surfaces as `SignatureDoesNotMatch`, which reads like a clock or region problem
+and sends you looking in entirely the wrong place.
+
+⚠️ **Before first sync, not after.** If `minio-auth` is missing or incomplete the
+chart generates its own root credential into a Secret it owns, and regenerates it
+on some upgrades — at which point every stored credential elsewhere stops
+matching at once.
+
+Then set the GitHub org **secrets** on **Lanternfyre**:
+
+| Secret | Value |
+|---|---|
+| `OBJECT_STORE_ACCESS_KEY_ID` | `ci` (literally — it is a username, not a secret) |
+| `OBJECT_STORE_SECRET_ACCESS_KEY` | the `ciPassword` value |
+
+and the org **variables**:
+
+| Variable | Value |
+|---|---|
+| `OBJECT_STORE_ENDPOINT` | `https://s3.lab.techyon.dev` |
+| `OBJECT_STORE_BUCKET` | `ci-reports` |
+| `OBJECT_STORE_REGION` | `us-east-1` |
+| `CI_RUNNER` | the ARC scale-set label |
+| `CI_RUNNER_NDEPEND` | the dind-capable label |
+| `CI_RUNNER_MUTATION` | the large-memory label |
+
+`OBJECT_STORE_PUBLIC_URL` is not needed: one hostname serves both uploads and
+browsing.
+
+⚠️ CI hard-fails on an unreachable store by design, so a half-done rotation reds
+every pipeline rather than degrading quietly. That is intended — just do both
+sides in one sitting.
+
+### 2. Register the console's OAuth redirect URI
+
+`minio.lab.techyon.dev` is on the **gated** gateway, so add
+
+```
+https://minio.lab.techyon.dev/oauth2/callback
+```
+
+as an authorized redirect URI on the Google OAuth client (same client as every
+other gated hostname). Without it the console returns an OAuth error rather than
+a login page.
+
+The S3 API host `s3.lab.techyon.dev` is on the **open** gateway and needs nothing
+here — deliberately, because `mc`, the CI runners and any future Velero or CNPG
+backup cannot complete a browser OIDC redirect.
 
 ## ✅ Done (2026-08-01) — do not repeat
 
