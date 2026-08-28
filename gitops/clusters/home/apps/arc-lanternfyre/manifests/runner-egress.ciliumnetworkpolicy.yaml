@@ -113,6 +113,12 @@ spec:
         - matchName: dot.net
         - matchName: builds.dotnet.microsoft.com
         - matchName: ci.dot.net
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+        - matchName: sh.rustup.rs
+        - matchName: static.rust-lang.org
+        - matchName: crates.io
+        - matchName: "*.crates.io"
         - matchPattern: "*.blob.core.windows.net"
       toPorts:
         - ports:

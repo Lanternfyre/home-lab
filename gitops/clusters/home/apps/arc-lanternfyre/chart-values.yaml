@@ -11,7 +11,7 @@ runnerScaleSetName: "arc-linux"
 
 # maxRunners 3 -- operator-set 2026-08-21 (was 2 in the v3 plan).
 minRunners: 0
-maxRunners: 3
+maxRunners: 5
 
 # 🔴 P0 #3 -- the chart auto-discovers the controller SA via a Helm `lookup`,
 # and ArgoCD renders with `helm template`, which has NO cluster access: the
