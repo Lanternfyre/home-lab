@@ -139,11 +139,26 @@ spec:
         - matchName: nodejs.org
 
         # ── Rust ─────────────────────────────────────────────────────────────
-        # static.rust-lang.org serves rustup and the toolchain itself.
+        # ⚠️ sh.rustup.rs is a SEPARATE host from static.rust-lang.org and both
+        # are required. This file was cloned from ../../arc-lanternfyre, which
+        # has both (see its Rust entries) — the clone dropped sh.rustup.rs and
+        # the comment here used to claim "static.rust-lang.org serves rustup",
+        # which is wrong. The runner image bakes no Rust toolchain, so
+        # dtolnay/rust-toolchain bootstraps with
+        #   curl https://sh.rustup.rs | sh
+        # and that curl hung for the step's full 30-minute budget:
+        #   curl: (28) Failed to connect to sh.rustup.rs port 443 after 300711 ms
+        # DNS resolves fine (the proxy allows "*"), so nothing in the log names
+        # a policy — the packets to the returned IP are simply dropped. It is
+        # NOT covered transitively by static.rust-lang.org even though
+        # sh.rustup.rs CNAMEs there: toFQDNs allowlists IPs against the name
+        # that was QUERIED.
+        # static.rust-lang.org then serves rustup-init and the toolchain itself.
         # index.crates.io is the one people forget: modern cargo uses the SPARSE
         # registry protocol and talks to it, NOT to github.com/rust-lang/crates.io-index.
         # A policy with crates.io but no index.crates.io fails at dependency
         # resolution, before a single crate is downloaded.
+        - matchName: sh.rustup.rs
         - matchName: static.rust-lang.org
         - matchName: index.crates.io
         - matchName: crates.io
