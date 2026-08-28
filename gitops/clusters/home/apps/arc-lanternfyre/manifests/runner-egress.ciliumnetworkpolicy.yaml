@@ -20,8 +20,10 @@
 #
 # ── What runners may reach ───────────────────────────────────────────────────
 # DNS (kube-dns, with L7 dns inspection so toFQDNs can resolve), the GitHub
-# service surface (api/codeload/objects/pkg-containers), GHCR, and the .NET/
-# node package registries. Everything else — INCLUDING the cluster-local pod
+# service surface (api/codeload/objects/pkg-containers), GHCR, the .NET/node
+# package registries, and the in-cluster object store at s3.lab.techyon.dev
+# (MinIO — where every ratcheted baseline and the BADASS history live).
+# Everything else — INCLUDING the cluster-local pod
 # and service space — is denied by the default-deny that selecting the pods
 # creates. V6's cluster-local curl must time out.
 #
@@ -112,6 +114,32 @@ spec:
         - matchName: builds.dotnet.microsoft.com
         - matchName: ci.dot.net
         - matchPattern: "*.blob.core.windows.net"
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+
+    # ── The in-cluster object store (MinIO, silo) ───────────────────────────
+    # Runners publish NDepend/Stryker reports and the BADASS score history to
+    # it, and FETCH the baselines every ratcheted gate compares against. Without
+    # this rule there is no baseline, so no ratchet, so no NDepend/mutation/
+    # coverage regression detection at all.
+    #
+    # Found the hard way (2026-08-28): the default-deny this policy creates was
+    # working exactly as documented above — "everything else, INCLUDING the
+    # cluster-local pod and service space, is denied". From a consumer repo it
+    # surfaced as
+    #   dial tcp 192.168.32.18:443: i/o timeout
+    # after DNS had resolved correctly, which reads as a broken store rather
+    # than a denied egress. Bucket, credentials and endpoint were all correct.
+    #
+    # ⚠️ Traffic goes out to the GATEWAY (s3.lab.techyon.dev -> the homelab
+    # gateway LB), not straight to the minio Service, because the consumers are
+    # configured with the external endpoint. toFQDNs is therefore the right
+    # match here; a toEndpoints rule against namespace minio would NOT admit
+    # this traffic, since the pod dials the gateway address.
+    - toFQDNs:
+        - matchName: s3.lab.techyon.dev
       toPorts:
         - ports:
             - port: "443"
