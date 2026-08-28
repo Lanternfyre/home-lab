@@ -118,7 +118,17 @@ spec:
         - matchName: sh.rustup.rs
         - matchName: static.rust-lang.org
         - matchName: crates.io
-        - matchName: "*.crates.io"
+        # ⚠️ matchPATTERN, not matchName. matchName is validated against
+        # '^([-a-zA-Z0-9_]+[.]?)+$' and rejects '*' outright. As matchName this
+        # entry did not merely fail to match — the CRD rejected the WHOLE
+        # object, so every other change in the same apply (pypi.org,
+        # files.pythonhosted.org, sh.rustup.rs, static.rust-lang.org, crates.io)
+        # never reached the cluster either, and the runners kept running the
+        # last valid version. ArgoCD reported Synced/Healthy throughout; the
+        # error was only visible as a ComparisonError on the Application.
+        # Cilium's '*' still spans exactly ONE label, so this covers
+        # index.crates.io and static.crates.io but NOT a deeper name.
+        - matchPattern: "*.crates.io"
         - matchPattern: "*.blob.core.windows.net"
       toPorts:
         - ports:
