@@ -15,7 +15,7 @@
 # upstream-MinIO involvement at all.
 #
 #Notice chart name has to be a part of repoURL for oci
-repoURL: "ghcr.io/t3chy0n/charts"
+repoURL: "ghcr.io/lanternfyre/charts"
 chart: "silo"
 targetRevision: "0.1.0"
 releaseName: "silo"

@@ -1,4 +1,4 @@
-repoURL: "ghcr.io/t3chy0n/charts"
+repoURL: "ghcr.io/lanternfyre/charts"
 chart: "speedtest-exporter"
 targetRevision: "0.1.1"
 releaseName: "speedtest-exporter"
