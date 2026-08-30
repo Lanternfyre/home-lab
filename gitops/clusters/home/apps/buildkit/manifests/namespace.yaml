@@ -1,27 +1,48 @@
 # Declared explicitly rather than left to ArgoCD's CreateNamespace=true, which
 # makes a BARE namespace with no labels -- and the label is the whole point.
 #
-# ⚠️ `baseline`, NOT `restricted`, and this is a deliberate exception rather
-# than an oversight. Rootless BuildKit needs unconfined seccomp and AppArmor to
-# create the nested user namespaces it builds in, and `restricted` forbids
-# exactly that. It is NOT privileged: uid 1000, all capabilities dropped, no
-# service account token.
+# ⚠️ `privileged`, and the label is MISLEADING -- read the next paragraph
+# before reacting to it.
 #
-# The alternative, --oci-worker-no-process-sandbox, would satisfy `restricted`
-# by weakening isolation INSIDE the build instead. That is the worse trade for
-# a daemon whose entire job is executing untrusted Dockerfiles.
+# The pod is NOT privileged: uid 1000, runAsNonRoot, every capability dropped,
+# no service account token, no host namespaces, no hostPath. What it needs is
+# UNCONFINED seccomp and AppArmor, so it can nest the user namespaces it builds
+# in. PSA's `baseline` level forbids exactly those two fields, and PSA has no
+# way to grant a per-field exception inside a namespace -- so `privileged`
+# ("unrestricted") is the only level that admits this pod at all.
 #
-# ⚠️ The labels are set here rather than via the ApplicationSet's
-# managedNamespaceMetadata: that field is a GLOBAL rule and would land on all
-# 40-odd apps at once.
+# This was established the hard way. An earlier revision set `baseline` on the
+# strength of `kubectl apply --dry-run=server` reporting the StatefulSet
+# created. That check was WORTHLESS for this purpose: PSA validates workload
+# templates only for audit/warn, and ENFORCES at POD creation. The StatefulSet
+# applied cleanly and then could not create a single pod:
+#
+#   Warning FailedCreate  pods "buildkit-0" is forbidden:
+#     violates PodSecurity "baseline:v1.35": forbidden AppArmor profile ...
+#     seccompProfile ... must not set ... to "Unconfined"
+#
+# ⚠️ Two rules worth carrying into the rest of the PSA rollout:
+#   1. Set `warn` to AT LEAST the `enforce` level. Here warn was `restricted`
+#      while enforce was `baseline`, so the baseline violation never surfaced
+#      at apply time -- the only warning shown was about `restricted`.
+#   2. Prove PSA with a POD, not a workload object. `--dry-run=server` on a
+#      Deployment/StatefulSet does not exercise the enforcing path.
+#
+# audit/warn stay at `baseline` so the exact delta this namespace buys stays
+# visible in the audit stream, rather than the exemption being invisible.
+#
+# ⚠️ PSA can no longer assert the things that DO matter here (not privileged,
+# caps dropped, runAsNonRoot, no hostPath). Those move to a Kyverno
+# ValidatingPolicy scoped to this namespace -- see the hardening phase. A
+# `privileged` PSA label plus nothing else would be a genuine hole.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: buildkit
   labels:
-    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/enforce-version: v1.35
-    # audit/warn stay at `restricted` so anything that drifts FURTHER than the
-    # one exception above still shows up, without blocking.
-    pod-security.kubernetes.io/audit: restricted
-    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35
