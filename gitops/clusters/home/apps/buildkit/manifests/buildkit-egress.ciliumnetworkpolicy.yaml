@@ -76,6 +76,13 @@ spec:
         - matchName: registry-1.docker.io
         - matchName: auth.docker.io
         - matchName: production.cloudflare.docker.com
+        # ⚠️ cloudFRONT, not cloudFLARE. Docker Hub serves MANIFESTS from
+        # registry-1.docker.io but BLOBS from AWS CloudFront, and the two host
+        # names differ by four letters in the middle. Getting it wrong looks
+        # like success: metadata resolves in ~1s, then the layer download sits
+        # at "0B / 28.23MB" for five minutes and dies on a deadline.
+        # Both are listed because Docker has used both over time.
+        - matchName: production.cloudfront.docker.com
         # GHCR: actions/actions-runner, github/github-mcp-server, mcp-proxy.
         # Blobs are served from a DIFFERENT host than the manifest API, and a
         # policy with only ghcr.io pulls manifests then hangs on layers.
