@@ -1,0 +1,30 @@
+# mTLS client certificate the runners present to the shared BuildKit daemon.
+#
+# ⚠️ Issued DIRECTLY into this namespace rather than copied from `buildkit`.
+# A Secret is namespaced, so the cert-manager Certificate that the buildkit
+# chart can emit lands in the buildkit namespace and is unreachable from a
+# runner pod. Copying it would need a reflector -- another controller, and a
+# second copy to go stale. cert-manager can simply issue here instead, from the
+# same internal CA, which is one object and no synchronisation.
+#
+# ⚠️ `client auth` ONLY. A cert that also carried server auth could impersonate
+# buildkitd to another caller on the same CA.
+#
+# This is the credential that makes the daemon usable, so it is also the
+# credential that makes it abusable: anything holding it can build arbitrary
+# images and push wherever the build session's registry auth allows. It is
+# scoped to this namespace deliberately, and the daemon's own
+# CiliumNetworkPolicy admits only these namespaces on :1234.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: buildkit-client
+  namespace: arc-runners-lanternfyre
+spec:
+  secretName: buildkit-client-tls
+  commonName: arc-runners-lanternfyre
+  issuerRef:
+    name: homelab-ca
+    kind: ClusterIssuer
+  usages:
+    - client auth

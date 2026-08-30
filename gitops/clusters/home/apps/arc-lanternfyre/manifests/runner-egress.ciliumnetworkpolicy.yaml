@@ -48,6 +48,24 @@ spec:
         - remote-node
 
   egress:
+    # The shared BuildKit daemon. Runners drive it with buildctl instead of
+    # running a builder themselves, which is what removes dind from this path.
+    #
+    # ⚠️ toEndpoints, NOT toFQDNs. This is east-west traffic to a ClusterIP;
+    # the DNS-proxy path backing toFQDNs applies only to egress LEAVING the
+    # cluster, so an FQDN rule here matches nothing and the connection is still
+    # dropped -- silently, as a hang.
+    #
+    # ⚠️ The daemon pulls every base image from ITS OWN namespace. Nothing in
+    # THIS policy covers that; see the buildkit app's own CNP.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: buildkit
+      toPorts:
+        - ports:
+            - port: "1234"
+              protocol: TCP
+
     # DNS to kube-dns, with the DNS proxy engaged so toFQDNs below works.
     - toEndpoints:
         - matchLabels:

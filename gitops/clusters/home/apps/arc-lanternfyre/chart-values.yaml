@@ -64,5 +64,21 @@ template:
           capabilities: {drop: ["ALL"]}
         volumeMounts:
           - {name: work, mountPath: /home/runner/_work}
+          # mTLS client cert for the shared BuildKit daemon. The path matches
+          # the `tls-dir` input of the buildkit-build-push block, which expects
+          # ca.crt / tls.crt / tls.key -- exactly the three keys cert-manager
+          # writes into the Secret.
+          - {name: buildkit-certs, mountPath: /buildkit-certs, readOnly: true}
     volumes:
       - {name: work, emptyDir: {sizeLimit: 10Gi}}
+      # ⚠️ Issued INTO this namespace by manifests/buildkit-client-cert.certificate.yaml,
+      # not copied from the buildkit namespace -- a Secret cannot cross one.
+      #
+      # ⚠️ optional: true is load-bearing. Without it, every runner pod in this
+      # scale set fails to start until the Certificate is Ready, which would
+      # make a cert-manager hiccup an outage for CI that does not even build
+      # images. A missing cert should break BUILDS, not the runners.
+      - name: buildkit-certs
+        secret:
+          secretName: buildkit-client-tls
+          optional: true
