@@ -1,6 +1,6 @@
 #Notice chart name has to be a part of repoURL for oci
 repoURL: "ghcr.io/lanternfyre/charts"
 chart: "buildkit"
-targetRevision: "0.1.2"
+targetRevision: "0.1.3"
 releaseName: "buildkit"
 namespace: "buildkit"
