@@ -27,7 +27,25 @@
 #
 # Recovery here is "the StatefulSet reschedules it": seconds on a planned
 # drain. That is honest fast-recovery, not high availability.
-architecture: standalone
+# ⚠️ NOT `replication`. That mode tells replicas `replicaof <release>-master`,
+# and that Service selects one FIXED pod -- so nothing can ever be promoted and
+# it buys a warm copy, not failover. `sentinel` runs ONE StatefulSet of
+# interchangeable nodes that ask Sentinel who the master is at startup.
+#
+# CLIENTS ARE UNCHANGED: `redis-master` still answers on 6379, it just selects
+# HAProxy now. immich keeps REDIS_HOSTNAME: redis-master.redis.svc.cluster.local
+# and never learns which pod is master.
+architecture: sentinel
+
+sentinel:
+  # ODD, and >= 3. With 2, a single failure leaves one sentinel which can never
+  # reach quorum -- an HA setup that silently cannot fail over.
+  replicaCount: 3
+  quorum: 2
+
+haproxy:
+  enabled: true
+  replicaCount: 2
 
 # Credentials from the redis-auth Secret (ExternalSecrets -> 1Password RedisHA).
 # The chart appends it to a config file in the pod's own tmpfs, never argv.
@@ -44,6 +62,11 @@ auth:
 #     above becomes impossible
 # Cost: queued background jobs are lost on restart. Immich re-runs them from
 # the admin UI.
+# ⚠️ Still emptyDir, and that is deliberate under sentinel rather than an
+# oversight. A restarted node re-syncs from the master, so a per-node disk buys
+# nothing that replication does not already give -- and every storage class here
+# is reclaimPolicy Retain, so a PVC that is ever deleted leaks the backend LUN.
+# The consumer is immich's job queue; three in-memory copies beat one on disk.
 persistence:
   enabled: false
 
