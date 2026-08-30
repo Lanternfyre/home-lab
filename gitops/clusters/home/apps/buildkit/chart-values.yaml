@@ -1,0 +1,59 @@
+# Shared rootless BuildKit daemon. Exists so CI can build container images on
+# the ARC runners with NO dind and NO privileged container anywhere in the
+# build path -- replacing Kaniko, which is archived upstream and was pinned to
+# a floating `:latest` on GitHub-hosted runners.
+#
+# ⚠️ This is NOT the ndepend dind sidecar's replacement. That one is a
+# LICENSING workaround (NDepend fingerprints MAC + an UPPERCASE machine name,
+# which pod.spec.hostname rejects), not a builder. It stays, isolated.
+
+# Clean service DNS: buildkit.buildkit.svc.cluster.local:1234
+fullnameOverride: "buildkit"
+
+image:
+  repository: moby/buildkit
+  tag: "v0.32.2-rootless"
+
+# ONE replica. Two daemons behind one Service split the local cache and give a
+# coin-flip hit rate per build.
+replicaCount: 1
+
+# ⚠️ mTLS is the ONLY access control on this daemon. buildctl over TCP is
+# unauthenticated by default, so without it any pod in the cluster could build
+# arbitrary images, read the cache, and push with the caller's credentials.
+# homelab-ca is the internal CA -- deliberately NOT cloudflare-ca, since these
+# names resolve only in-cluster and a public issuer could never sign them.
+tls:
+  enabled: true
+  issuerRef:
+    name: homelab-ca
+    kind: ClusterIssuer
+  # One client cert per consuming namespace. The Secret is copied into the
+  # runner namespace by manifests/client-cert.external-secret.yaml's sibling
+  # -- see manifests/README notes.
+  clients:
+    - name: arc-runners-lanternfyre
+
+# emptyDir, not a PV: the layer cache lives in the REGISTRY
+# (--export-cache type=registry,ref=ghcr.io/lanternfyre/<img>/cache), so local
+# state is disposable. Every storage class here is Retain, and a build cache is
+# not worth a leaked LUN.
+#
+# ⚠️ sizeLimit is load-bearing. This emptyDir shares the kubelet root
+# filesystem with the containerd image store and, on server nodes, the etcd
+# WAL. An unbounded build cache is a way to fill the disk out from under etcd.
+persistence:
+  enabled: false
+emptyDirSizeLimit: 40Gi
+
+resources:
+  requests:
+    cpu: 500m
+    memory: 2Gi
+  limits:
+    # No CPU limit -- repo standing rule. A throttled builder just takes longer
+    # and makes CI look flaky.
+    memory: 8Gi
+
+# Same class as the runners it serves: preemptible, never preempting.
+priorityClassName: ci-runner

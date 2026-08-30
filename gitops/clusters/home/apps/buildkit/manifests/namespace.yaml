@@ -1,0 +1,27 @@
+# Declared explicitly rather than left to ArgoCD's CreateNamespace=true, which
+# makes a BARE namespace with no labels -- and the label is the whole point.
+#
+# ⚠️ `baseline`, NOT `restricted`, and this is a deliberate exception rather
+# than an oversight. Rootless BuildKit needs unconfined seccomp and AppArmor to
+# create the nested user namespaces it builds in, and `restricted` forbids
+# exactly that. It is NOT privileged: uid 1000, all capabilities dropped, no
+# service account token.
+#
+# The alternative, --oci-worker-no-process-sandbox, would satisfy `restricted`
+# by weakening isolation INSIDE the build instead. That is the worse trade for
+# a daemon whose entire job is executing untrusted Dockerfiles.
+#
+# ⚠️ The labels are set here rather than via the ApplicationSet's
+# managedNamespaceMetadata: that field is a GLOBAL rule and would land on all
+# 40-odd apps at once.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buildkit
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.35
+    # audit/warn stay at `restricted` so anything that drifts FURTHER than the
+    # one exception above still shows up, without blocking.
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

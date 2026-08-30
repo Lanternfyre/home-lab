@@ -1,0 +1,117 @@
+# Network policy for the shared build daemon.
+#
+# Two jobs, and they pull in opposite directions:
+#   INGRESS is a lock. buildctl over TCP is UNAUTHENTICATED at the protocol
+#   level -- mTLS is enforced by buildkitd itself, and this policy is the
+#   second lock so that a cert leak is not instantly cluster-wide reach.
+#   EGRESS is an allowlist of the registries the BUILDS pull base images from.
+#
+# ⚠️ The daemon pulls every base image ITSELF, from THIS namespace. The
+# runners' own egress policy does not cover any of it -- that policy governs
+# the runner pods in arc-runners-*, and buildkitd is somewhere else entirely.
+# This is the single easiest thing to get wrong here, and it fails as a HANG
+# rather than an error.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: buildkit-egress
+  namespace: buildkit
+spec:
+  endpointSelector: {}
+
+  ingress:
+    # ⚠️ NON-NEGOTIABLE. A policy that selects a pod must also admit the NODE,
+    # or kubelet's startup/liveness probes are denied and the pod crash-loops.
+    # This exact omission took out argocd-repo-server on this cluster; the
+    # claim of an implicit host allow in CILIUM-MIGRATION.md:521 is
+    # CONTRADICTED by that observation.
+    - fromEntities:
+        - host
+        - remote-node
+
+    # The only legitimate callers: ARC runners driving buildctl.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-runners-lanternfyre
+        - matchLabels:
+            io.kubernetes.pod.namespace: arc-runners-t3chy0n
+      toPorts:
+        - ports:
+            - port: "1234"
+              protocol: TCP
+
+  egress:
+    # DNS to kube-dns with the L7 proxy engaged. Without this rule toFQDNs
+    # below resolves NOTHING -- the FQDN allowlist is populated from what the
+    # DNS proxy observes, so no DNS visibility means no allowlist entries.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Base-image registries + what the RUN steps fetch, derived from the FROM
+    # and download URLs actually present in docker-compendium/*/Dockerfile --
+    # not from a general-purpose list.
+    #
+    # ⚠️ matchPattern, never matchName, for anything containing `*`.
+    # matchName is validated against ^([-a-zA-Z0-9_]+[.]?)+$ and REJECTS `*`,
+    # which makes the API server reject the WHOLE CiliumNetworkPolicy -- while
+    # ArgoCD still reports Synced/Healthy. The only signal is a
+    # ComparisonError on the Application. That has already cost this repo a
+    # debugging session (commit 338ac62).
+    #
+    # ⚠️ Cilium's `*` matches exactly ONE label, so *.docker.io does NOT cover
+    # a.b.docker.io.
+    - toFQDNs:
+        # Docker Hub: alpine, debian, apache/airflow
+        - matchName: registry-1.docker.io
+        - matchName: auth.docker.io
+        - matchName: production.cloudflare.docker.com
+        # GHCR: actions/actions-runner, github/github-mcp-server, mcp-proxy.
+        # Blobs are served from a DIFFERENT host than the manifest API, and a
+        # policy with only ghcr.io pulls manifests then hangs on layers.
+        - matchName: ghcr.io
+        - matchPattern: "*.ghcr.io"
+        - matchName: pkg-containers.githubusercontent.com
+        - matchPattern: "*.githubusercontent.com"
+        # Microsoft: dotnet SDK/runtime base images
+        - matchName: mcr.microsoft.com
+        - matchPattern: "*.mcr.microsoft.com"
+        - matchName: dot.net
+        - matchName: builds.dotnet.microsoft.com
+        # Tools installed by RUN steps
+        - matchName: github.com
+        - matchName: objects.githubusercontent.com
+        - matchName: cli.github.com
+        - matchName: www.ndepend.com
+        # Distro packages (debian/ubuntu bases)
+        - matchName: deb.debian.org
+        - matchName: archive.ubuntu.com
+        - matchName: security.ubuntu.com
+        - matchName: ports.ubuntu.com
+        # Python, for the airflow image
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            # ⚠️ :80 is NOT redundant. Debian/Ubuntu apt repositories are
+            # plain HTTP by design -- the packages are signed, the transport is
+            # not -- so an HTTPS-only rule silently hangs every apt-get.
+            - port: "80"
+              protocol: TCP
+
+# ⚠️ This list is a STARTING POINT, and the standing rule in this repo applies:
+# extend it from `hubble observe --verdict DROPPED` evidence, never guesswork.
+# A missing entry does NOT fail the build with a clear error -- it HANGS until
+# the job times out, which reads like a slow network rather than a policy.
