@@ -123,6 +123,26 @@ spec:
         # still resolved — connection timeouts, not NXDOMAIN (2026-08-21).
         - matchPattern: "*.githubusercontent.com"
         - matchPattern: "*.actions.githubusercontent.com"
+        # Docker Hub auth + registry, for buildctl.
+        #
+        # ⚠️ Counter-intuitive, and it cost a debugging session: the RUNNER
+        # needs these, not just buildkitd. BuildKit's auth model keeps registry
+        # credentials on the CLIENT and forwards them over the build session --
+        # which is the property that stops the shared daemon from ever holding
+        # a token -- so the client is what performs the registry token fetch,
+        # including the ANONYMOUS one for a public base image.
+        #
+        # The error reads as though the daemon failed:
+        #   failed to fetch anonymous token: ... dial tcp 104.18.43.178:443:
+        #   i/o timeout
+        # but Hubble showed the drop against the RUNNER pod:
+        #   arc-runners-lanternfyre/...-runner:54426 <> 104.18.43.178:443
+        #   Policy denied DROPPED (TCP Flags: SYN)
+        # buildkitd itself could reach the same host the whole time.
+        - matchName: auth.docker.io
+        - matchName: registry-1.docker.io
+        - matchName: index.docker.io
+        - matchName: production.cloudflare.docker.com
         - matchName: ghcr.io
         - matchPattern: "*.ghcr.io"
         - matchName: api.nuget.org
