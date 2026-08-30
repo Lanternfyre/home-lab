@@ -1,4 +1,4 @@
-repoURL: "ghcr.io/t3chy0n/charts"
+repoURL: "ghcr.io/lanternfyre/charts"
 chart: "mealie"
 targetRevision: "0.1.2"
 releaseName: "mealie"
