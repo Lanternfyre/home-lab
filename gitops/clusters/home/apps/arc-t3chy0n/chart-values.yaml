@@ -51,7 +51,7 @@ template:
         # ⚠️ Those two downloads are the reason the egress policy in manifests/
         # is WIDER than Lanternfyre's. Removing an entry there does not slow a
         # job down; it hangs it until timeout.
-        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Lighter than Lanternfyre's: that scale set is sized for the

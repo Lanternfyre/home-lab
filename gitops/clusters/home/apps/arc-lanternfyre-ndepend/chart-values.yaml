@@ -81,7 +81,7 @@ template:
         # Custom image: gh/oras/trivy/python3 + dotnet SDK baked — the
         # Ensure-gh + setup-dotnet workflow steps become no-ops. dind sidecar
         # above stays the stock docker image (public).
-        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         env:
           - name: DOCKER_HOST
