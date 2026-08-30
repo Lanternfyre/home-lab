@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/t3chy0n/github-mcp-proxy
+  repository: ghcr.io/lanternfyre/github-mcp-proxy
   tag: "0.1.1"
   pullPolicy: IfNotPresent
 

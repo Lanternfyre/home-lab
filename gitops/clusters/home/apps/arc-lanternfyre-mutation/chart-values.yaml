@@ -31,7 +31,7 @@ template:
     containers:
       - name: runner
         # Custom image: gh/oras/trivy/python3 + dotnet SDK baked.
-        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Same envelope that let the Debug build + full test suites survive

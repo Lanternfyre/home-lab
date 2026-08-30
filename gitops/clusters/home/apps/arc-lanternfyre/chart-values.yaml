@@ -45,7 +45,7 @@ template:
         # SDK 10.0.100 baked (setup-dotnet + Ensure-gh become no-ops).
         # :latest deliberately — build-push re-points it per release; pin to a
         # convco tag if a bad image ever ships.
-        image: ghcr.io/t3chy0n/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Sized for the Necronia Grains/Scripting/Simulation suites -- the
