@@ -153,7 +153,8 @@
   # Must exist BEFORE the ApplicationSets try to pull OCI charts. Without it
   # qnap-trident cannot be fetched, and the storage driver is not a thing you
   # want missing on a cluster you are still building.
-  ansible.builtin.command: "kubectl apply -f {{ argocd_ghcr_creds }}"
+  ansible.builtin.command: "kubectl apply -f {{ item }}"
+  loop: "{{ argocd_ghcr_creds }}"
   when:
     - argocd_bootstrap | bool
     - not ansible_check_mode

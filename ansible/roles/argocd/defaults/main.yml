@@ -31,7 +31,12 @@ argocd_root_app: "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/home-r
 # the failure mode is ugly: the ExternalSecret reports Ready=True while
 # delivering a token the registry rejects, freezing five apps including the
 # storage driver. See MODERNIZATION.md "hard-won findings".
-argocd_ghcr_creds: "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/ghcr-repo-creds.secret.yaml"
+# A LIST, because two registries are in play during the t3chy0n -> lanternfyre
+# move and ArgoCD matches repo-creds by URL prefix, so both must exist at
+# bootstrap or whichever apps still point at the other one cannot pull.
+argocd_ghcr_creds:
+  - "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/ghcr-repo-creds.secret.yaml"
+  - "{{ playbook_dir }}/../../gitops/clusters/home/bootstrap/ghcr-repo-creds-lanternfyre.secret.yaml"
 
 # Deployments that must be Available before the run is considered successful.
 argocd_deployments:
