@@ -6,7 +6,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: "https://github.com/t3chy0n/home-lab.git"
+    repoURL: "https://github.com/Lanternfyre/home-lab.git"
     targetRevision: master
     path: gitops/clusters/home/bootstrap
     directory:

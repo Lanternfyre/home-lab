@@ -9,7 +9,7 @@ spec:
 
   generators:
     - git:
-        repoURL: https://github.com/t3chy0n/home-lab.git
+        repoURL: https://github.com/Lanternfyre/home-lab.git
         revision: master
         files:
           - path: gitops/clusters/home/apps/**/app.yaml
@@ -77,7 +77,7 @@ spec:
               - "$values/{{ .path.path }}/chart-values.yaml"
             ignoreMissingValueFiles: true
 
-        - repoURL: https://github.com/t3chy0n/home-lab.git
+        - repoURL: https://github.com/Lanternfyre/home-lab.git
           targetRevision: master
           ref: values
 
