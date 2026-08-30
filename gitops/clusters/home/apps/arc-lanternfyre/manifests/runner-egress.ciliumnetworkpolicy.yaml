@@ -150,6 +150,19 @@ spec:
         # at "0B / 28.23MB" for five minutes and dies on a deadline.
         # Both are listed because Docker has used both over time.
         - matchName: production.cloudfront.docker.com
+        # Trivy's vulnerability database. ⚠️ NOT ghcr.io -- Trivy moved its
+        # DB to a GCR mirror to escape GHCR rate limits, so a scan pulls from
+        # mirror.gcr.io (142.251.x.x, Google) even though the IMAGE being
+        # scanned comes from ghcr.io. Allowing ghcr.io alone looks sufficient
+        # and is not.
+        #
+        # Caught live: the Trivy step sat "in_progress" for minutes while
+        # hubble showed
+        #   arc-runners-lanternfyre/...-runner <> 142.251.127.82:443
+        #   Policy denied DROPPED
+        # A missing FQDN hangs; it does not fail.
+        - matchName: mirror.gcr.io
+        - matchName: storage.googleapis.com
         - matchName: ghcr.io
         - matchPattern: "*.ghcr.io"
         - matchName: api.nuget.org
