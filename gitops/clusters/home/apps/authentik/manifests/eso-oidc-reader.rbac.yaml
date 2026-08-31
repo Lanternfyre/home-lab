@@ -28,6 +28,7 @@ rules:
       - oidc-envoy-gateway
       - oidc-silo
       - oidc-immich
+      - oidc-argocd
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

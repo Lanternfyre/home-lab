@@ -25,6 +25,7 @@ blueprints:
     - authentik-blueprint-envoy-gateway
     - authentik-blueprint-silo
     - authentik-blueprint-immich
+    - authentik-blueprint-argocd
 
 authentik:
   postgresql:
