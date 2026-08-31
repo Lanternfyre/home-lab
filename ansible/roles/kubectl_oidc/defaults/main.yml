@@ -44,9 +44,12 @@ kubectl_oidc_issuer_url: "{{ k3s_oidc_issuer_url | default('https://accounts.goo
 kubectl_oidc_client_id: "{{ k3s_oidc_client_id }}"
 
 # Where to read the client secret from, so it never lands in this repo.
-kubectl_oidc_secret_namespace: "auth"
-kubectl_oidc_secret_name: "oauth2-proxy-creds"
-kubectl_oidc_secret_key: "client-secret"
+# A6 -- read the client secret authentik already generates, rather than the
+# oauth2-proxy Secret, which A8 deletes. No new Secret is needed: this is the
+# same object the blueprint and Headlamp read.
+kubectl_oidc_secret_namespace: "authentik"
+kubectl_oidc_secret_name: "oidc-kubernetes"
+kubectl_oidc_secret_key: "client_secret"
 
 # Context naming. The existing certificate context is RENAMED rather than
 # removed -- it is the break-glass path and must keep working.

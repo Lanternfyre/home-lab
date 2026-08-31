@@ -186,10 +186,18 @@ configure_nopasswd_sudo: false
 # authenticates nobody. The health gates in 20-config-converge.yml CANNOT see
 # that. The only real acceptance test is a login that yields an identity.
 #
-# Reuses the Google OAuth client that oauth2-proxy already uses, so there is
-# one consent screen and one client to revoke. The client ID is not a secret.
-k3s_oidc_issuer_url: "https://accounts.google.com"
-k3s_oidc_client_id: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+# A6 -- authentik. ONE client shared by the API server, Headlamp and kubectl,
+# because the API server validates `aud` against a single client id: a token
+# minted for any other client is rejected however valid it is.
+#
+# ⚠️ The API server must be able to REACH this issuer to fetch discovery and
+# JWKS. Verified before the cutover -- all three control-plane nodes returned
+# HTTP 200 for the discovery URL. If that ever stops being true, OIDC
+# authenticates nobody, silently, exactly as the warning above describes.
+#
+# The client ID is not a secret.
+k3s_oidc_issuer_url: "https://authentik.lab.techyon.dev/application/o/kubernetes/"
+k3s_oidc_client_id: "kubernetes"
 
 # `email` is deliberate and load-bearing for RBAC. Kubernetes prefixes the
 # username with the issuer URL for EVERY claim except `email`, which is exempt,
