@@ -1,0 +1,78 @@
+# H3 -- privilege containment in the `storage` namespace.
+#
+# `storage` sits at PSA `privileged` because the Trident CSI node plugin
+# genuinely needs it: it mounts and formats block devices on the host. PSA is
+# all-or-nothing per namespace, so granting that one DaemonSet its privilege
+# means PSA stops asserting anything about the OTHER pods in the namespace --
+# including the controller and operator, neither of which is privileged today.
+#
+# Measured before writing, not assumed:
+#   trident-node-linux (DaemonSet)  -> container `trident-main` IS privileged
+#   trident-controller              -> NOT privileged
+#   trident-operator                -> NOT privileged
+#
+# So privilege is allow-listed to exactly that one container in that one
+# workload, and denied to everything else in the namespace.
+#
+# ⚠️ HONEST LIMIT OF THIS CONTROL. serviceAccountName is not a security boundary
+# against someone who can already create pods in `storage` -- any pod author in
+# a namespace may name any ServiceAccount in it. This policy stops privilege
+# CREEP: a chart bump that quietly adds `privileged: true` to the controller, a
+# sidecar that grows the flag, a copied manifest. Someone with pod-create in
+# `storage` has already won, and RBAC is what stops them.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: storage-pod-constraints
+spec:
+  # ⚠️ PER-POLICY OPT-IN, or enforcement silently falls back to the Kyverno
+  # webhook and dies with Kyverno.
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+
+  validationActions:
+    - Deny
+
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: storage
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+    - name: isNodePlugin
+      expression: >-
+        has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == 'trident-node-linux'
+
+  validations:
+    # The only privileged container permitted in this namespace.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false ||
+          (variables.isNodePlugin && c.name == 'trident-main'))
+      message: >-
+        Only the Trident CSI node plugin may run privileged in `storage`, and
+        only its `trident-main` container. The namespace is PSA `privileged`
+        solely to admit that DaemonSet -- it is not a general exemption. If a
+        chart update added this flag, that is the bug.
+
+    # Everything that is NOT the node plugin must also stay off the host.
+    - expression: >-
+        variables.isNodePlugin ||
+        ((!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+         (!has(object.spec.hostIPC) || object.spec.hostIPC == false))
+      message: >-
+        Only the Trident CSI node plugin may join host namespaces in `storage`.
