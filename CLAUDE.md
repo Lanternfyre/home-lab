@@ -11,6 +11,7 @@ manages the nodes. Target topology is 3 control-plane/etcd servers
 | **[MODERNIZATION.md](MODERNIZATION.md)** | **Current state, remaining phases, and hard-won findings. Start here.** |
 | [MANUAL-STEPS.md](MANUAL-STEPS.md) | Actions needing a human: credentials, sudo, console, judgement calls |
 | [ansible/README.md](ansible/README.md) | Node config as code; why there is no state file |
+| [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md) | The join token: how it is managed, and the rotation runbook |
 
 If work was interrupted, `MODERNIZATION.md` → "Immediately next" is the resume
 point. Do not re-derive the "Hard-won findings" section — those cost real effort.
