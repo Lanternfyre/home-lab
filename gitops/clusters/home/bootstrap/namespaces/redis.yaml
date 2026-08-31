@@ -1,0 +1,17 @@
+# redis
+#
+# Apps in this namespace: redis.
+#
+# Every container already runs non-root, drops ALL capabilities, sets
+# allowPrivilegeEscalation false and seccomp RuntimeDefault -- measured, not assumed.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redis
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

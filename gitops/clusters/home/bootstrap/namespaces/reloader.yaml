@@ -1,0 +1,18 @@
+# reloader
+#
+# Apps in this namespace: reloader.
+#
+# Measured: nothing here is privileged, uses host namespaces, hostPath or
+# unconfined profiles. Not yet `restricted` -- capabilities are not dropped and
+# seccomp is unset in these charts.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: reloader
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35
