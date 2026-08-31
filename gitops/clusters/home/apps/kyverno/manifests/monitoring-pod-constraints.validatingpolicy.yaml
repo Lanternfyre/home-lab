@@ -67,15 +67,37 @@ spec:
         Only node-exporter may join host namespaces in `monitoring`. A metrics
         scraper with hostPID can see every process on the node.
 
-# ⚠️ hostPath is deliberately NOT asserted here, and the reason is worth stating
-# rather than leaving as an omission.
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath)) ||
+        variables.sa in [
+          'prometheus-operator-prometheus-node-exporter',
+          'smartctl-exporter-prometheus-smartctl-exporter',
+          'volume-health-exporter'
+        ]
+      message: >-
+        Only node-exporter, smartctl-exporter and volume-health-exporter may
+        mount hostPath in `monitoring`. Those three read the node deliberately
+        -- block devices, /proc, and the kubelet mount table. A hostPath from
+        anything else is a scraper reaching into the host filesystem, which is
+        how a read-only metrics component becomes a way off the node.
+
+# hostPath measured, not assumed. Every pod in the namespace, walked for
+# `spec.volumes[*].hostPath`:
 #
-# Three workloads legitimately mount hostPath: node-exporter, smartctl-exporter
-# and volume-health-exporter. The first two have their own ServiceAccounts, but
-# volume-health-exporter runs under `default` -- so an allow-list keyed on
-# ServiceAccount would have to permit `default`, which every pod in the
-# namespace can name. That rule would look protective and permit everything.
+#   node-exporter          /  /proc  /sys
+#   smartctl-exporter      /dev
+#   volume-health-exporter /dev  /proc  /sys  /var/lib/kubelet
+#                          /var/lib/node-exporter/textfile_collector
+#   the other twelve       none -- alloy and speedtest-exporter included,
+#                          both of which look like they ought to have some
 #
-# The fix is to give volume-health-exporter its own ServiceAccount, after which
-# a hostPath rule becomes meaningful. Writing the toothless version first would
-# just make the gap harder to see.
+# This rule was impossible to write honestly until volume-health-exporter got
+# its own ServiceAccount. It ran as `default`, a name every pod in the
+# namespace takes by omission, so an allow-list that permitted `default` would
+# have permitted everything while reading as protective.
+#
+# Proving the negative matters more here than proving the positive: a pod with
+# a hostPath volume and no allow-listed ServiceAccount must be REJECTED. A test
+# that only confirms the three exporters still run passes just as happily
+# against a rule that denies nothing.
