@@ -46,25 +46,25 @@ configs:
     # notification/template links.
     url: https://argocd.lab.techyon.dev
     # Google Workspace OIDC. ClientID / ClientSecret are pulled from the
-    # argocd-google-oidc Secret (populated from 1Password via ExternalSecrets;
-    # see gitops/clusters/home/apps/external-secrets/manifests/google-oauth.external-secret.yaml).
+    # argocd-authentik-oidc Secret, whose client secret is generated in-cluster
+    # and read from the authentik namespace (see
+    # gitops/clusters/home/apps/external-secrets/manifests/argocd-authentik-oidc.external-secret.yaml).
     # The $<secret>:<field> dollar syntax only works if the Secret has the
     # app.kubernetes.io/part-of: argocd label, which the ExternalSecret sets.
     oidc.config: |
-      name: Google
-      issuer: https://accounts.google.com
-      clientID: $argocd-google-oidc:clientID
-      clientSecret: $argocd-google-oidc:clientSecret
+      name: authentik
+      issuer: https://authentik.lab.techyon.dev/application/o/argocd/
+      clientID: $argocd-authentik-oidc:clientID
+      clientSecret: $argocd-authentik-oidc:clientSecret
       requestedScopes:
         - openid
         - profile
         - email
-      # hd claim restricts logins to techyon.dev Workspace users only —
-      # anyone outside the Workspace is rejected before reaching RBAC.
-      requestedIDTokenClaims:
-        hd:
-          essential: true
-          value: techyon.dev
+      # The Google `hd` claim check is gone with Google. It existed because any
+      # Google account could reach the token endpoint and the Workspace domain
+      # was the only thing separating strangers from us. authentik admits only
+      # accounts that already exist -- its Google source has no enrollment flow
+      # -- so there is no equivalent claim to demand here.
   # Any techyon.dev user who passes the hd claim check above becomes admin.
   # Single-operator lab — no per-user policy needed.
   rbac:
