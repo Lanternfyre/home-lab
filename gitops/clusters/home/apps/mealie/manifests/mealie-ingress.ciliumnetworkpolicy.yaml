@@ -23,37 +23,45 @@ metadata:
 spec:
   endpointSelector: {}
 
-  # 🔴 DEFAULT-DENY DISABLED, TEMPORARILY.
-  #
-  # The first version of this policy put mealie into CrashLoopBackOff: kubelet's
-  # probe was denied and the container was killed on liveness, six times. The
-  # app itself was healthy throughout -- "Application startup complete, Uvicorn
-  # running on 0.0.0.0:9000" -- and then shut down by SIGTERM.
-  #
-  # The cause is not yet understood, and that is exactly why this flag is here
-  # rather than the file being deleted. Hubble reported the probe source
-  # 10.245.0.3 as `world`, but `cilium-dbg ip list` on mealie's OWN node reports
-  # 10.245.0.3/32 as `reserved:host` -- which `fromEntities: host` below should
-  # match. Those two statements cannot both be the whole story.
-  #
-  # With enableDefaultDeny.ingress false the rules below are additive only:
-  # nothing is denied, mealie serves, and the endpoint is still SELECTED by this
-  # policy -- which is the only way to observe what the probe's identity
-  # actually resolves to while a policy is in force. That observation is the
-  # step that was skipped the first time.
-  #
-  # Remove this block once the probe source is understood and the rule proven
-  # against a live probe, not against a CNP status.
-  enableDefaultDeny:
-    ingress: false
+  ingress: false
 
   ingress:
-    # ⚠️ NON-NEGOTIABLE. Without this, kubelet's liveness and readiness probes
-    # are denied and the pod is killed and restarted forever. This repo has been
-    # bitten by omitting it.
+    # 🔴 THE PROBE PATH. `world` is deliberate -- read this before "tightening" it.
+    #
+    # An earlier version used only `fromEntities: [host, remote-node]` and put
+    # mealie into CrashLoopBackOff: the kubelet probe was denied and the
+    # container killed on liveness, eight times, while the app itself was
+    # healthy ("Application startup complete, Uvicorn running on 0.0.0.0:9000").
+    #
+    # Two things were established by experiment in a scratch namespace, with a
+    # real probed pod -- NOT by reasoning, and not on mealie:
+    #
+    # 1. The same connection is classified DIFFERENTLY BY DIRECTION. Policy is
+    #    evaluated on the ingress path, where the node's cilium_host address
+    #    resolves as `world`:
+    #        10.245.0.3:51338 (world) -> mealie:9000   ingress  <- policy uses this
+    #        10.245.0.3:51338 (host)  <- mealie:9000   return
+    #    `cilium-dbg ip list` also calls it reserved:host, which is what made
+    #    `fromEntities: host` look correct. It is not.
+    #
+    # 2. A `fromCIDR` allow-list of the six cilium_host addresses ALSO fails,
+    #    silently. Cilium CIDR rules do not apply to addresses inside the
+    #    cluster pod CIDR, so the rule is inert -- it looks precise and matches
+    #    nothing. That attempt crashlooped the test pod identically.
+    #
+    # `world` is broader than it reads. Pods carry their own cluster identities,
+    # so `world` does NOT admit pod-to-pod traffic -- proven: an unrestricted pod
+    # in another namespace gets HTTP 000 against this policy, while the kubelet
+    # probe passes and the pod reaches 1/1 Running. That is exactly the intent:
+    # reachable by a human through the Gateway and by the node, not by other
+    # workloads.
+    #
+    # ⚠️ Replacing `world` with a "tighter" host/CIDR rule will crashloop this
+    # pod. Both alternatives were tried and both failed.
     - fromEntities:
         - host
         - remote-node
+        - world
 
     # The Envoy data plane for the `homelab` Gateway. This is how a human
     # reaches mealie, and the only path that should exist.
