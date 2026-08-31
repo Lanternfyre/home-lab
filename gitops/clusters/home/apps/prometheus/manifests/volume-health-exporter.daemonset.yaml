@@ -22,6 +22,12 @@ spec:
         # hitting. `reloader` is deployed and watches this annotation.
         configmap.reloader.stakater.com/reload: "volume-health-exporter"
     spec:
+      # Its own ServiceAccount, declared alongside in
+      # volume-health-exporter.serviceaccount.yaml. It is bound to no Role and
+      # its token is not mounted -- it exists so admission control has a name
+      # to key a hostPath allow-list on. Running as `default` made that rule
+      # impossible to write honestly.
+      serviceAccountName: volume-health-exporter
       # No API access of any kind. This component observes; it cannot act.
       automountServiceAccountToken: false
       # All five nodes are control-plane and currently untainted. The blanket
