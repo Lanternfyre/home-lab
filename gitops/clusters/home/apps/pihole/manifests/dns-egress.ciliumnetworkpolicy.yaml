@@ -1,0 +1,65 @@
+# H1 -- default-deny EGRESS for the dns namespace.
+#
+# Shared by pihole, external-dns and external-dns-cloudflare. Internet egress is
+# ACCEPTED by decision and is unavoidable here: Pi-hole forwards queries to
+# upstream resolvers, and external-dns talks to the Cloudflare API. Containment
+# is therefore about the cluster, not the internet.
+#
+# From a live capture across all six agents, 111 flows:
+#   -> kube-system/coredns:53
+#   -> dns/*:80                       intra-namespace (pihole web/admin)
+#   -> 192.168.33.{2,3}:6443          kube-apiserver -- external-dns watches
+#                                     Services, Ingresses and HTTPRoutes
+#   -> 104.19.193.29:443              a Cloudflare address: the external-dns API
+#                                     client
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: dns-egress
+  namespace: dns
+spec:
+  endpointSelector: {}
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: dns
+
+    # 🟢 OBSERVED. external-dns watches Services, Ingresses and HTTPRoutes; with
+    # no API access it silently stops publishing records.
+    - toEntities:
+        - kube-apiserver
+
+    # 🟡 ACCEPTED BY DECISION. Pi-hole's upstream forwarding (:53 out) and
+    # external-dns's Cloudflare API calls (:443). Both are the job.
+    #
+    # ⚠️ Deliberately NOT an allow-list of resolver IPs or api.cloudflare.com:
+    # upstream resolvers are configurable and Cloudflare's API is served from a
+    # rotating anycast range, so a narrow rule would break DNS itself -- and it
+    # would break as a hang, taking the whole cluster's name resolution with it.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+            - port: "443"
+              protocol: TCP
+            - port: "853"
+              protocol: TCP
