@@ -25,6 +25,7 @@ rules:
     # every new integration adds a line -- which is the point.
     resourceNames:
       - oidc-grafana
+      - oidc-envoy-gateway
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding

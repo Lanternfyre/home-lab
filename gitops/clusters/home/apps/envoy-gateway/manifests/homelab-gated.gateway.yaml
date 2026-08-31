@@ -38,9 +38,12 @@ metadata:
   namespace: gateway-envoy
 spec:
   refreshInterval: 1h
+  # A5 -- the gate's client secret now comes from authentik, generated in-cluster
+  # and read out of the authentik namespace through the authentik-oidc store. The
+  # KEY NAME stays `client-secret`, so the SecurityPolicy reference is unchanged.
   secretStoreRef:
     kind: ClusterSecretStore
-    name: one-password
+    name: authentik-oidc
   target:
     name: gateway-oidc
     creationPolicy: Owner
@@ -49,12 +52,12 @@ spec:
       engineVersion: v2
       mergePolicy: Replace
       data:
-        client-secret: '{{ .rawClientSecret | trim }}'
+        client-secret: '{{ .clientSecret }}'
   data:
-    - secretKey: rawClientSecret
+    - secretKey: clientSecret
       remoteRef:
-        key: GoogleOauthClient
-        property: GoogleOauthSecretId.txt
+        key: oidc-envoy-gateway
+        property: client_secret
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -114,6 +117,11 @@ spec:
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: SecurityPolicy
 metadata:
+  # ⚠️ The name is historical and now inaccurate -- this policy gates with
+  # authentik, not Google. It is deliberately NOT renamed: a rename is a delete
+  # plus a create, and ArgoCD does not guarantee the order, so there would be a
+  # window in which no policy guards the Gateway and ten apps are exposed. A
+  # misleading name is the cheaper problem, and this comment is the fix.
   name: google-workspace-only
   namespace: gateway-envoy
 spec:
@@ -142,8 +150,8 @@ spec:
 
   oidc:
     provider:
-      issuer: "https://accounts.google.com"
-    clientID: "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+      issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
+    clientID: "envoy-gateway"
     clientSecret:
       name: gateway-oidc
 
@@ -180,12 +188,16 @@ spec:
   # claim check below is decorative.
   jwt:
     providers:
-      - name: google
-        issuer: "https://accounts.google.com"
+      - name: authentik
+        issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
         audiences:
-          - "138732748534-v50ig1jfefsmfnf910a8ns4gpj2sj120.apps.googleusercontent.com"
+          - "envoy-gateway"
         remoteJWKS:
-          uri: "https://www.googleapis.com/oauth2/v3/certs"
+          # ⚠️ In-cluster on purpose. The public hostname resolves to the OPEN
+          # Gateway's LoadBalancer, so fetching keys through it would make the
+          # gate depend on the very data path it guards, with Envoy hairpinning
+          # out to a LoadBalancer to validate a token it already holds.
+          uri: "http://authentik-server.authentik.svc.cluster.local/application/o/envoy-gateway/jwks/"
         extractFrom:
           cookies:
             - "IdToken"
@@ -194,15 +206,23 @@ spec:
     # A typo in the rule below fails CLOSED (403) rather than open.
     defaultAction: Deny
     rules:
-      - name: workspace-only
+      - name: homelab-admins
         action: Allow
         principal:
           jwt:
-            provider: google
+            provider: authentik
             claims:
-              # Proven during the spike by inverting this value: the SAME
-              # cookie was then rejected with 403 "rbac: access denied".
-              - name: hd
-                valueType: String
+              # Replaces the Google `hd == techyon.dev` check. That rule existed
+              # because ANY Google account could reach the token endpoint and the
+              # domain was the only thing separating strangers from us. authentik
+              # admits only accounts that already exist -- its Google source has
+              # no enrollment flow -- so this is defence in depth now, not the
+              # sole barrier.
+              #
+              # ⚠️ StringArray, not String: `groups` is a list, and the wrong
+              # valueType matches nothing. With defaultAction Deny that is a 403
+              # on every hostname behind the gate at once.
+              - name: groups
+                valueType: StringArray
                 values:
-                  - techyon.dev
+                  - "authentik Admins"
