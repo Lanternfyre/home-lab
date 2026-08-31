@@ -26,6 +26,7 @@ blueprints:
     - authentik-blueprint-silo
     - authentik-blueprint-immich
     - authentik-blueprint-argocd
+    - authentik-blueprint-kubernetes
 
 authentik:
   postgresql:
