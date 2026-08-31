@@ -1,0 +1,60 @@
+# H3 -- privilege containment in the `testcontainers` namespace.
+#
+# ⚠️ This namespace was set to PSA `privileged` CONSERVATIVELY, not from
+# evidence: kubedock creates containers on behalf of test suites, and its
+# requirements were unproven at the time. Measured since, nothing there needs
+# privilege at all -- the only workload is the kubedock-reaper CronJob, which is
+# entirely clean.
+#
+# So the rule is unconditional. If a test suite ever genuinely needs privilege,
+# it now fails with this message rather than silently getting it -- which is the
+# right way round for a namespace whose whole job is running other people's
+# container images.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: testcontainers-pod-constraints
+spec:
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: testcontainers
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: >-
+        Pods in `testcontainers` must not be privileged. This namespace runs
+        container images supplied by test suites; a privileged one is a host
+        compromise. If a test genuinely needs this, that is a decision to take
+        deliberately, not by default.
+
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: >-
+        Pods in `testcontainers` must not join host namespaces.
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        Pods in `testcontainers` must not mount hostPath.

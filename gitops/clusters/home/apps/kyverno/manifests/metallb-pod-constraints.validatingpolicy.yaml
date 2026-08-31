@@ -1,0 +1,73 @@
+# H3 -- privilege containment in the `metallb` namespace.
+#
+# `metallb` is PSA `privileged` but NOTHING in it is actually privileged.
+# Measured:
+#
+#   metallb-speaker (DaemonSet)  hostNetwork + NET_ADMIN, NET_BIND_SERVICE,
+#                                NET_RAW, SYS_ADMIN -- it answers ARP/NDP for the
+#                                service VIPs, which needs the host's network
+#   metallb-controller           completely clean
+#
+# Those capabilities and hostNetwork are what fail PSA `baseline`, not privilege.
+# So the strongest rule available here is unconditional: nothing in this
+# namespace may be privileged, ever. The speaker's genuine needs are allow-listed
+# narrowly and everything else is held to no host access and no added
+# capabilities.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: metallb-pod-constraints
+spec:
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: metallb
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+    - name: isSpeaker
+      expression: >-
+        has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == 'metallb-speaker'
+  validations:
+    # Unconditional: nothing here has ever needed privilege.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: >-
+        Nothing in `metallb` may run privileged. The namespace is PSA
+        `privileged` because the speaker needs hostNetwork and NET_ADMIN, not
+        because anything needs full privilege.
+
+    - expression: >-
+        variables.isSpeaker ||
+        ((!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+         (!has(object.spec.hostIPC) || object.spec.hostIPC == false))
+      message: >-
+        Only metallb-speaker may use host networking here -- it has to answer
+        ARP/NDP for the service VIPs on the node's own network.
+
+    - expression: >-
+        variables.isSpeaker ||
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          size(c.securityContext.capabilities.add) == 0)
+      message: >-
+        Only metallb-speaker may add capabilities in this namespace.
