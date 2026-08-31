@@ -1,0 +1,33 @@
+# H1 follow-up -- CNPG instances need the kube-apiserver, in every namespace.
+#
+# `immich-egress` allowed kube-dns, its own namespace, redis:6379 and `world`
+# on 80/443. `world` is everything OUTSIDE the cluster, which does NOT include
+# the cluster's own API server -- that is the `kube-apiserver` entity. So every
+# instance-manager call to :6443 was dropped:
+#
+#   immich/immich-db-3 <> 192.168.33.3:6443   200 drops
+#   immich/immich-db-3 <> 192.168.33.2:6443   162 drops
+#   immich/immich-db-3 <> 192.168.33.7:6443    88 drops
+#     ... and the same for immich-db-2 and immich-db-4
+#
+# `databases-egress` already carries exactly this rule, for exactly this
+# reason. The immich policy was written from a capture that saw application
+# traffic and missed the CNPG sidecar underneath it -- the instance manager
+# watches its own Cluster CR, publishes status and runs leader election, all
+# through the API server. A capture shows what flowed, not what was trying to.
+#
+# Scoped to CNPG instance pods, so immich-server and machine-learning gain no
+# API reach from it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnpg-instance-egress
+  namespace: immich
+spec:
+  endpointSelector:
+    matchLabels:
+      cnpg.io/podRole: instance
+
+  egress:
+    - toEntities:
+        - kube-apiserver
