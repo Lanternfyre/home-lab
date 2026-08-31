@@ -1,0 +1,27 @@
+# PSA for this namespace, declared explicitly rather than left to ArgoCD's
+# CreateNamespace=true, which makes a BARE namespace with no labels -- and the
+# label is the whole point. Same pattern as apps/buildkit/manifests/namespace.yaml.
+#
+# Level chosen by MEASURING this namespace's running pods against the PSA rules,
+# not by guessing: every container already runs non-root, drops ALL capabilities,
+# sets allowPrivilegeEscalation false and seccomp RuntimeDefault.
+#
+# ⚠️ warn and audit are set to the SAME level as enforce, deliberately. PSA only
+# reports at the level you ask for, so a HIGHER warn hides violations of a lower
+# enforce -- that is exactly how buildkit's baseline violation stayed invisible
+# until it failed to create a pod.
+#
+# ⚠️ PSA enforces at POD creation, not on the workload template. `kubectl apply
+# --dry-run=server` on a Deployment proves nothing here; the acceptance test is
+# a real pod.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: redis
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
