@@ -1,0 +1,66 @@
+# H1 -- default-deny EGRESS for the redis namespace.
+#
+# A compromised redis pod should not be able to reach anything except DNS and
+# its own cluster peers. Redis is a plausible target: it is reachable from
+# immich, it speaks a text protocol, and it holds session data.
+#
+# ── EGRESS ONLY, and that is deliberate ──────────────────────────────────────
+# This policy specifies `egress` and NOT `ingress`. In Cilium policy is
+# per-direction, so ingress stays unrestricted. That matters because the live
+# capture below found a client this repo did not know about, and an ingress rule
+# written from an incomplete list would break a real consumer. Egress is where
+# the containment value is; ingress can be narrowed later, from evidence.
+#
+# ── Derived from a live capture, not from reading the chart ──────────────────
+# `hubble observe -f --namespace redis` across ALL six cilium agents, because a
+# single agent only sees its own node and the flow buffer holds ~52 seconds.
+# 400 flows. Everything redis sends:
+#
+#   redis-node-*    -> kube-system/coredns:53          (UDP+TCP)
+#   redis-haproxy-* -> redis/redis-node-*:6379         (health checks + proxying)
+#   redis-node-*    -> redis/redis-node-*:6379, :26379 (replication + sentinel)
+#
+# and nothing else. No egress to the internet, no kube-apiserver.
+#
+# ⚠️ The capture ALSO corrected two assumptions worth recording: immich is a
+# live consumer of redis (it was believed to have none), and one client
+# (10.245.6.208) no longer exists as any pod. Both are reasons this policy does
+# not touch ingress yet.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: redis-egress
+  namespace: redis
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ The L7 DNS visibility rule is REQUIRED for toFQDNs to work at all, and
+    # is good practice regardless: without `rules.dns` Cilium cannot see the
+    # answers, so every name-based rule silently matches nothing. Kept here even
+    # though this policy has no toFQDNs, so that adding one later does not need
+    # this to be rediscovered.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Sentinel replication and HAProxy health checks, all inside this namespace.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: redis
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+            - port: "26379"
+              protocol: TCP
