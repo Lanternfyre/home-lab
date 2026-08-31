@@ -30,6 +30,31 @@
 # objects. A manual `kubectl label` is reverted by selfHeal within minutes, so
 # git is the only durable route — which is the audit trail.
 
+# ── 🔴 BACKUP STATE, measured 2026-08-31 ─────────────────────────────────────
+# THERE IS NO AUTOMATED BACKUP IN THIS CLUSTER. Not one.
+#
+# The three nightly dump CronJobs were removed in e0c470e (2026-08-15) in
+# favour of Velero, deliberately and at the operator's request -- but Velero has
+# not landed, and this file was never updated. Until today six entries read
+# `backup: CNPG barmanObjectStore + WAL archiving`, which has NEVER been true:
+# neither CNPG Cluster has ever had `spec.backup`, and there are zero Backup and
+# zero ScheduledBackup objects cluster-wide. Layer 4 was documented and absent.
+#
+# That is worse than the missing backup, because this file is what you would
+# read while deciding whether a restore is possible.
+#
+# What actually exists, verified by mounting the volumes:
+#   databases/pg-backup        16 dumps, 2026-08-01 .. 2026-08-16, 852K
+#                              (6 are 20-byte .partial from the NAS incident)
+#   immich/immich-db-backup    14 dumps, 2026-08-01 .. 2026-08-16, 645M
+#   home-utils/mealie-backup   the mealie tars, same window
+#
+# Every one of them is COLD and 15 days stale as of 2026-08-31. They are the
+# only restore point that exists, for anything. Do not delete these three PVCs.
+#
+# Everything created since 2026-08-16 -- authentik's entire database, and every
+# ReportPortal run -- has never been backed up at all.
+
 version: 1
 
 protected:
@@ -38,17 +63,25 @@ protected:
     size: 100Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/immich/manifests/immich-library.pvc.yaml
-    backup: file-level, off-NAS
+    backup: NONE                 # confirmed by the operator, 2026-08-31
     reason: >-
       Photographs. Irreplaceable; there is no other copy anywhere. This is the
       single highest-value object in the cluster.
+    warning: >-
+      🔴 THE HIGHEST-VALUE VOLUME IN THE CLUSTER HAS NO BACKUP. This entry read
+      `file-level, off-NAS` until 2026-08-31; there is no such job in the
+      cluster and the operator confirmed there is none on the NAS either. The
+      protect label, Retain and the Argo guards all survive a mistake and none
+      of them survives a disk. Until Velero lands, `immich-library` is one
+      hardware fault from total loss, and that fault has already happened once
+      -- see e0c470e, the 2026-08-08 NAS partition that wedged six filesystems.
 
   - namespace: immich
     claim: immich-db-2
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: >-
       Albums, face recognition and smart-search embeddings. The library above is
       just a pile of files without this database.
@@ -58,7 +91,7 @@ protected:
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of immich-db-2. Protected so a drain cannot destroy the pair.
 
   - namespace: immich
@@ -66,7 +99,7 @@ protected:
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: >-
       Third instance, added 2026-08-02 when immich-db went 2 -> 3 so that every
       drain has more than one switchover target. Protected so a drain cannot
@@ -83,7 +116,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Application databases (necronia, techyon). Not reconstructible.
 
   - namespace: databases
@@ -91,7 +124,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of the postgres-ha cluster.
 
   - namespace: databases
@@ -99,7 +132,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of the postgres-ha cluster.
 
   - namespace: home-utils
@@ -107,7 +140,8 @@ protected:
     size: 5Gi
     class: qnap-iscsi
     source: gitops/clusters/home/apps/mealie/manifests/qnap-mealie.pvc.yaml
-    backup: file-level, off-NAS
+    backup: NONE                 # was the mealie-backup CronJob, removed in
+                                 # e0c470e (2026-08-15) in favour of Velero
     reason: Hand-entered recipes and uploaded images. Not reconstructible.
 
   - namespace: databases
@@ -115,7 +149,7 @@ protected:
     size: 10Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/postgres/manifests/pg-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: >-
       Nightly pg_dumpall of the postgres-ha cluster. Deliberately on SMB, not
       iSCSI: SMB shares are never formatted, so the backup does not share the
@@ -126,7 +160,7 @@ protected:
     size: 10Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/immich/manifests/immich-db-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: >-
       Nightly pg_dumpall of immich-db (albums, faces, smart-search embeddings).
       Same SMB reasoning as pg-backup above.
@@ -136,7 +170,7 @@ protected:
     size: 5Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/mealie/manifests/mealie-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: Nightly tar of Mealie's data dir. SMB, so immune to the mkfs bug.
 
   - namespace: dns
@@ -212,6 +246,69 @@ protected:
       losable. Until that exists, layers 1-3 protect against mistakes and nothing
       protects against a disk.
 
+  # ── The ReportPortal stack, registered 2026-08-31 ───────────────────────────
+  # All three arrived with the stack on 2026-08-23 and sat in NEITHER list for
+  # eight days, which is exactly the gap the REGISTRY check exists to catch.
+  # The operator's call was to protect all three rather than only the binary
+  # store; over-protecting costs a break-glass commit, under-protecting costs
+  # data.
+  - namespace: reportportal
+    claim: reportportal-shared-volume-claim
+    size: 20Gi
+    class: qnap-samba
+    source: reportportal chart, storage.volume.* (Helm-rendered PVC)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      ReportPortal's binary half -- attachments and log blobs. Its relational
+      half lives in postgres-ha, which IS protected, so losing this leaves the
+      test history present but incomplete, and it cannot be regenerated without
+      re-running every build that produced it.
+    warning: >-
+      Protection here is IMPERATIVE, not declarative, and that is a deliberate
+      choice rather than an oversight. The chart exposes no labels or
+      annotations hook under `storage.volume`, so the label and the Argo guards
+      were applied with `kubectl label` / `kubectl annotate`. Verified to
+      survive both a hard refresh AND a full explicit sync, with the app staying
+      Synced/Healthy -- ArgoCD's diff ignores the extra keys because it never
+      owned them. If a chart upgrade ever starts rendering these fields, delete
+      the imperative ones and let the chart own them. The LABEL check is the
+      tripwire if it ever comes off.
+
+  - namespace: opensearch
+    claim: opensearch-cluster-master-opensearch-cluster-master-0
+    size: 20Gi
+    class: qnap-iscsi
+    source: opensearch StatefulSet volumeClaimTemplate (chart persistence.*)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      ReportPortal's analyzer indices. Today it holds only its own
+      `top_queries` telemetry and empty kibana/ml indices -- no RP data yet --
+      so this is the weakest of the three cases. Protected anyway: it is about
+      to hold the auto-analysis model, and the moment it does, quietly losing
+      it to a drain would look like the analyser simply getting worse.
+    warning: >-
+      Controller-generated, so ArgoCD never sees the claim and the label was
+      applied with `kubectl label` -- nothing reverts it. Deliberately NOT set
+      via `persistence.labels.additionalLabels` in chart-values: a StatefulSet's
+      volumeClaimTemplates are IMMUTABLE, so that edit wedges the Helm sync
+      until someone orphan-deletes and recreates the StatefulSet, and even then
+      it would only label FUTURE claims, not this one. Scaling opensearch will
+      therefore create an unlabelled PVC; the REGISTRY check catches it, the
+      same way it caught immich-db-4.
+
+  - namespace: rabbitmq
+    claim: data-rabbitmq-0
+    size: 8Gi
+    class: qnap-iscsi
+    source: rabbitmq StatefulSet volumeClaimTemplate (chart persistence.*)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      The api <-> analyzer message queues. Contents are transient and rebuilt on
+      restart, so this is protected for the durable half of RabbitMQ's state --
+      definitions, users and vhosts -- not for the messages.
+    warning: >-
+      Same mechanism and the same scale-up caveat as opensearch above.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning
@@ -235,14 +332,11 @@ unprotected:
     size: 20Gi
     reason: Profiles, 720h retention by config. Discardable by design.
 
-  - namespace: redis
-    claim: redis-data-redis-master-0
-    size: 8Gi
-    reason: >-
-      Cache and job queues (Immich background jobs). Rebuilt on restart; not
-      authoritative for anything. Re-evaluate if Redis ever becomes a datastore.
-
-  - namespace: redis
-    claim: redis-data-redis-replicas-0
-    size: 8Gi
-    reason: Replica of the above.
+  # Redis has NO volumes at all any more -- apps/redis/chart-values.yaml sets
+  # `persistence.enabled: false`, deliberately: the queue holds Immich's BullMQ
+  # jobs, which are re-run rather than restored, and a volume that does not
+  # exist cannot leak a backend LUN. The two `redis-data-redis-*-0` entries that
+  # stood here until 2026-08-31 described claims the cluster had already
+  # stopped creating, and the REGISTRY check had been warning about both.
+  # Removed rather than kept: an entry for a volume that cannot exist is the
+  # same kind of untruth as a backup line for a job that does not run.
