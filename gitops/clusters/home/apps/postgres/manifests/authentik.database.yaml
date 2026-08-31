@@ -1,0 +1,23 @@
+# The `authentik` database on postgres-ha.
+#
+# Lives HERE, in the postgres app, and not in ../../authentik/manifests/: a CNPG
+# Database object must sit in the same namespace as the Cluster it names, and
+# the authentik app deploys into the `authentik` namespace.
+#
+# Same reasoning as reportportal.database.yaml -- postInitSQL runs once at
+# initdb and this cluster bootstrapped in January, so the Database CRD is the
+# only mechanism that can add a database to it now.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: authentik
+  namespace: databases
+spec:
+  cluster:
+    name: postgres-ha
+  name: authentik
+  owner: authentik
+
+  # ⚠️ retain, not delete. `delete` would DROP the identity provider's entire
+  # database if this object were ever removed from git -- and ArgoCD prunes.
+  databaseReclaimPolicy: retain

@@ -1,0 +1,31 @@
+# Authentik on Envoy Gateway.
+#
+# ⚠️ OPEN Gateway, and this one is structural rather than a preference: the
+# `homelab-gated` Gateway authenticates every request against the identity
+# provider, so putting the identity provider behind it would mean logging in to
+# reach the thing you log in with. It has to be reachable unauthenticated --
+# authentik does its own authentication.
+#
+# Backend name and port taken from `helm template` of 2026.8.0, not assumed.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: authentik
+  namespace: authentik
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Authentik
+    gethomepage.dev/description: Identity provider
+    gethomepage.dev/group: Infra
+    gethomepage.dev/icon: authentik.png
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - authentik.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: authentik-server
+          port: 80
