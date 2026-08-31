@@ -18,6 +18,20 @@ argocd_chart: argo/argo-cd
 argocd_release_name: argocd
 argocd_namespace: argocd
 
+# PSA level for the argocd namespace.
+#
+# ⚠️ Deliberately set HERE and not in gitops/clusters/home/bootstrap/namespaces/,
+# where every other namespace is declared. That directory is synced by home-root
+# with prune: true -- so declaring the argocd namespace there would let ArgoCD
+# prune the namespace it runs in. ArgoCD is Ansible-managed on purpose, exactly
+# so it cannot delete its own footing.
+#
+# `restricted` was MEASURED, not assumed: every pod in the namespace already runs
+# non-root, drops ALL capabilities, sets allowPrivilegeEscalation false and
+# seccomp RuntimeDefault, and none use host namespaces, hostPath or extra
+# capabilities.
+argocd_namespace_psa_level: restricted
+
 # Single source of truth for values. Deliberately NOT copied into the role:
 # gitops/argocd-values.yaml is referenced by the install runbook and is real
 # GitOps config, so duplicating it would create two files that drift.
