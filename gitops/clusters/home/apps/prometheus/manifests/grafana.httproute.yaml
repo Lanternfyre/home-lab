@@ -1,16 +1,24 @@
 # Grafana on Envoy Gateway. Replaces grafana.ingress.yaml.
 #
-# ⚠️ Attached to `homelab`, the OPEN Gateway — deliberately, and it is not an
-# oversight. Grafana authenticates its own users via Google OIDC
-# (GF_AUTH_GOOGLE_* from the grafana-google-oidc Secret), so putting the shared
-# workspace SecurityPolicy in front of it would stack a second, separate login
-# on top of one that already works. Its Ingress carried no auth-url annotation
-# for exactly the same reason.
+# Attached to `homelab-gated`.
 #
-# The security decision for any app in this repo is now just which Gateway its
+# This REVERSES the earlier decision, which put Grafana on the open Gateway
+# because it authenticated its own users and stacking a second login seemed
+# redundant. The reasoning has changed: an app having its own login is not a
+# reason to expose its whole surface. Behind the gate, an unauthenticated
+# request never reaches Grafana at all -- no login page, no API, no
+# unauthenticated endpoint, nothing to probe for a CVE.
+#
+# Cost today: two sign-ins, because the edge still gates with Google while
+# Grafana itself now uses authentik. That is accepted deliberately and is
+# temporary -- A5 moves the edge SecurityPolicy onto authentik, after which
+# both hops share one identity provider and the second becomes a silent
+# redirect against an existing session.
+#
+# The security decision for any app in this repo is just which Gateway its
 # route names:
 #   homelab        -> reachable on the LAN, app handles its own auth (or needs none)
-#   homelab-gated  -> Google sign-in enforced at the edge, techyon.dev only
+#   homelab-gated  -> sign-in enforced at the edge before the app is reachable
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -27,7 +35,7 @@ metadata:
     gethomepage.dev/name: Grafana
 spec:
   parentRefs:
-    - name: homelab
+    - name: homelab-gated
       namespace: gateway-envoy
       sectionName: https
   hostnames:
