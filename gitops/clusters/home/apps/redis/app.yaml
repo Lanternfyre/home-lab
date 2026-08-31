@@ -1,5 +1,5 @@
 repoURL: "ghcr.io/lanternfyre/charts"
 chart: "redis"
-targetRevision: "0.1.1"
+targetRevision: "0.1.2"
 releaseName: "redis"
 namespace: "redis"
