@@ -63,12 +63,18 @@ protected:
     size: 100Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/immich/manifests/immich-library.pvc.yaml
-    backup: UNVERIFIED           # no in-cluster mechanism exists; if this runs
-                                 # at all it runs on the NAS. Confirm or change
-                                 # to NONE -- do not leave it reading as a fact.
+    backup: NONE                 # confirmed by the operator, 2026-08-31
     reason: >-
       Photographs. Irreplaceable; there is no other copy anywhere. This is the
       single highest-value object in the cluster.
+    warning: >-
+      🔴 THE HIGHEST-VALUE VOLUME IN THE CLUSTER HAS NO BACKUP. This entry read
+      `file-level, off-NAS` until 2026-08-31; there is no such job in the
+      cluster and the operator confirmed there is none on the NAS either. The
+      protect label, Retain and the Argo guards all survive a mistake and none
+      of them survives a disk. Until Velero lands, `immich-library` is one
+      hardware fault from total loss, and that fault has already happened once
+      -- see e0c470e, the 2026-08-08 NAS partition that wedged six filesystems.
 
   - namespace: immich
     claim: immich-db-2
@@ -240,6 +246,69 @@ protected:
       losable. Until that exists, layers 1-3 protect against mistakes and nothing
       protects against a disk.
 
+  # ── The ReportPortal stack, registered 2026-08-31 ───────────────────────────
+  # All three arrived with the stack on 2026-08-23 and sat in NEITHER list for
+  # eight days, which is exactly the gap the REGISTRY check exists to catch.
+  # The operator's call was to protect all three rather than only the binary
+  # store; over-protecting costs a break-glass commit, under-protecting costs
+  # data.
+  - namespace: reportportal
+    claim: reportportal-shared-volume-claim
+    size: 20Gi
+    class: qnap-samba
+    source: reportportal chart, storage.volume.* (Helm-rendered PVC)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      ReportPortal's binary half -- attachments and log blobs. Its relational
+      half lives in postgres-ha, which IS protected, so losing this leaves the
+      test history present but incomplete, and it cannot be regenerated without
+      re-running every build that produced it.
+    warning: >-
+      Protection here is IMPERATIVE, not declarative, and that is a deliberate
+      choice rather than an oversight. The chart exposes no labels or
+      annotations hook under `storage.volume`, so the label and the Argo guards
+      were applied with `kubectl label` / `kubectl annotate`. Verified to
+      survive both a hard refresh AND a full explicit sync, with the app staying
+      Synced/Healthy -- ArgoCD's diff ignores the extra keys because it never
+      owned them. If a chart upgrade ever starts rendering these fields, delete
+      the imperative ones and let the chart own them. The LABEL check is the
+      tripwire if it ever comes off.
+
+  - namespace: opensearch
+    claim: opensearch-cluster-master-opensearch-cluster-master-0
+    size: 20Gi
+    class: qnap-iscsi
+    source: opensearch StatefulSet volumeClaimTemplate (chart persistence.*)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      ReportPortal's analyzer indices. Today it holds only its own
+      `top_queries` telemetry and empty kibana/ml indices -- no RP data yet --
+      so this is the weakest of the three cases. Protected anyway: it is about
+      to hold the auto-analysis model, and the moment it does, quietly losing
+      it to a drain would look like the analyser simply getting worse.
+    warning: >-
+      Controller-generated, so ArgoCD never sees the claim and the label was
+      applied with `kubectl label` -- nothing reverts it. Deliberately NOT set
+      via `persistence.labels.additionalLabels` in chart-values: a StatefulSet's
+      volumeClaimTemplates are IMMUTABLE, so that edit wedges the Helm sync
+      until someone orphan-deletes and recreates the StatefulSet, and even then
+      it would only label FUTURE claims, not this one. Scaling opensearch will
+      therefore create an unlabelled PVC; the REGISTRY check catches it, the
+      same way it caught immich-db-4.
+
+  - namespace: rabbitmq
+    claim: data-rabbitmq-0
+    size: 8Gi
+    class: qnap-iscsi
+    source: rabbitmq StatefulSet volumeClaimTemplate (chart persistence.*)
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      The api <-> analyzer message queues. Contents are transient and rebuilt on
+      restart, so this is protected for the durable half of RabbitMQ's state --
+      definitions, users and vhosts -- not for the messages.
+    warning: >-
+      Same mechanism and the same scale-up caveat as opensearch above.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning
@@ -263,14 +332,11 @@ unprotected:
     size: 20Gi
     reason: Profiles, 720h retention by config. Discardable by design.
 
-  - namespace: redis
-    claim: redis-data-redis-master-0
-    size: 8Gi
-    reason: >-
-      Cache and job queues (Immich background jobs). Rebuilt on restart; not
-      authoritative for anything. Re-evaluate if Redis ever becomes a datastore.
-
-  - namespace: redis
-    claim: redis-data-redis-replicas-0
-    size: 8Gi
-    reason: Replica of the above.
+  # Redis has NO volumes at all any more -- apps/redis/chart-values.yaml sets
+  # `persistence.enabled: false`, deliberately: the queue holds Immich's BullMQ
+  # jobs, which are re-run rather than restored, and a volume that does not
+  # exist cannot leak a backend LUN. The two `redis-data-redis-*-0` entries that
+  # stood here until 2026-08-31 described claims the cluster had already
+  # stopped creating, and the REGISTRY check had been warning about both.
+  # Removed rather than kept: an entry for a volume that cannot exist is the
+  # same kind of untruth as a backup line for a job that does not run.
