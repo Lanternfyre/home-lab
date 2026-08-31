@@ -23,8 +23,6 @@ metadata:
 spec:
   endpointSelector: {}
 
-  ingress: false
-
   ingress:
     # 🔴 THE PROBE PATH. `world` is deliberate -- read this before "tightening" it.
     #
