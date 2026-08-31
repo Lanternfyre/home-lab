@@ -580,9 +580,20 @@ CNPG clusters healthy. The stale repo-root files `mealie-pvc-qnap.yaml` and
 `test-pvc-qnap.yaml` that created them have also been removed.
 
 ### 8. Rotate the k3s cluster token
-`k3sblog` is committed in plaintext in `gitops/argo-install.md`. Anyone with it
-and network reach can join a server to your cluster. Rotate it and move the new
-value into `ansible/vault/secrets.yml` when the Ansible layer lands.
+The current token is committed in plaintext in `gitops/argo-install.md`, in a
+**public** repository, and is in git history. Anyone with it and network reach
+can join a **server** to your cluster — which is etcd, which is everything.
+
+**See [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md)** for the full plan and the rotation
+runbook. Three things that document establishes and this line used to miss:
+
+- Rotation alone is not the fix. The token is unmanaged — not in Ansible, not
+  in `config.yaml`, inline in each node's systemd unit — so rotating replaces
+  one unmanaged secret with another.
+- **Unit normalisation is a precondition.** While `--token` sits in `ExecStart`,
+  a token in `config.yaml` is ignored.
+- **Keep the old token when you rotate.** Snapshots taken before a rotation
+  require it to restore.
 
 ### 9. Decide: keep or remove Envoy Gateway's idle install
 Not urgent on its own, but it is what broke the k3s Traefik addon (580+
