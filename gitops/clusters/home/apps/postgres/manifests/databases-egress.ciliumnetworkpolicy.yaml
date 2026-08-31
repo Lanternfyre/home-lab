@@ -1,0 +1,48 @@
+# H1 -- default-deny EGRESS for the databases namespace.
+#
+# postgres-ha (CNPG) plus the CNPG operator. A compromised database pod should
+# not be able to reach anything but its own peers -- it holds ReportPortal and
+# authentik data.
+#
+# From a live capture across all six agents, 351 flows:
+#   -> databases/postgres-ha-*:5432   replication
+#   -> databases/postgres-ha-*:8000   CNPG status/metrics endpoint
+#   -> kube-system/coredns:53
+#   -> 192.168.33.{2,3}:6443          THE KUBE-APISERVER -- the CNPG operator
+#                                     runs in this namespace and reconciles
+#                                     Clusters, Backups and Databases through it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: databases-egress
+  namespace: databases
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ L7 DNS visibility. Required for any future toFQDNs rule to match at
+    # all -- without it Cilium never sees the answers and name-based rules
+    # silently match nothing, surfacing as a hang.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Intra-namespace: clustering, replication and health checks.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: databases
+
+    # 🟢 OBSERVED in the capture. The CNPG operator lives in this namespace and
+    # cannot reconcile anything without the API server.
+    - toEntities:
+        - kube-apiserver

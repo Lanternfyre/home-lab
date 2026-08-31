@@ -1,0 +1,46 @@
+# H1 -- default-deny EGRESS for the rabbitmq namespace.
+#
+# RabbitMQ, single replica.
+#
+# The capture (69 flows) showed NO egress at all -- everything was inbound
+# probes. That is not evidence there is none: this pod started long ago, and
+# peer discovery happens at STARTUP. A policy written from the steady state
+# would deploy cleanly and then fail the next time the pod restarts.
+#
+# So kube-apiserver is allowed deliberately: the Kubernetes peer-discovery
+# plugin queries it while forming the cluster, even with one replica.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: rabbitmq-egress
+  namespace: rabbitmq
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ L7 DNS visibility. Required for any future toFQDNs rule to match at
+    # all -- without it Cilium never sees the answers and name-based rules
+    # silently match nothing, surfacing as a hang.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Intra-namespace: clustering, replication and health checks.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: rabbitmq
+
+    # 🟡 NOT observed -- allowed from knowledge. Kubernetes peer discovery runs
+    # at startup, which no steady-state capture can show.
+    - toEntities:
+        - kube-apiserver
