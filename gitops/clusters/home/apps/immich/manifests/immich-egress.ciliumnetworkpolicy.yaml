@@ -1,0 +1,62 @@
+# H1 -- default-deny EGRESS for the immich namespace.
+#
+# Internet egress is ACCEPTED by decision: immich fetches map tiles and machine
+# learning models, and blocking that breaks visible features. The containment
+# here is therefore about the CLUSTER -- immich may reach the internet, but not
+# wander sideways into other namespaces.
+#
+# From a live capture across all six agents, 469 flows:
+#   -> redis/*:6379        117 flows  (the session/queue store)
+#   -> immich/*:5432                  (its own CNPG database)
+#   -> immich/*:8000, :3003           (machine-learning and internal APIs)
+#   -> kube-system/coredns:53
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: immich-egress
+  namespace: immich
+spec:
+  endpointSelector: {}
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Its own namespace: database, machine learning, internal APIs.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: immich
+
+    # 🟢 OBSERVED, and the single busiest destination in the capture. immich is
+    # the reason the redis namespace has a consumer at all.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: redis
+      toPorts:
+        - ports:
+            - port: "6379"
+              protocol: TCP
+
+    # 🟡 ACCEPTED BY DECISION, not observed idle: map tiles and ML model
+    # downloads. `world` is everything outside the cluster -- deliberately broad,
+    # because an allow-list of tile and model CDNs would break the first time one
+    # changed hostname, and would do so as a hang.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
+            - port: "80"
+              protocol: TCP
