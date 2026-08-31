@@ -1,0 +1,106 @@
+# H3 -- what PSA can no longer assert in the `buildkit` namespace.
+#
+# buildkit sits at PSA `privileged` because rootless BuildKit needs UNCONFINED
+# seccomp and AppArmor to nest the user namespaces it builds in, and PSA has no
+# way to grant a per-field exception -- it is all or nothing per namespace.
+#
+# The consequence is that PSA now asserts NOTHING there. The pod is not actually
+# privileged: uid 1000, runAsNonRoot, every capability dropped, no host
+# namespaces, no hostPath. Those properties were true by construction and are
+# now unenforced, so a future chart bump could quietly turn buildkit into a
+# genuinely privileged workload and nothing would object.
+#
+# This policy asserts exactly the properties PSA gave up, and nothing more.
+#
+# ⚠️ Two things are deliberately NOT asserted:
+#   * seccomp and AppArmor -- unconfined is the whole reason for the exemption.
+#   * allowPrivilegeEscalation -- rootless BuildKit calls the SETUID binary
+#     `newuidmap`, so it needs it true. Asserting `false` here would look like
+#     good hygiene and would stop the daemon from starting.
+#
+# Verified against the running pod before writing: privileged false, drop ALL
+# (with SETUID/SETGID added back for newuidmap), runAsNonRoot true, no hostPath,
+# no host namespaces. Every rule below was then mutation-tested in a scratch
+# namespace -- each one denies when violated, and a replica of the real pod is
+# admitted.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: buildkit-pod-constraints
+spec:
+  # ⚠️ PER-POLICY OPT-IN. The chart-level feature flag only PERMITS generation;
+  # without this the status reads "skip generating ValidatingAdmissionPolicy:
+  # not enabled" and enforcement silently falls back to the Kyverno webhook --
+  # which works, but dies with Kyverno.
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+
+  validationActions:
+    - Deny
+
+  matchConstraints:
+    # Scoped by the label the API server maintains on every namespace, so it
+    # cannot be spoofed by relabelling.
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: buildkit
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  variables:
+    # initContainers are optional; omitting them would leave the obvious hole.
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+
+  validations:
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: >-
+        buildkit pods must not be privileged. The namespace is PSA `privileged`
+        only because rootless BuildKit needs unconfined seccomp and AppArmor --
+        that is not licence to run an actually privileged container.
+
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(d, d == 'ALL'))
+      message: >-
+        Every buildkit container must drop ALL capabilities. Rootless BuildKit
+        needs user namespaces, not capabilities.
+
+    - expression: >-
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.runAsNonRoot) &&
+         object.spec.securityContext.runAsNonRoot == true) ||
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.runAsNonRoot) &&
+          c.securityContext.runAsNonRoot == true)
+      message: >-
+        buildkit pods must run as non-root, set either on the pod or on every
+        container.
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        buildkit pods must not mount hostPath. A build daemon with a host mount
+        is a host compromise waiting to happen.
+
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: >-
+        buildkit pods must not join host namespaces.
