@@ -142,15 +142,24 @@
     kubectl_oidc_client_secret: "{{ kubectl_oidc_secret_b64.stdout | b64decode | trim }}"
   no_log: true
 
-- name: Assert the secret looks like a Google client secret
+# A6 -- this used to assert the Google `GOCSPX-` prefix, and it earned its keep:
+# it refused to write an authentik secret into a kubeconfig that still pointed
+# at Google. The intent survives the issuer change, so the shape check is
+# issuer-agnostic now rather than deleted -- the point is to catch an empty or
+# obviously wrong value before it becomes an auth failure that says nothing
+# about its cause.
+#
+# authentik's generator emits 64 alphanumeric characters, see
+# gitops/clusters/home/apps/authentik/manifests/oidc-clients.external-secret.yaml
+- name: Assert the client secret looks usable
   ansible.builtin.assert:
     that:
-      - kubectl_oidc_client_secret | length > 10
-      - kubectl_oidc_client_secret is match('^GOCSPX-')
+      - kubectl_oidc_client_secret | length >= 20
+      - kubectl_oidc_client_secret is not search('\\s')
     fail_msg: >-
       The value read from {{ kubectl_oidc_secret_namespace }}/{{ kubectl_oidc_secret_name }}
-      does not look like a Google OAuth client secret. Refusing to write it into
-      the kubeconfig -- a wrong value here produces an auth failure that says
+      is empty, too short, or contains whitespace. Refusing to write it into the
+      kubeconfig -- a wrong value here produces an auth failure that says
       nothing about its cause.
     success_msg: "Client secret retrieved from the cluster and shape-checked."
   when: not ansible_check_mode
