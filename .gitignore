@@ -1,0 +1,13 @@
+# Node state fetched by the k3s_config role BEFORE the k3s installer can
+# destroy it. See ansible/roles/k3s_config/tasks/main.yml -- the installer's
+# systemd_disable() does `rm -f` on both the unit and k3s.service.env on every
+# run, so these captures are the only copy of what was there.
+#
+# ⚠️ NEVER COMMIT THIS DIRECTORY. The captured k3s.service files contain the
+# cluster join token in plaintext, and this repository is PUBLIC. It was
+# committed once by a `git add -A` and had to be removed again.
+_captured/
+
+# Editor and tooling state
+.idea/
+.serena/
