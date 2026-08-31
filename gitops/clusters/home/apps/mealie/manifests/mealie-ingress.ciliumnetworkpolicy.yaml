@@ -1,0 +1,45 @@
+# H1 -- INGRESS restriction for the home-utils namespace (mealie).
+#
+# ⚠️ This is the one namespace where the INGRESS direction is the point, and
+# egress is deliberately left alone.
+#
+# Mealie's recipe import fetches arbitrary URLs -- that is a core feature, so an
+# egress allow-list would either break it or permit the whole internet, which is
+# no restriction at all. Accepted by decision: mealie may talk out.
+#
+# What it should NOT accept is traffic from other workloads. Mealie is reached
+# by a human through the Gateway; nothing else in the cluster has any business
+# connecting to it. That is the containment that is actually available here.
+#
+# From a live capture across all six agents (91 flows): the only ingress was
+# 10.245.0.3, a node address -- kubelet probes. Nobody was browsing at the time,
+# so the Gateway rule below is from configuration: mealie's HTTPRoute names the
+# `homelab` Gateway, whose Envoy pods run in gateway-envoy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: mealie-ingress
+  namespace: home-utils
+spec:
+  endpointSelector: {}
+
+  ingress:
+    # ⚠️ NON-NEGOTIABLE. Without this, kubelet's liveness and readiness probes
+    # are denied and the pod is killed and restarted forever. This repo has been
+    # bitten by omitting it.
+    - fromEntities:
+        - host
+        - remote-node
+
+    # The Envoy data plane for the `homelab` Gateway. This is how a human
+    # reaches mealie, and the only path that should exist.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+
+    # Prometheus scraping. Not observed in the capture -- mealie may not be
+    # scraped today -- but allowed so that adding a ServiceMonitor later does
+    # not fail as a silent metrics gap.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
