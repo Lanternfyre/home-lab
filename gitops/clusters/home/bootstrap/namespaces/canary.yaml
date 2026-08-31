@@ -1,0 +1,23 @@
+# canary
+#
+# Apps in this namespace: canary (the exposure probe).
+#
+# This namespace exists to be the FIRST thing published through the Cloudflare
+# Tunnel, so that the path is proven end to end against something worthless
+# before anything real is exposed. Everything in it is disposable by design:
+# delete the namespace and nothing is lost.
+#
+# `restricted`, not `baseline`, and it is the only namespace here that starts
+# that way. The workload was written to meet it rather than the level being
+# chosen to fit the workload -- which is the whole point of a canary.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: canary
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

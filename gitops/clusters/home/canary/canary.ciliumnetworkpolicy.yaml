@@ -1,0 +1,58 @@
+# The containment the canary exists to demonstrate: a breach stops HERE.
+#
+# ── EGRESS: nothing. Not one rule, and that is the load-bearing part ─────────
+# `enableDefaultDeny.egress: true` with no egress rules beneath it means this
+# pod can open no connection to anything -- no other namespace, no node, no
+# kube-apiserver, no internet, and NOT EVEN DNS. A static echo server needs
+# none of them, so nothing is given up.
+#
+# This is what makes the canary a safe first thing to publish. An attacker who
+# gets code execution here gets a pod that cannot resolve a name, cannot call
+# home, cannot reach the API server and cannot scan the cluster. The blast
+# radius is one process that can only answer connections it did not initiate.
+#
+# 🔴 IF YOU EVER ADD DNS HERE, STOP AND ASK WHY. A test page does not need it,
+# and the day it does, this is no longer a canary.
+#
+# ── INGRESS: the Gateway, and the node's probes ─────────────────────────────
+# The `world` entity is NOT sloppiness and must not be "tightened" -- see
+# ../apps/mealie/... (home-utils) for the experiment that cost real effort:
+#
+#   * kubelet probes arrive on the ingress path with the node's cilium_host
+#     address classified as `world`, NOT as `host`, even though
+#     `cilium-dbg ip list` calls it reserved:host. A `fromEntities: [host,
+#     remote-node]` rule crashlooped mealie eight times on liveness while the
+#     app itself was perfectly healthy.
+#   * A `fromCIDR` allow-list of the six cilium_host addresses also fails, and
+#     fails SILENTLY -- Cilium CIDR rules do not apply to addresses inside the
+#     cluster pod CIDR, so the rule looks precise and matches nothing.
+#
+# `world` is narrower than it reads: pods carry their own cluster identities,
+# so it does not admit pod-to-pod traffic. Proven on mealie -- an unrestricted
+# pod in another namespace gets HTTP 000 while the kubelet probe passes.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: canary-containment
+  namespace: canary
+spec:
+  endpointSelector: {}
+
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # The probe path. Read the block above before changing this.
+    - fromEntities:
+        - host
+        - remote-node
+        - world
+
+    # The Envoy data plane for the gated Gateway -- the only way a human
+    # reaches this, whether from the LAN today or through the Tunnel later.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+
+  # No egress block. Deliberately. See above.
