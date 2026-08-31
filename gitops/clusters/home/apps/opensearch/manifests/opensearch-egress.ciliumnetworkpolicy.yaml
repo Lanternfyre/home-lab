@@ -1,0 +1,43 @@
+# H1 -- default-deny EGRESS for the opensearch namespace.
+#
+# OpenSearch, deliberately single-node.
+#
+# From a live capture across all six agents, 141 flows: intra-namespace :9200
+# and nothing else.
+#
+# ⚠️ NO kube-apiserver rule here, unlike rabbitmq and databases. chart-values
+# pins single-node discovery ("bootstrap to single-node discovery -- setting
+# replicas: 1 alone would leave it..."), so there is no cluster to form and no
+# API to query. If discovery is ever changed to a multi-node mode, this policy
+# has to change with it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: opensearch-egress
+  namespace: opensearch
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ L7 DNS visibility. Required for any future toFQDNs rule to match at
+    # all -- without it Cilium never sees the answers and name-based rules
+    # silently match nothing, surfacing as a hang.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Intra-namespace: clustering, replication and health checks.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: opensearch
+
