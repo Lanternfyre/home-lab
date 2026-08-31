@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="42294516-4e55-4e27-993f-49738b226db0" name="Changes" comment="" />
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="EmbeddingIndexingInfo">
+    <option name="cachedIndexableFilesCount" value="282" />
+    <option name="fileBasedEmbeddingIndicesEnabled" value="true" />
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;Tarjei400&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;git@github.com:t3chy0n/home-lab.git&quot;,
+    &quot;accountId&quot;: &quot;ed8aed57-a25e-4d7d-b534-a73209570ee2&quot;
+  }
+}</component>
+  <component name="McpProjectServerCommands">
+    <commands />
+    <urls />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
+  <component name="ProjectId" id="37et3JSGDfU5bIQLS6MTdONvcHp" />
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "Git.Working.Tree.Tab.closed.by.user": "closed",
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "RunOnceActivity.MCP Project settings loaded": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
+    "git-widget-placeholder": "fix/arc-egress-crates-matchpattern",
+    "javascript.preferred.runtime.type.id": "node",
+    "junie.onboarding.icon.badge.shown": "true",
+    "last_opened_file_path": "/home/tarjei/Necronia/gha-compendium",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "to.speed.mode.migration.done": "true",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps/github-mcp-proxy/manifests" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/bootstrap" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps/envoy-gateway" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps/envoy-gateway" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps/envoy-gateway/manifests" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/manifests" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/manifests/envoy-gateway" />
+      <recent name="$PROJECT_DIR$/gitops/clusters/home/apps/cert-manager" />
+    </key>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-WS-261.23567.141" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="42294516-4e55-4e27-993f-49738b226db0" name="Changes" comment="" />
+      <created>1767275163308</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1767275163308</updated>
+      <workItem from="1767275164419" duration="12133000" />
+      <workItem from="1767862553565" duration="113000" />
+      <workItem from="1767863035920" duration="3643000" />
+      <workItem from="1767948388218" duration="3608000" />
+      <workItem from="1767974361140" duration="1699000" />
+      <workItem from="1768210840809" duration="1787000" />
+      <workItem from="1768293807772" duration="3066000" />
+      <workItem from="1768329025608" duration="1571000" />
+      <workItem from="1768378213240" duration="3523000" />
+      <workItem from="1775480970778" duration="8667000" />
+      <workItem from="1775495748665" duration="872000" />
+      <workItem from="1775902549367" duration="867000" />
+      <workItem from="1775933379397" duration="14985000" />
+      <workItem from="1776454579123" duration="3524000" />
+      <workItem from="1776538995978" duration="9000" />
+      <workItem from="1776590896622" duration="1782000" />
+      <workItem from="1776623175298" duration="3904000" />
+      <workItem from="1776710013985" duration="14000" />
+      <workItem from="1776806965918" duration="2466000" />
+      <workItem from="1776841184888" duration="3344000" />
+      <workItem from="1776958937961" duration="756000" />
+      <workItem from="1777200113879" duration="2579000" />
+      <workItem from="1777271478828" duration="126000" />
+      <workItem from="1778925091851" duration="4345000" />
+      <workItem from="1778956934939" duration="666000" />
+      <workItem from="1780252666403" duration="2657000" />
+      <workItem from="1780335731111" duration="4229000" />
+      <workItem from="1780425875775" duration="1007000" />
+      <workItem from="1780513496395" duration="1812000" />
+      <workItem from="1780564571758" duration="24000" />
+      <workItem from="1785414507321" duration="2130000" />
+      <workItem from="1785485074306" duration="16557000" />
+      <workItem from="1785698295177" duration="10717000" />
+      <workItem from="1786196080885" duration="782000" />
+      <workItem from="1786856671900" duration="3012000" />
+      <workItem from="1787168700436" duration="2698000" />
+      <workItem from="1787418386672" duration="766000" />
+      <workItem from="1787770376998" duration="4231000" />
+      <workItem from="1787926094092" duration="2394000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+</project>
