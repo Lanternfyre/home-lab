@@ -1,5 +1,0 @@
-repoURL: "https://oauth2-proxy.github.io/manifests"
-chart: "oauth2-proxy"
-targetRevision: "10.4.2"
-releaseName: "oauth2-proxy"
-namespace: "auth"
