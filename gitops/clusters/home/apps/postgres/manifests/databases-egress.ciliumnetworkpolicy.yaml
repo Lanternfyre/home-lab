@@ -11,6 +11,12 @@
 #   -> 192.168.33.{2,3}:6443          THE KUBE-APISERVER -- the CNPG operator
 #                                     runs in this namespace and reconciles
 #                                     Clusters, Backups and Databases through it.
+#
+# ⚠️ Intra-namespace is NOT the whole story, which this file used to imply.
+# The operator also polls the status endpoint of instances in OTHER
+# namespaces (immich-db, in `immich`). That allowance is deliberately kept
+# out of this default-deny policy and lives in
+# cnpg-operator-egress.ciliumnetworkpolicy.yaml, scoped to the operator pod.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:

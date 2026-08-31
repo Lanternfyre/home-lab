@@ -1,0 +1,45 @@
+# H1 follow-up -- the CNPG operator reconciles Clusters in OTHER namespaces.
+#
+# `databases-egress` was written from a capture that only ever saw
+# databases -> databases:8000, so it allowed intra-namespace and nothing else.
+# The operator, however, polls the instance-status endpoint of EVERY CNPG
+# instance it manages, and `immich-db` lives in the `immich` namespace. Those
+# SYNs were dropped:
+#
+#   databases/pg-operator-... <> immich/immich-db-3:8000
+#     policy-verdict:none EGRESS DENIED / Policy denied DROPPED
+#
+# The visible symptom was not an outage -- all three immich-db pods stayed
+# Running and 3/3 Ready -- but the Cluster reported
+# `Instance Status Extraction Error: HTTP communication issue`, which ArgoCD
+# surfaced as immich-manifests Health=Unknown. A textbook case of the status
+# being green where it mattered least.
+#
+# Scoped to the operator pod alone, so postgres-ha's own instances gain
+# nothing from it. Namespace-wide `Exists` on the destination is deliberate:
+# any future CNPG Cluster in any namespace is covered without another edit.
+#
+# Port 8000 only. The operator reaches instances on 5432 only when a `Database`
+# or `Publication` CR targets them; both existing ones point at postgres-ha in
+# this same namespace. Add 5432 here the day that stops being true.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnpg-operator-egress
+  namespace: databases
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: cloudnative-pg
+
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            cnpg.io/podRole: instance
+          matchExpressions:
+            - key: io.kubernetes.pod.namespace
+              operator: Exists
+      toPorts:
+        - ports:
+            - port: "8000"
+              protocol: TCP

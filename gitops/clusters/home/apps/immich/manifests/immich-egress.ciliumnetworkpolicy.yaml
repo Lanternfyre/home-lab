@@ -10,6 +10,11 @@
 #   -> immich/*:5432                  (its own CNPG database)
 #   -> immich/*:8000, :3003           (machine-learning and internal APIs)
 #   -> kube-system/coredns:53
+#
+# ⚠️ The capture missed one thing entirely: the CNPG instance manager's
+# calls to the kube-apiserver, which this policy dropped from the moment it
+# landed. That allowance lives in cnpg-instance-egress.ciliumnetworkpolicy.yaml,
+# scoped to the database pods -- do not widen this one to cover it.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
 metadata:
