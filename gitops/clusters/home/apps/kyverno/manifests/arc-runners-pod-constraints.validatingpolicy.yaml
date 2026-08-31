@@ -1,0 +1,88 @@
+# H3 -- privilege containment in the ARC runner namespaces.
+#
+# These namespaces sit at PSA `privileged` for ONE container in ONE of the three
+# scale sets that share `arc-runners-lanternfyre`:
+#
+#   arc-linux-ndepend  initContainer `dind` (docker:27.5.1-dind), privileged.
+#                      NDepend licences by MAC + UPPERCASE machine name;
+#                      pod.spec.hostname rejects uppercase, so the workflow runs
+#                      inside a Docker daemon in the pod, whose UTS namespace
+#                      kubelet never sees.
+#   arc-linux          no privileged container
+#   arc-linux-mutation no privileged container
+#
+# None of the three uses hostPath, hostNetwork, hostPID or hostIPC -- confirmed
+# from chart values, because runner pods are EPHEMERAL and a cluster scan of
+# running pods sees nothing at all here. That is also why this namespace was
+# invisible to the measurement that produced the PSA levels.
+#
+# ⚠️ HONEST LIMIT. Every available discriminator here is spoofable by someone who
+# can already create pods in the namespace: ARC sets no distinguishing label on
+# the pod template, and a pod author may choose any container name. This policy
+# stops privilege CREEP -- a chart bump that adds `privileged` to the runner
+# container, a second scale set copying the dind block, `containerMode: dind`
+# being switched on (which the values file explicitly warns against, since the
+# chart's built-in helper is privileged with no resource bounds). RBAC is what
+# stops an attacker.
+#
+# 🟡 The right structural fix is still the plan's Stage 5.4: give ndepend its own
+# namespace. Then the other two scale sets stop inheriting its exemption and can
+# be held to a flat "nothing privileged" rule instead of an allow-list.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: arc-runners-pod-constraints
+spec:
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: In
+          values:
+            - arc-runners-lanternfyre
+            - arc-runners-t3chy0n
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    # Only the NDepend dind sidecar, and it must actually be a Docker daemon --
+    # so a runner container renamed `dind` does not inherit the exemption.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false ||
+          (c.name == 'dind' && c.image.startsWith('docker:')))
+      message: >-
+        Only the NDepend `dind` sidecar may run privileged in the ARC runner
+        namespaces, and only from a docker: image. If this fired on the runner
+        container, a chart bump or `containerMode: dind` has introduced
+        privilege -- that is the bug, not this policy.
+
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: >-
+        ARC runner pods must not join host namespaces. No scale set has ever
+        needed this; a runner that can see the host's processes or network can
+        see every other job on the node.
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        ARC runner pods must not mount hostPath. These pods run workflow code;
+        a host mount is a node compromise. dind uses an emptyDir, deliberately.
