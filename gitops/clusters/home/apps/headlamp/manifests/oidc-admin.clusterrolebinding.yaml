@@ -1,37 +1,41 @@
-# Per-user cluster-admin, granted to a Google identity rather than a
+# Per-user cluster-admin, granted to an authentik identity rather than a
 # ServiceAccount. This replaces the hand-made `kube-system/headlamp-admin` SA
 # + binding that was deleted on 2026-08-03 for living in no git file.
 #
-# ⚠️ THIS OBJECT IS COMPLETELY INERT UNTIL API-SERVER OIDC IS ENABLED.
-# Nothing can currently authenticate as this name, so applying it grants
-# nobody anything. That is deliberate ordering: it is created FIRST, so that
-# the moment the risky `kube-apiserver-arg` rollout lands, access works. Doing
-# it the other way round risks spending the dangerous step and still having no
-# way in.
+# A6 moved the issuer from Google to authentik and this binding did NOT change,
+# deliberately: the API server still sets the username from the `email` claim,
+# and akadmin's authentik email is the same address, so the same bare username
+# keeps matching across the IdP change.
 #
 # The subject string is GROUND TRUTH, not a guess. The API server will set the
 # username from the `email` claim (`oidc-username-claim=email`), and
-# oauth2-proxy's logs show Google has issued exactly
-# `adrian.jutrowski@techyon.dev` 1242 times for this Workspace. RBAC subject
+# authentik's akadmin carries exactly
+# `adrian.jutrowski@techyon.dev`. RBAC subject
 # matching is exact and case-sensitive, so a near-miss here fails closed and
 # looks identical to OIDC not working at all.
 #
 # ⚠️ No `oidc-username-prefix` is set, and that is load-bearing: Kubernetes
 # prefixes usernames with the issuer URL for every claim EXCEPT `email`, which
 # is exempt. So the username really is the bare address, with no
-# `https://accounts.google.com#` prefix. If the username claim is ever changed
+# issuer prefix. If the username claim is ever changed
 # away from `email`, this binding silently stops matching.
 #
-# ⚠️ Google does NOT emit a groups claim, so there is no group to bind and
-# every future user needs an explicit subject here. Do not plan around groups.
+# 🟡 THIS GUIDANCE CHANGED WITH A6. Google emitted no groups claim, so the note
+# here used to say not to plan around groups. authentik DOES emit one -- the
+# `profile` scope mapping returns the user's groups, and the edge gate already
+# authorises on it. Binding a Group subject such as `authentik Admins` instead
+# of enumerating users is now possible and is the obvious next improvement.
+# Left per-user for now: A6 changed the issuer, and changing the binding shape
+# in the same step would confuse two failure modes.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
   name: oidc-cluster-admins
   annotations:
     homelab.techyon.dev/why: >-
-      Grants cluster-admin to named Google identities via API-server OIDC.
-      Inert until kube-apiserver-arg oidc-* flags are live.
+      Grants cluster-admin to named authentik identities via API-server OIDC.
+      Unchanged by the A6 move off Google: the username still comes from the
+      `email` claim and akadmin carries the same address.
 subjects:
   - kind: User
     # Must match the `email` claim character for character.
