@@ -23,6 +23,30 @@ metadata:
 spec:
   endpointSelector: {}
 
+  # 🔴 DEFAULT-DENY DISABLED, TEMPORARILY.
+  #
+  # The first version of this policy put mealie into CrashLoopBackOff: kubelet's
+  # probe was denied and the container was killed on liveness, six times. The
+  # app itself was healthy throughout -- "Application startup complete, Uvicorn
+  # running on 0.0.0.0:9000" -- and then shut down by SIGTERM.
+  #
+  # The cause is not yet understood, and that is exactly why this flag is here
+  # rather than the file being deleted. Hubble reported the probe source
+  # 10.245.0.3 as `world`, but `cilium-dbg ip list` on mealie's OWN node reports
+  # 10.245.0.3/32 as `reserved:host` -- which `fromEntities: host` below should
+  # match. Those two statements cannot both be the whole story.
+  #
+  # With enableDefaultDeny.ingress false the rules below are additive only:
+  # nothing is denied, mealie serves, and the endpoint is still SELECTED by this
+  # policy -- which is the only way to observe what the probe's identity
+  # actually resolves to while a policy is in force. That observation is the
+  # step that was skipped the first time.
+  #
+  # Remove this block once the probe source is understood and the rule proven
+  # against a live probe, not against a CNP status.
+  enableDefaultDeny:
+    ingress: false
+
   ingress:
     # ⚠️ NON-NEGOTIABLE. Without this, kubelet's liveness and readiness probes
     # are denied and the pod is killed and restarted forever. This repo has been
