@@ -1,0 +1,31 @@
+# The canary is the one app here with no Helm chart, so it does not fit the
+# apps/<name>/app.yaml convention -- both ApplicationSets generate from that
+# file and would demand a chart that does not exist. A standalone Application
+# under bootstrap/ is the deliberate exception, applied by home-root like
+# everything else in this directory.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: canary
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/Lanternfyre/home-lab.git"
+    targetRevision: master
+    path: gitops/clusters/home/canary
+    directory:
+      recurse: true
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: canary
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
