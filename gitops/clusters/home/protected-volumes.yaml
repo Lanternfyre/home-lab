@@ -30,6 +30,31 @@
 # objects. A manual `kubectl label` is reverted by selfHeal within minutes, so
 # git is the only durable route — which is the audit trail.
 
+# ── 🔴 BACKUP STATE, measured 2026-08-31 ─────────────────────────────────────
+# THERE IS NO AUTOMATED BACKUP IN THIS CLUSTER. Not one.
+#
+# The three nightly dump CronJobs were removed in e0c470e (2026-08-15) in
+# favour of Velero, deliberately and at the operator's request -- but Velero has
+# not landed, and this file was never updated. Until today six entries read
+# `backup: CNPG barmanObjectStore + WAL archiving`, which has NEVER been true:
+# neither CNPG Cluster has ever had `spec.backup`, and there are zero Backup and
+# zero ScheduledBackup objects cluster-wide. Layer 4 was documented and absent.
+#
+# That is worse than the missing backup, because this file is what you would
+# read while deciding whether a restore is possible.
+#
+# What actually exists, verified by mounting the volumes:
+#   databases/pg-backup        16 dumps, 2026-08-01 .. 2026-08-16, 852K
+#                              (6 are 20-byte .partial from the NAS incident)
+#   immich/immich-db-backup    14 dumps, 2026-08-01 .. 2026-08-16, 645M
+#   home-utils/mealie-backup   the mealie tars, same window
+#
+# Every one of them is COLD and 15 days stale as of 2026-08-31. They are the
+# only restore point that exists, for anything. Do not delete these three PVCs.
+#
+# Everything created since 2026-08-16 -- authentik's entire database, and every
+# ReportPortal run -- has never been backed up at all.
+
 version: 1
 
 protected:
@@ -38,7 +63,9 @@ protected:
     size: 100Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/immich/manifests/immich-library.pvc.yaml
-    backup: file-level, off-NAS
+    backup: UNVERIFIED           # no in-cluster mechanism exists; if this runs
+                                 # at all it runs on the NAS. Confirm or change
+                                 # to NONE -- do not leave it reading as a fact.
     reason: >-
       Photographs. Irreplaceable; there is no other copy anywhere. This is the
       single highest-value object in the cluster.
@@ -48,7 +75,7 @@ protected:
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: >-
       Albums, face recognition and smart-search embeddings. The library above is
       just a pile of files without this database.
@@ -58,7 +85,7 @@ protected:
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of immich-db-2. Protected so a drain cannot destroy the pair.
 
   - namespace: immich
@@ -66,7 +93,7 @@ protected:
     size: 20Gi
     class: qnap-iscsi
     source: CNPG Cluster/immich-db (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: >-
       Third instance, added 2026-08-02 when immich-db went 2 -> 3 so that every
       drain has more than one switchover target. Protected so a drain cannot
@@ -83,7 +110,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Application databases (necronia, techyon). Not reconstructible.
 
   - namespace: databases
@@ -91,7 +118,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of the postgres-ha cluster.
 
   - namespace: databases
@@ -99,7 +126,7 @@ protected:
     size: 8Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
-    backup: CNPG barmanObjectStore + WAL archiving
+    backup: NONE                 # see the BACKUP STATE banner at the top
     reason: Replica of the postgres-ha cluster.
 
   - namespace: home-utils
@@ -107,7 +134,8 @@ protected:
     size: 5Gi
     class: qnap-iscsi
     source: gitops/clusters/home/apps/mealie/manifests/qnap-mealie.pvc.yaml
-    backup: file-level, off-NAS
+    backup: NONE                 # was the mealie-backup CronJob, removed in
+                                 # e0c470e (2026-08-15) in favour of Velero
     reason: Hand-entered recipes and uploaded images. Not reconstructible.
 
   - namespace: databases
@@ -115,7 +143,7 @@ protected:
     size: 10Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/postgres/manifests/pg-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: >-
       Nightly pg_dumpall of the postgres-ha cluster. Deliberately on SMB, not
       iSCSI: SMB shares are never formatted, so the backup does not share the
@@ -126,7 +154,7 @@ protected:
     size: 10Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/immich/manifests/immich-db-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: >-
       Nightly pg_dumpall of immich-db (albums, faces, smart-search embeddings).
       Same SMB reasoning as pg-backup above.
@@ -136,7 +164,7 @@ protected:
     size: 5Gi
     class: qnap-samba
     source: gitops/clusters/home/apps/mealie/manifests/mealie-backup.pvc.yaml
-    backup: n/a - this IS the backup
+    backup: n/a - this IS a backup, but a COLD one; nothing writes to it
     reason: Nightly tar of Mealie's data dir. SMB, so immune to the mkfs bug.
 
   - namespace: dns
