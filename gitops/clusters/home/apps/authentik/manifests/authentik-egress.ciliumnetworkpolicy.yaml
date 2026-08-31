@@ -1,0 +1,82 @@
+# H1 -- default-deny EGRESS for the authentik namespace.
+#
+# authentik is now the way into everything: Grafana, ArgoCD, Silo, immich,
+# Headlamp, the k3s API server and the edge gate all trust it. A compromised
+# authentik pod is the worst case in this cluster, so its outbound reach is
+# worth constraining tightly.
+#
+# ── EGRESS ONLY ──────────────────────────────────────────────────────────────
+# Cilium policy is per-direction; omitting `ingress` leaves it unrestricted.
+# authentik is reached by the Envoy gateways, by every consumer's token
+# exchange, and by kubectl -- an ingress allow-list is a separate exercise with
+# its own capture.
+#
+# ── What the live capture found ──────────────────────────────────────────────
+# `hubble observe -f --namespace authentik` across all six cilium agents,
+# 480 flows:
+#
+#   authentik-server/worker -> databases/postgres-ha-1:5432
+#   authentik-server/worker -> kube-system/coredns:53
+#
+# and nothing else.
+#
+# 🔴 THE CAPTURE IS NOT THE WHOLE ANSWER, and writing the policy from it alone
+# would have broken Google login.
+#
+# The Google federated Source only makes outbound calls WHILE SOMEONE IS SIGNING
+# IN with Google -- the token exchange and the userinfo/JWKS fetches are
+# server-side. No amount of idle observation shows them. A policy built purely
+# from the capture would deploy cleanly, pass every drop check, and then fail
+# the first time you used the Google button -- as a hang, not an error.
+#
+# So the Google endpoints below are declared from knowledge of the flow, not
+# from evidence, and are marked as such. If the Google source is ever removed
+# (A7), these three rules go with it.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: authentik-egress
+  namespace: authentik
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ REQUIRED for the toFQDNs rules below to match ANYTHING. Without the L7
+    # `rules.dns` block Cilium never sees the DNS answers, so every name-based
+    # rule silently matches nothing and the traffic is denied -- as a hang.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # The database. Both server and worker; CNPG may fail over between
+    # postgres-ha-1/2/3, so the whole namespace is allowed rather than one pod.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: databases
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+
+    # 🟡 DECLARED FROM KNOWLEDGE, NOT FROM THE CAPTURE -- see the header.
+    # The server-side half of the Google federated Source: token exchange,
+    # userinfo and JWKS. Only exercised during an actual Google sign-in.
+    - toFQDNs:
+        - matchName: oauth2.googleapis.com
+        - matchName: openidconnect.googleapis.com
+        - matchName: www.googleapis.com
+        - matchName: accounts.google.com
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
