@@ -1,0 +1,81 @@
+# H3 -- privilege containment in the `monitoring` namespace.
+#
+# `monitoring` is PSA `privileged` for TWO workloads out of fifteen. Measured,
+# not assumed:
+#
+#   smartctl-exporter    privileged (container `main`) + hostPath  -- reads SMART
+#                        data straight off the block devices
+#   node-exporter        hostNetwork + hostPID + hostPath          -- not privileged
+#   volume-health-export hostPath
+#   the other twelve     clean: no privilege, no host namespaces, no hostPath
+#
+# Twelve clean workloads currently sit in a namespace where PSA asserts nothing,
+# because two of their neighbours need host access. This narrows that back down.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: monitoring-pod-constraints
+spec:
+  # ⚠️ PER-POLICY OPT-IN, or enforcement silently falls back to the Kyverno
+  # webhook and dies with Kyverno.
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+
+  validationActions:
+    - Deny
+
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: monitoring
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+    - name: sa
+      expression: >-
+        has(object.spec.serviceAccountName) ? object.spec.serviceAccountName : ''
+
+  validations:
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false ||
+          (variables.sa == 'smartctl-exporter-prometheus-smartctl-exporter' &&
+           c.name == 'main'))
+      message: >-
+        Only smartctl-exporter may run privileged in `monitoring`, and only its
+        `main` container -- it reads SMART data directly from block devices.
+        Nothing else in this namespace has ever needed privilege; if a chart
+        update introduced it, that is the bug.
+
+    - expression: >-
+        variables.sa == 'prometheus-operator-prometheus-node-exporter' ||
+        ((!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+         (!has(object.spec.hostIPC) || object.spec.hostIPC == false))
+      message: >-
+        Only node-exporter may join host namespaces in `monitoring`. A metrics
+        scraper with hostPID can see every process on the node.
+
+# ⚠️ hostPath is deliberately NOT asserted here, and the reason is worth stating
+# rather than leaving as an omission.
+#
+# Three workloads legitimately mount hostPath: node-exporter, smartctl-exporter
+# and volume-health-exporter. The first two have their own ServiceAccounts, but
+# volume-health-exporter runs under `default` -- so an allow-list keyed on
+# ServiceAccount would have to permit `default`, which every pod in the
+# namespace can name. That rule would look protective and permit everything.
+#
+# The fix is to give volume-health-exporter its own ServiceAccount, after which
+# a hostPath rule becomes meaningful. Writing the toothless version first would
+# just make the gap harder to see.
