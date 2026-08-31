@@ -16,6 +16,12 @@ global:
     - secretRef:
         name: authentik-env
 
+# A0b -- blueprints are discovered from mounted Secrets/ConfigMaps, only from
+# keys ending `.yaml`, and only the WORKER mounts them.
+blueprints:
+  secrets:
+    - authentik-blueprints
+
 authentik:
   postgresql:
     host: postgres-ha-rw.databases.svc.cluster.local
