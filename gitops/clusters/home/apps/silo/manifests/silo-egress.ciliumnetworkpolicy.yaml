@@ -1,0 +1,60 @@
+# H1 -- default-deny EGRESS for the silo namespace.
+#
+# Silo is the object store: it holds ReportPortal's artefacts and anything else
+# pointed at S3. An object store has almost no legitimate reason to talk OUT, so
+# it is a good fit for egress containment -- a compromised MinIO should not be
+# able to exfiltrate what it holds.
+#
+# ── The capture was nearly empty, and that is the point ──────────────────────
+# `hubble observe -f --namespace silo` across all six agents produced almost no
+# flows: MinIO is quiet unless someone is using it. Writing a policy from "no
+# egress observed" would have produced an empty allow-list that breaks console
+# login the first time it is used.
+#
+# So this policy is derived from CONFIGURATION, and each rule says where it came
+# from.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: silo-egress
+  namespace: silo
+spec:
+  endpointSelector: {}
+
+  egress:
+    # ⚠️ REQUIRED for the toFQDNs rule below to match anything. Without the L7
+    # `rules.dns` block Cilium never sees the answers and every name-based rule
+    # silently matches nothing -- which surfaces as a hang, not an error.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # 🟡 FROM CONFIGURATION, NOT FROM THE CAPTURE.
+    # The console's OIDC login. Read out of the live silo-oidc-config Secret:
+    #   MINIO_IDENTITY_OPENID_CONFIG_URL=
+    #     https://authentik.lab.techyon.dev/application/o/silo/.well-known/...
+    #
+    # ⚠️ That is the PUBLIC hostname, which resolves to the open Gateway's
+    # LoadBalancer -- so this traffic leaves the pod, reaches a LAN address and
+    # comes back in. It cannot be replaced with an in-cluster Service address:
+    # MinIO validates the OIDC issuer, and the issuer in the tokens is the
+    # public URL.
+    #
+    # Only exercised when somebody logs into the console, so no capture of an
+    # idle cluster will ever show it.
+    - toFQDNs:
+        - matchName: authentik.lab.techyon.dev
+      toPorts:
+        - ports:
+            - port: "443"
+              protocol: TCP
