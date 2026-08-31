@@ -1,0 +1,30 @@
+# buildkit
+#
+# Apps in this namespace: buildkit.
+#
+# ⚠️ `privileged`, and the label is MISLEADING -- read on before reacting to it.
+#
+# The pod is NOT privileged: uid 1000, runAsNonRoot, every capability dropped,
+# no service account token, no host namespaces, no hostPath. What it needs is
+# UNCONFINED seccomp and AppArmor, so it can nest the user namespaces it builds
+# in. PSA `baseline` forbids exactly those two fields and has no way to grant a
+# per-field exception, so `privileged` is the only level that admits this pod.
+#
+# Established the hard way: an earlier revision set `baseline` on the strength of
+# `kubectl apply --dry-run=server` reporting the StatefulSet created. That check
+# was worthless here -- PSA validates templates only for audit/warn and ENFORCES
+# at pod creation. The StatefulSet applied cleanly and then could not create a
+# single pod.
+# PSA cannot grant a per-field exception, so `privileged` is the only level that
+# admits these pods. The things that DO matter here move to Kyverno (H3).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: buildkit
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn-version: v1.35
