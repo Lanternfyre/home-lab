@@ -26,6 +26,8 @@ rules:
     resourceNames:
       - oidc-grafana
       - oidc-envoy-gateway
+      - oidc-silo
+      - oidc-immich
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
