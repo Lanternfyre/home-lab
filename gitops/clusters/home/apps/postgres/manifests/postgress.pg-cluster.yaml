@@ -64,6 +64,16 @@ spec:
         createdb: false
         passwordSecret:
           name: pg-role-reportportal
+      # Owner of the `authentik` database (authentik.database.yaml). Same shape
+      # as reportportal: ownership is enough for authentik to run its own
+      # migrations, and nothing beyond its own database is reachable.
+      - name: authentik
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        passwordSecret:
+          name: pg-role-authentik
 
   bootstrap:
     # ⚠️ postInitSQL runs EXACTLY ONCE, at initdb, and this cluster bootstrapped

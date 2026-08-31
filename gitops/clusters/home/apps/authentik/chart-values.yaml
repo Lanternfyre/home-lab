@@ -1,0 +1,37 @@
+# Authentik -- the identity provider that will replace Google Workspace OIDC.
+#
+# A0a: stand it up and reach the admin UI. Federating Google as a Source, and
+# moving each of the seven consumers, are deliberately separate steps -- every
+# one of them is individually revertible and this one is not worth bundling.
+#
+# ⚠️ 2026.x is POSTGRES-BACKED and needs no Redis. Earlier notes in this repo
+# said to point it at apps/redis with `redis.enabled: false`; the chart has no
+# such key. Verified against the rendered output of 2026.8.0.
+
+global:
+  # ⚠️ Every credential arrives through this Secret, never through values --
+  # anything set under `authentik:` here is committed to a public repo.
+  # See manifests/authentik-env.external-secret.yaml.
+  envFrom:
+    - secretRef:
+        name: authentik-env
+
+authentik:
+  postgresql:
+    host: postgres-ha-rw.databases.svc.cluster.local
+    name: authentik
+    user: authentik
+    port: 5432
+
+  error_reporting:
+    enabled: false
+
+server:
+  # Routing is Gateway API in this cluster; the chart's Ingress stays off.
+  ingress:
+    enabled: false
+
+# The bundled postgres is already off by default; stated explicitly so a chart
+# default change cannot quietly stand up a second database.
+postgresql:
+  enabled: false
