@@ -1,0 +1,24 @@
+# default
+#
+# No app in this repo deploys here, and nothing runs here today -- which is
+# exactly why it is worth labelling. `default` is where a hand-run `kubectl run`
+# or a manifest with no namespace lands, and an unlabelled namespace accepts a
+# privileged pod without comment.
+#
+# `restricted` because nothing legitimate should be created here at all; if
+# something needs to run, it should get its own namespace and its own considered
+# level.
+#
+# ⚠️ This does NOT prevent creation of the namespace or affect existing objects.
+# PSA gates pod creation only.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: default
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

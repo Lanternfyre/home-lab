@@ -116,6 +116,30 @@
   changed_when: "'created' in argocd_ns_applied.stdout"
   when: not ansible_check_mode
 
+# Pod Security Admission for the namespace ArgoCD itself runs in. See the
+# comment on argocd_namespace_psa_level for why this lives here rather than with
+# every other namespace in bootstrap/namespaces/.
+#
+# ⚠️ warn and audit are set to the SAME level as enforce. PSA reports only at the
+# level asked for, so a HIGHER warn hides violations of a lower enforce.
+#
+# ⚠️ PSA enforces at POD creation. Labelling a namespace whose pods already run
+# does NOT restart or evict them -- it gates the next pod created. The real
+# acceptance test is a rollout, not this task succeeding.
+- name: "install | label the namespace for Pod Security Admission"
+  ansible.builtin.command: >-
+    kubectl label namespace {{ argocd_namespace }}
+    pod-security.kubernetes.io/enforce={{ argocd_namespace_psa_level }}
+    pod-security.kubernetes.io/enforce-version=v1.35
+    pod-security.kubernetes.io/audit={{ argocd_namespace_psa_level }}
+    pod-security.kubernetes.io/audit-version=v1.35
+    pod-security.kubernetes.io/warn={{ argocd_namespace_psa_level }}
+    pod-security.kubernetes.io/warn-version=v1.35
+    --overwrite
+  register: argocd_ns_psa
+  changed_when: "'not labeled' not in argocd_ns_psa.stdout"
+  when: not ansible_check_mode
+
 # --atomic so a failed upgrade rolls back rather than leaving ArgoCD in pieces.
 # --wait so the task does not report success while pods are still starting --
 # "helm said ok" is not the same as "ArgoCD works", which is the distinction
