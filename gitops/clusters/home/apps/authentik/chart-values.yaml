@@ -21,6 +21,7 @@ global:
 blueprints:
   secrets:
     - authentik-blueprints
+    - authentik-blueprint-grafana
 
 authentik:
   postgresql:

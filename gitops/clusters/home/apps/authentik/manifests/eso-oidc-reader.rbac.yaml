@@ -1,0 +1,72 @@
+# Lets a consumer namespace read ONLY its own OIDC client secret out of the
+# authentik namespace, via the `authentik-oidc` ClusterSecretStore.
+#
+# The ESO controller can already read Secrets cluster-wide, so this does not
+# grant it anything new. What it does is bound what any ExternalSecret pointed
+# at that store can reach: one namespace, and only the explicitly named
+# `oidc-*` Secrets. Add each new app's Secret to resourceNames deliberately --
+# an app cannot silently read another app's client secret.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: eso-oidc-reader
+  namespace: authentik
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-oidc-reader
+  namespace: authentik
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get"]
+    # ⚠️ Explicit names, never a wildcard. RBAC cannot pattern-match here, so
+    # every new integration adds a line -- which is the point.
+    resourceNames:
+      - oidc-grafana
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-oidc-reader
+  namespace: authentik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-oidc-reader
+subjects:
+  - kind: ServiceAccount
+    name: eso-oidc-reader
+    namespace: authentik
+---
+# The store authenticates by having ESO mint a short-lived token for the
+# ServiceAccount above. ESO cannot do that by default -- verified with
+# `kubectl auth can-i create serviceaccounts/token` -- so it gets exactly that
+# one verb, on exactly that one ServiceAccount.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: eso-token-minter
+  namespace: authentik
+rules:
+  - apiGroups: [""]
+    resources: ["serviceaccounts/token"]
+    verbs: ["create"]
+    resourceNames:
+      - eso-oidc-reader
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: eso-token-minter
+  namespace: authentik
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: eso-token-minter
+subjects:
+  # ⚠️ ESO runs in the `secrets` namespace, not `external-secrets`.
+  - kind: ServiceAccount
+    name: external-secrets
+    namespace: secrets

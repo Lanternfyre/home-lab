@@ -272,13 +272,16 @@ alertmanager:
             send_resolved: true
 
 grafana:
-  # Google Workspace OIDC. Client ID + Secret are injected as env vars from
-  # the grafana-google-oidc Secret (populated from 1Password via the
-  # ExternalSecret in external-secrets/manifests/google-oauth.external-secret.yaml).
-  # Grafana reads GF_AUTH_GOOGLE_CLIENT_ID / GF_AUTH_GOOGLE_CLIENT_SECRET from
-  # the environment and overrides the matching grafana.ini values — so we
-  # intentionally omit literal client_id / client_secret in grafana.ini below.
-  envFromSecret: grafana-google-oidc
+  # A1 — authentik OIDC, replacing Google Workspace directly.
+  #
+  # Client ID + Secret are injected as env vars from grafana-authentik-oidc,
+  # which reads them out of the authentik namespace through the authentik-oidc
+  # ClusterSecretStore — so the credential authentik generated for the `grafana`
+  # provider is literally the one Grafana presents, and neither side can drift.
+  # Grafana reads GF_AUTH_GENERIC_OAUTH_CLIENT_ID / _SECRET from the environment
+  # and they override the matching grafana.ini values — so we intentionally omit
+  # literal client_id / client_secret below.
+  envFromSecret: grafana-authentik-oidc
 
   sidecar:
     datasources:
@@ -299,20 +302,32 @@ grafana:
   grafana.ini:
     server:
       root_url: https://grafana.lab.techyon.dev
-    auth.google:
+    # ⚠️ auth.google is GONE, not disabled. Leaving it enabled would keep a
+    # second, independent path into Grafana that authentik does not govern —
+    # which is the whole point of the migration. Revert = git revert.
+    auth.generic_oauth:
       enabled: true
+      name: Authentik
       scopes: openid email profile
-      auth_url: https://accounts.google.com/o/oauth2/v2/auth
-      token_url: https://oauth2.googleapis.com/token
-      api_url: https://openidconnect.googleapis.com/v1/userinfo
-      allowed_domains: techyon.dev
-      hosted_domain: techyon.dev
+      auth_url: https://authentik.lab.techyon.dev/application/o/authorize/
+      token_url: https://authentik.lab.techyon.dev/application/o/token/
+      api_url: https://authentik.lab.techyon.dev/application/o/userinfo/
+      # Existing accounts are matched by email, so anyone who signed in with
+      # Google keeps their Grafana user, history and preferences.
+      email_attribute_path: email
+      login_attribute_path: preferred_username
+      name_attribute_path: name
       allow_sign_up: true
-    # All Google-SSO users are auto-assigned Admin on first login — same
-    # policy as ArgoCD (policy.default: role:admin). Single-operator lab,
-    # the hosted_domain claim restricts logins to techyon.dev so no
-    # outsiders can land here. If you ever need to scope this down, switch
-    # to a JMESPath role_attribute_path on [auth.google] instead.
+      use_pkce: true
+      # The `profile` scope mapping is what carries `groups` — confirmed by
+      # reading the mapping's own expression on the live instance, not assumed.
+      # role_attribute_strict stays false so a missing claim degrades to the
+      # auto_assign_org_role below rather than locking everyone out.
+      role_attribute_path: contains(groups[*], 'authentik Admins') && 'Admin' || 'Viewer'
+      role_attribute_strict: false
+    # Where the old Google config restricted logins with hosted_domain, that job
+    # now belongs to authentik: its Google source has no enrollment flow, so an
+    # unknown account cannot exist in the first place.
     users:
       auto_assign_org: true
       auto_assign_org_role: Admin
