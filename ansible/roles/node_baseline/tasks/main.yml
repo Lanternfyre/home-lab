@@ -82,19 +82,27 @@
   tags: [always]
   ansible.builtin.set_fact:
     needs_dns: "{{ t_dns.rc != 0 }}"
-    # Three separate assertions, not one. Checking only find_multipaths meant
+    # FOUR separate assertions, not one. Checking only find_multipaths meant
     # that once a node passed that check its multipath.conf was frozen -- the
     # no_path_retry settings added after the 2026-08-08 partition would never
     # have reached lab1/2/3, which are exactly the nodes that were damaged.
     # Every setting the template writes must appear in the gate, or adding a
     # setting silently becomes a no-op on the nodes that need it.
+    #
+    # `blacklist_exceptions` is the 2026-09-02 addition and is here for exactly
+    # that reason: the six nodes that predate it all have a correct
+    # find_multipaths, no_path_retry and polling_interval, so without this
+    # fourth clause the blacklist fix would have landed on k8s-lab7 alone and
+    # the fleet would quietly hold two different multipath configs.
     needs_multipath: >-
       {{ (t_multipath.content | default('') | b64decode)
          is not search('find_multipaths\s+' ~ node_multipath_find_multipaths)
          or (t_multipath.content | default('') | b64decode)
             is not search('no_path_retry\s+' ~ node_multipath_no_path_retry)
          or (t_multipath.content | default('') | b64decode)
-            is not search('polling_interval\s+' ~ node_multipath_polling_interval) }}
+            is not search('polling_interval\s+' ~ node_multipath_polling_interval)
+         or (t_multipath.content | default('') | b64decode)
+            is not search('blacklist_exceptions') }}
     needs_sysctl: >-
       {{ t_sysctl.results | selectattr('stdout', 'defined')
          | selectattr('stdout', 'ne', '')
@@ -243,8 +251,47 @@
           polling_interval {{ node_multipath_polling_interval }}
           no_path_retry {{ node_multipath_no_path_retry }}
       }
+      # ── The blacklist discriminates on VENDOR, not on a device letter ──
+      #
+      # It used to read `devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)..."`,
+      # copied from the distro example. That `sda` encodes a hardware
+      # assumption -- "sda is the local disk" -- which was true on every node
+      # in the fleet until k8s-lab7, whose root is NVMe and which has no SATA
+      # disk at all. There the FIRST iSCSI LUN attaches as /dev/sda, was
+      # blacklisted, got no device-mapper entry, and Trident failed to stage
+      # it with the familiar "multipath device not found when it is expected"
+      # -- on a node whose multipath.conf, multipathd, iscsid and CSI driver
+      # were all correct. Measured on the k8s-7 join, 2026-09-02:
+      #
+      #   k8s-lab1  sda vendor=ATA  SAMSUNG SSD SM87   <- local disk
+      #             sdb sdc sdd vendor=QNAP            <- LUNs, mpathd/h/n
+      #   k8s-lab7  sda vendor=QNAP iSCSI Storage      <- a LUN, blacklisted
+      #
+      # So blacklist everything and except the one vendor that must be
+      # multipathed. This is the same discrimination smartctl-exporter's
+      # alerts make for the same reason: `scsi_vendor="QNAP"` means something,
+      # a device letter is an accident of enumeration order.
+      #
+      # ⚠️ Behaviour on the six older nodes is UNCHANGED: their sda reports
+      # vendor ATA, so the blanket device rule blacklists it exactly as the
+      # old devnode rule did, and their QNAP LUNs are excepted exactly as
+      # before. Verified against k8s-lab1's live maps (mpathd, mpathh, mpathn).
+      #
+      # nvme is named explicitly because the blanket `device` rule matches on
+      # SCSI inquiry strings and an NVMe namespace has none -- it is the local
+      # root disk on lab5 and lab7 and must never be a multipath candidate.
       blacklist {
-          devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)[0-9]*"
+          devnode "^(ram|zram|raw|loop|fd|md|dm-|sr|scd|st|nbd|nvme)[0-9]*"
+          device {
+              vendor ".*"
+              product ".*"
+          }
+      }
+      blacklist_exceptions {
+          device {
+              vendor "QNAP"
+              product ".*"
+          }
       }
   register: multipath_written
 

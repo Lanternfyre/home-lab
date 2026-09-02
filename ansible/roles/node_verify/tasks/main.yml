@@ -187,6 +187,35 @@
       multipath config effective ({{ mp_devices }} mpath device(s),
       {{ 'daemon newer than config' if not (mp_stale | bool) else 'stale but staging works' }})
 
+# ── The assertion that would have caught k8s-lab7 (added 2026-09-02) ────────
+#
+# The freshness check above only fires when the DAEMON predates the CONFIG. On
+# k8s-lab7 it did not -- multipathd restarted one second after the file was
+# written -- and the node still could not stage a volume, because the config
+# it correctly loaded blacklisted `sda`, and on that node (NVMe root, no SATA
+# disk) sda IS the QNAP LUN. Everything a file check or a freshness check can
+# see was right; the node was still the k8s-4 condition.
+#
+# So assert the outcome instead: a node with an iSCSI session attached must
+# have a multipath map for it. That is the whole contract between iscsid,
+# multipathd and the CSI driver, and it is what Trident means by "multipath
+# device not found when it is expected".
+- name: Assert an attached iSCSI session actually produced a multipath device
+  ansible.builtin.assert:
+    that: (mp_sessions | int) == 0 or (mp_devices | int) > 0
+    fail_msg: >-
+      {{ inventory_hostname }} has {{ mp_sessions }} iSCSI session(s) attached
+      and ZERO multipath devices. The LUN is visible to the SCSI layer and
+      multipathd is not mapping it, so Trident will fail to stage with
+      "multipath device not found when it is expected". The usual cause is the
+      blacklist: check what the LUN enumerates as and what vendor it reports --
+        for d in /sys/block/sd*; do echo "$d $(cat $d/device/vendor)"; done
+      A node whose only local disk is NVMe gets its first LUN at /dev/sda,
+      which the pre-2026-09-02 blacklist excluded by name.
+    success_msg: >-
+      {{ mp_sessions }} iSCSI session(s), {{ mp_devices }} multipath device(s)
+      -- the LUNs attached here are mapped
+
 - name: Assert storage services are running
   ansible.builtin.command: "systemctl is-active {{ item }}"
   register: svc_check
