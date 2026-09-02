@@ -53,13 +53,34 @@ spec:
             - { port: "7844", protocol: TCP }
             - { port: "443",  protocol: TCP }
 
-    # The gated Gateway, and only the gated Gateway.
+    # The Gateway, and only the Gateway.
+    #
+    # 🔴 10443, NOT 443, and this is the single most counter-intuitive number in
+    # the file. The Service publishes port 443; Envoy inside the pod listens on
+    # 10443, because Envoy Gateway shifts privileged ports by 10000. Cilium
+    # evaluates policy AFTER service translation, so the port it sees is the
+    # BACKEND's, never the Service's.
+    #
+    # Written as 443 first, and proven wrong by Hubble rather than by reasoning:
+    #   cloudflared-... <> envoy-...-tunnel-...:10443
+    #     policy-verdict:none EGRESS DENIED (TCP Flags: SYN)
+    # The symptom was a 25-second hang and `dial tcp 10.43.21.216:443: i/o
+    # timeout` in the cloudflared log -- a Service address and a Service port,
+    # naming a rule that was never about either.
+    #
+    # ⚠️ This rule had NEVER been exercised before today. It was written while
+    # cloudflared pointed at the gated Gateway and no request ever traversed it,
+    # so "443" sat here looking correct for as long as nothing used it.
+    #
+    # The port restriction stays rather than opening the namespace: Envoy's
+    # admin and xDS listeners (18000-19003) live on these same pods, and
+    # cloudflared has no business reaching any of them.
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: gateway-envoy
       toPorts:
         - ports:
-            - { port: "443", protocol: TCP }
+            - { port: "10443", protocol: TCP }
 
   ingress:
     # The kubelet probe path. `world` is correct here and must not be
