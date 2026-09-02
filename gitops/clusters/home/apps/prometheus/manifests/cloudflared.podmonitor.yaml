@@ -1,0 +1,36 @@
+# Cloudflare Tunnel connector metrics.
+#
+# Worth having for one reason: when the tunnel is down, everything published
+# through it is down, and NOTHING else in this cluster notices. Every app stays
+# Running, every ArgoCD app stays Synced/Healthy, and the only symptom is that
+# the outside world gets nothing. That is precisely the shape of failure this
+# repo keeps being bitten by.
+#
+# Lives here, not in cloudflare-tunnel/, and carries `release:
+# prometheus-operator` -- both mandatory. This cluster's Prometheus CR selects
+# PodMonitors on that label, so one without it is decoration that reads
+# correctly and is loaded by nobody. See cnpg.podmonitor.yaml for the 132 days
+# that lesson cost.
+#
+# ⚠️ NO PrometheusRule yet, deliberately. An alert would have to name specific
+# cloudflared metrics, and none has been observed on this cluster -- the tunnel
+# has never run here. Writing one now would be a rule that looks protective and
+# fires never, which is the exact failure mode. Write it against real scraped
+# series after the first connection, and run scripts/audit-dashboard-queries.py.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cloudflared
+  namespace: monitoring
+  labels:
+    release: prometheus-operator
+spec:
+  namespaceSelector:
+    matchNames:
+      - cloudflare-tunnel
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
