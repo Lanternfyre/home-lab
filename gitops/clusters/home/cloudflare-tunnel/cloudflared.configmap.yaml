@@ -16,8 +16,14 @@
 #
 # ⚠️ The Service name carries a hash Envoy generates: LOOK IT UP, never guess.
 #     kubectl get svc -n gateway-envoy
-#   `envoy-gateway-envoy-homelab-gated-06cddf46` is the GATED one (192.168.32.19).
-#   `envoy-gateway-envoy-homelab-b0a9a155` is the OPEN one -- do not use it.
+#   `envoy-gateway-envoy-homelab-tunnel-6cc00307`  the INTERNET Gateway  .32.11
+#   `envoy-gateway-envoy-homelab-gated-06cddf46`   LAN, authentik        .32.19
+#   `envoy-gateway-envoy-homelab-b0a9a155`         LAN, OPEN -- never this one
+#
+# The tunnel Gateway is the right target and not merely a tidier one: the LAN
+# Gateway serves `*.lab.techyon.dev`, for which Cloudflare has NO EDGE
+# CERTIFICATE, so pointing here at the gated Service publishes a hostname whose
+# TLS handshake dies at the edge before this config is ever consulted.
 #
 # `originServerName` is required because the Gateway serves a WILDCARD
 # certificate. Without it cloudflared validates the cert against the Service's
@@ -46,14 +52,13 @@ data:
 
     ingress:
       # ── The canary, and nothing else yet ──────────────────────────────────
-      # Deliberately a SEPARATE hostname from canary.lab.techyon.dev, which
-      # keeps resolving to the LAN Gateway IP. Both paths therefore exist side
-      # by side and can be compared, and proving the tunnel needs no cutover of
-      # anything that already works.
-      - hostname: canary-public.lab.techyon.dev
-        service: https://envoy-gateway-envoy-homelab-gated-06cddf46.gateway-envoy.svc.cluster.local:443
+      # `canary.lab.techyon.dev` keeps resolving to the LAN Gateway and is
+      # untouched by any of this. It is the CONTROL: when the public path
+      # misbehaves it answers "is the app broken, or is the exposure broken?".
+      - hostname: canary.techyon.dev
+        service: https://envoy-gateway-envoy-homelab-tunnel-6cc00307.gateway-envoy.svc.cluster.local:443
         originRequest:
-          originServerName: canary-public.lab.techyon.dev
+          originServerName: canary.techyon.dev
 
       # Required, and required LAST: cloudflared refuses to start without a
       # catch-all. 404 rather than a redirect, so an unmapped hostname that
