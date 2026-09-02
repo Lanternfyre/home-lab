@@ -1,0 +1,199 @@
+# THE INTERNET-FACING GATEWAY. Attaching a route here IS the act of publishing
+# it, and that is the entire point of a third Gateway rather than a third
+# listener on an existing one.
+#
+#   homelab         *.lab.techyon.dev   LAN, open            192.168.32.18
+#   homelab-gated   *.lab.techyon.dev   LAN, authentik       192.168.32.19
+#   homelab-tunnel  *.techyon.dev       INTERNET, authentik  via cloudflared
+#
+# ── Why the public names are ONE level deep ─────────────────────────────────
+# Cloudflare's Universal SSL covers the root domain and FIRST-level subdomains
+# only -- `techyon.dev` and `*.techyon.dev`. It does NOT cover
+# `*.lab.techyon.dev`. Proven rather than read: `openssl s_client` against a
+# proxied `canary-public.lab.techyon.dev` returns TLS alert 40 and
+# `no peer certificate available`, while the same name straight to the LAN
+# Gateway serves the real Let's Encrypt cert. The handshake fails at the edge,
+# before any tunnel is consulted.
+#
+# The alternative was Advanced Certificate Manager at ~$10/month to cover
+# `*.lab.techyon.dev` at the edge. Rejected as disproportionate for a homelab.
+#
+# So a service has TWO names: `app.lab.techyon.dev` on the LAN, unchanged, and
+# `app.techyon.dev` from the internet. They do not collide, and the LAN path
+# stays available as a control when the public one misbehaves.
+#
+# ⚠️ `*.techyon.dev` is SHARED SPACE. The apex serves something else entirely
+# -- `techyon.dev:443` presents a `*.cyber-folks.pl` certificate -- so a public
+# name here must not collide with anything already living on that domain.
+---
+# The origin certificate: what Envoy presents to cloudflared.
+#
+# Not to be confused with the EDGE certificate, which is Cloudflare's, covers
+# `*.techyon.dev` under Universal SSL, and is what the visitor's browser sees.
+# This one is ours, and cloudflared validates it using `originServerName`.
+#
+# Same issuer, same Cloudflare API token, same DNS-01 flow as
+# wildcard-lab-techyon-dev in homelab.gateway.yaml -- adding it costs nothing
+# but the ten lines.
+#
+# ⚠️ The apex `techyon.dev` is deliberately NOT in dnsNames. `*.techyon.dev`
+# matches exactly one label, so the apex would need listing explicitly -- and
+# it is served by someone else. Issuing for it would let this cluster answer
+# for a name it has no business answering for.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-techyon-dev
+  namespace: gateway-envoy
+spec:
+  secretName: wildcard-techyon-dev-tls
+  issuerRef:
+    name: cloudflare-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.techyon.dev"
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-tunnel
+  namespace: gateway-envoy
+  annotations:
+    # 🔴 THIS is why it is a separate Gateway and not a listener.
+    #
+    # external-dns reads `target` from the GATEWAY and nowhere else -- upstream:
+    # "Gateway resource reads only the `target` annotation, while Route
+    # resources read all other annotations." Putting it on an HTTPRoute is
+    # silently ignored, which cost a debugging session: external-dns fell back
+    # to the Gateway's LoadBalancer address and tried to publish a proxied A
+    # record to 192.168.32.19, which Cloudflare rejected outright with
+    # `9003 Target ... is not allowed for a proxied record`.
+    #
+    # Here it works as intended: every route attached to this Gateway gets a
+    # proxied CNAME to the tunnel, reconciled from git, with no per-route
+    # annotations and no records created by hand.
+    #
+    # ⚠️ Must match `tunnel:` in cloudflare-tunnel/cloudflared.configmap.yaml.
+    # A mismatch is a Cloudflare 1033 and nothing at all in-cluster.
+    external-dns.alpha.kubernetes.io/target: "69f49aa0-f301-4aa0-9fb1-40025f21a963.cfargotunnel.com"
+    # Mandatory, not a preference: an unproxied CNAME to cfargotunnel.com
+    # resolves to nothing a client can reach.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  gatewayClassName: envoy
+  listeners:
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: "*.techyon.dev"
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: wildcard-techyon-dev-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+  # ⚠️ NO plain-HTTP listener, deliberately. The other two Gateways need one to
+  # redirect LAN browsers to https. Nothing reaches this Gateway except
+  # cloudflared, which always speaks https to the origin, and Cloudflare
+  # already handles http->https at the edge. A listener nothing uses is a
+  # listener nobody checks.
+  #
+  # It still gets a MetalLB LoadBalancer, like the other two. ClusterIP would
+  # be tighter -- no LAN listener at all -- but that needs an EnvoyProxy CR,
+  # a concept this repo does not otherwise use, for marginal gain: the
+  # listener is authentik-gated either way and no LAN name resolves to it.
+---
+# The gate for the internet-facing Gateway.
+#
+# Same authentik client (`envoy-gateway`) and same client-secret Secret as the
+# LAN gate, so publishing a service adds redirect URIs to an existing provider
+# rather than creating a second one. Every setting below is copied deliberately
+# from `google-workspace-only`; read that policy's comments before changing any
+# of them, because each was established by the Phase 6 spike rather than from
+# documentation.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: tunnel-gate
+  namespace: gateway-envoy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: homelab-tunnel
+      # Pinned to the HTTPS listener for the same reason as the LAN gate, even
+      # though this Gateway has no HTTP listener today. If one is ever added,
+      # the policy must not silently start gating it and deriving an http://
+      # callback.
+      sectionName: https
+
+  oidc:
+    provider:
+      issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
+    clientID: "envoy-gateway"
+    clientSecret:
+      name: gateway-oidc
+
+    # Omitted on purpose, exactly as on the LAN gate: Envoy derives
+    # %REQ(x-forwarded-proto)%://%REQ(:authority)%/oauth2/callback, so one
+    # policy serves every hostname. For a public visitor on
+    # `app.techyon.dev` that yields `https://app.techyon.dev/oauth2/callback`
+    # -- a name that resolves publicly, which is why no host rewriting is
+    # needed or wanted here.
+    #
+    # ⚠️ Every public hostname still needs its exact redirect URI added to the
+    # authentik provider (authentik/manifests/blueprint-envoy-gateway...), which
+    # uses `matching_mode: strict`. Missing it is an HTTP 400 from authentik at
+    # the authorize step, with the gate itself looking perfectly healthy.
+    logoutPath: "/logout"
+    scopes:
+      - openid
+      - email
+      - profile
+
+    # LOAD-BEARING -- see the LAN gate. Unset, Envoy Gateway appends a random
+    # per-policy suffix and the jwt provider below cannot read the cookie.
+    cookieNames:
+      idToken: "IdToken"
+      accessToken: "AccessToken"
+
+  # `oidc` alone does not verify the ID token signature (envoy gateway #5414).
+  # Without this the cookie is trusted on its face and the claim check is
+  # decorative.
+  jwt:
+    providers:
+      - name: authentik
+        issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
+        audiences:
+          - "envoy-gateway"
+        remoteJWKS:
+          # In-cluster on purpose: the public hostname resolves to a Gateway,
+          # so fetching keys through it would make the gate depend on the data
+          # path it guards.
+          uri: "http://authentik-server.authentik.svc.cluster.local/application/o/envoy-gateway/jwks/"
+        extractFrom:
+          cookies:
+            - "IdToken"
+
+  authorization:
+    # A typo in the rule below fails CLOSED (403) rather than open.
+    defaultAction: Deny
+    rules:
+      - name: homelab-admins
+        action: Allow
+        principal:
+          jwt:
+            provider: authentik
+            claims:
+              # ⚠️ COPIED EXACTLY from the LAN gate, including the space and
+              # the capital A. An almost-right value here is a 403 on every
+              # public hostname at once, because defaultAction is Deny -- and
+              # `homelab-admins`, which is what the RULE is called, is not the
+              # group's name. StringArray, not String: `groups` is a list and
+              # the wrong valueType matches nothing.
+              - name: groups
+                valueType: StringArray
+                values:
+                  - "authentik Admins"
