@@ -4,6 +4,21 @@ config:
       controllerName: gateway.envoyproxy.io/gatewayclass-controller
     provider:
       type: Kubernetes
+    # EnvoyPatchPolicy is an EXTENSION API and is off by default. It is enabled
+    # here for exactly one policy -- manifests/tunnel-root-path.envoypatchpolicy.yaml
+    # -- which repairs a path the Cloudflare Tunnel doubles and that no
+    # supported API can express: Gateway API refuses a route match containing
+    # `//`, and Envoy's own merge_slashes does not touch a path that is only
+    # slashes.
+    #
+    # ⚠️ It is an escape hatch that patches generated xDS directly, so it is
+    # coupled to the SHAPE of what Envoy Gateway generates and can break on an
+    # upgrade rather than at write time. The policy's own status reports
+    # whether it applied; treat that as the thing to check after any
+    # envoy-gateway version bump, and delete both if this is ever fixed
+    # upstream.
+    extensionApis:
+      enableEnvoyPatchPolicy: true
     logging:
       level:
         default: debug

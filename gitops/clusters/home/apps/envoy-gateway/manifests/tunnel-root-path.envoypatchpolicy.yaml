@@ -1,0 +1,72 @@
+# 🔴 THE ROOT PATH ARRIVES AS `//` THROUGH THE TUNNEL, AND IT LOOPS.
+#
+# Established by experiment, in this order, and none of it by reading docs:
+#
+#  1. The tunnel doubles ONLY the empty path. From Envoy's own access log
+#     (`x-envoy-origin-path`): `/` -> `//` and `/?probe=1` -> `//?probe=1`,
+#     while `/a` and `/foo/bar` arrive untouched.
+#  2. Envoy merges INTERIOR adjacent slashes but NOT a bare `//`. Proven with
+#     MinIO's XML `<Resource>`, which echoes the path it parsed, needing no
+#     cluster change at all: `/a//b` arrives as `/a/b`, `//` arrives as `//`.
+#     That is why `merge_slashes: true` is in the listener config and did not
+#     save us.
+#  3. Go's net/http ServeMux redirects `//` to `/`. Proven by port-forwarding
+#     straight to a canary pod: `/` -> 200, `//` -> 307.
+#  So the browser asks `/`, the tunnel makes it `//`, the app sends it back to
+#  `/`, and round it goes. ERR_TOO_MANY_REDIRECTS, with every in-cluster signal
+#  green.
+#
+# ── Why this is an EnvoyPatchPolicy and not something supported ─────────────
+# Gateway API REFUSES to express it:
+#     spec.rules[0].matches[0].path: Invalid value: must not contain '//'
+# which is the API assuming a normalisation that does not happen here. There is
+# no ClientTrafficPolicy field for it either -- `disableMergeSlashes` only
+# turns OFF the merging that is already on and already insufficient.
+#
+# The alternative was a Cloudflare Transform Rule, rejected for a specific
+# reason rather than taste: it would fix this ONLY if Cloudflare's edge is what
+# doubles the path, and if `cloudflared` does it afterwards the rule never
+# matches. That question cannot be answered from inside the cluster -- it needs
+# an observation point BETWEEN the edge and the connector. This patch works
+# either way, which is the whole argument for it.
+#
+# ── What it does ────────────────────────────────────────────────────────────
+# Inserts one route ahead of the others that matches the exact path `//` and
+# rewrites it to `/` before proxying. No redirect is issued, so there is
+# nothing for a client to loop on.
+#
+# ⚠️ JSON Patch paths are INDEX-BASED. `/virtual_hosts/0` is correct while
+# `homelab-tunnel` serves a single hostname. Publishing a second one makes the
+# index ambiguous, and this policy must gain a rule per virtual host -- or be
+# replaced by a Lua filter on the connection manager, which would be
+# host-agnostic. The status block below is the tripwire: `Programmed` goes
+# False if the patch cannot apply.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: tunnel-root-path
+  namespace: gateway-envoy
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: homelab-tunnel
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.route.v3.RouteConfiguration"
+      # Names looked up from the live config dump, never guessed --
+      #   curl localhost:19000/config_dump?resource=dynamic_route_configs
+      name: gateway-envoy/homelab-tunnel/https
+      operation:
+        op: add
+        path: "/virtual_hosts/0/routes/0"
+        value:
+          name: "tunnel-root-path-double-slash"
+          match:
+            path: "//"
+          route:
+            cluster: "httproute/canary/canary-tunnel/rule/0"
+            regex_rewrite:
+              pattern:
+                regex: "^//$"
+              substitution: "/"
