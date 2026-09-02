@@ -21,8 +21,10 @@ metadata:
   labels:
     app.kubernetes.io/name: canary
   annotations:
-    # 🔴 REPLACE, same UUID as cloudflared.configmap.yaml.
-    external-dns.alpha.kubernetes.io/target: "REPLACE_WITH_TUNNEL_UUID.cfargotunnel.com"
+    # The same tunnel UUID as cloudflared.configmap.yaml. If these two ever
+    # disagree, DNS points at a tunnel that is not serving this hostname and
+    # the failure is a 1033 from Cloudflare's edge, not anything visible here.
+    external-dns.alpha.kubernetes.io/target: "d5e075a5-879e-45e3-912b-92102f47378b.cfargotunnel.com"
     # Proxied is mandatory, not a preference: an unproxied CNAME to
     # cfargotunnel.com resolves to nothing a client can reach.
     external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
