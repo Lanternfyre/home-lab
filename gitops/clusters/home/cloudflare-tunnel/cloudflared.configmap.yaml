@@ -33,7 +33,7 @@ data:
     # field inside the credentials JSON. NOT a secret -- it is published in DNS
     # as <uuid>.cfargotunnel.com, which is why canary-public's external-dns
     # target annotation can carry it in plain sight. The two must MATCH.
-    tunnel: d5e075a5-879e-45e3-912b-92102f47378b
+    tunnel: 69f49aa0-f301-4aa0-9fb1-40025f21a963
     credentials-file: /etc/cloudflared/creds/credentials.json
 
     # Prometheus endpoint. Worth having: when the tunnel is down, everything
