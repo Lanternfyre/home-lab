@@ -1,0 +1,24 @@
+# ot-demo
+#
+# A minimum two-port TCP demo: an Open-Tibia-shaped protocol with LOGIN on one
+# port and GAME on another, published through the Cloudflare Tunnel.
+#
+# Deliberately NOT in the `canary` namespace. The canary's defining property is
+# that it can reach NOTHING -- not even DNS -- and it is only reachable from
+# `gateway-envoy`. Publishing TCP requires cloudflared to reach these pods
+# directly, bypassing Envoy entirely, so putting them in `canary` would mean
+# widening the one policy in the cluster whose strictness is the whole point.
+#
+# `restricted`, like canary. Both listeners are above 1024, so nothing here
+# needs a capability to bind.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ot-demo
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

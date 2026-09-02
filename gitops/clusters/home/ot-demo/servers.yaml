@@ -1,0 +1,111 @@
+# Two listeners, one per port, deliberately as TWO Deployments rather than one
+# pod with two containers.
+#
+# The point of the demo is that LOGIN and GAME are separately addressable: each
+# gets its own Service, its own tunnel ingress rule and its own public
+# hostname, so a failure on one is visibly a failure on one. A single pod
+# serving both ports would prove less and hide more.
+#
+# `socat` echoing a fixed banner is enough to answer the only question this
+# demo asks -- did my client reach the right port, through the tunnel? Real
+# protocol framing adds nothing to that and a lot to the surface area.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: ot-demo
+  namespace: ot-demo
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ot-login
+  namespace: ot-demo
+  labels: { app.kubernetes.io/name: ot-login }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ot-login }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ot-login }
+    spec:
+      serviceAccountName: ot-demo
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: socat
+          image: alpine/socat@sha256:5f275aa1b6e9889c851f61097142ee050fc6ac4615b4ea64ac1f2b0e81ff8d7f
+          args:
+            - "-d"
+            - "TCP-LISTEN:7171,fork,reuseaddr"
+            - "SYSTEM:echo OT-LOGIN-SERVER port=7171"
+          ports: [{ name: login, containerPort: 7171 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { memory: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ot-login
+  namespace: ot-demo
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: ot-login }
+  ports: [{ name: login, port: 7171, targetPort: login }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ot-game
+  namespace: ot-demo
+  labels: { app.kubernetes.io/name: ot-game }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ot-game }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ot-game }
+    spec:
+      serviceAccountName: ot-demo
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: socat
+          image: alpine/socat@sha256:5f275aa1b6e9889c851f61097142ee050fc6ac4615b4ea64ac1f2b0e81ff8d7f
+          args:
+            - "-d"
+            - "TCP-LISTEN:7172,fork,reuseaddr"
+            - "SYSTEM:echo OT-GAME-SERVER port=7172"
+          ports: [{ name: game, containerPort: 7172 }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { memory: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ot-game
+  namespace: ot-demo
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: ot-game }
+  ports: [{ name: game, port: 7172, targetPort: game }]
