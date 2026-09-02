@@ -97,28 +97,78 @@ Still worth watching, because getting `INSTALL_K3S_EXEC` wrong does not error,
 it silently builds the other kind of node. After the run, `systemctl is-active
 k3s-agent` on the node must be `active` and `k3s.service` must not exist.
 
-**Remaining, in this order — every step needs `--ask-become-pass`:**
+#### Where it actually got to, 2026-09-02 evening
 
-1. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-7.home`
-   Expect `multipath=BROKEN, sysctls=BROKEN, services=BROKEN` on the detect
-   line — that is "baseline has never run here", not a fault.
-2. `ansible-playbook playbooks/90-preflight.yml --limit k8s-7.home` (no sudo).
-   Do not go on until it reports `sysctls=ok, multipath=ok, services=ok`.
-   `node_verify` correctly skips the containerd-pull and csinode gates while
-   `/usr/local/bin/k3s` is absent, and says so.
-3. `ansible-playbook playbooks/40-add-node.yml --ask-become-pass -e target=k8s-7.home`
-   → 3 servers, 4 agents, still 3 etcd members. **No quorum arithmetic
-   changes**: only servers hold votes, so agent count is free.
-   The playbook cordons on join, deletes any pod that came up on a flannel
-   address in the ~60s CNI window, runs the storage proof pinned to the node
-   with `nodeName`, and uncordons ONLY if it passes.
-4. Verify: `kubectl get nodes -o wide` (7 Ready, k8s-lab7 with no roles),
-   `kubectl get csinode k8s-lab7 -o jsonpath='{.spec.drivers[*].name}'`
+Steps 1–3 RAN. **k8s-lab7 is joined, Ready and still CORDONED** — the storage
+proof has not passed yet, and that is the gate working, not a stall. Two
+separate bugs were found on the way, both of which had been sitting in the repo
+unexercised, and both are fixed in git but **not yet applied to the node**:
+
+**Bug 1 — the storage proof had been unrunnable since 2026-08-31.** The proof
+pod carried no `securityContext`, and `default` began enforcing PodSecurity
+`restricted:v1.35` on 2026-08-31 (commit `baecdb8`). The API server refused to
+create it. Both callers of `tasks/prove-and-uncordon.yml` end at that gate, so
+from that date NO node could complete onboarding — the last role change was
+2026-08-22, nine days earlier, so nothing exercised it until this join. Fixed
+by making the pod compliant (`runAsNonRoot` + explicit `runAsUser: 65532` +
+`fsGroup: 65532` + `seccompProfile` + `drop: [ALL]`) rather than exempting it.
+Its cleanup block also leaked a PV and a backend LUN on the way down, by
+reading `volumeName` before Trident had bound it; that now retries.
+
+**Bug 2 — `/etc/multipath.conf` blacklisted `sda` by name.** With the proof pod
+finally creating, the volume attached and then failed to stage with the
+familiar *"multipath device not found when it is expected"* — on a node whose
+multipath.conf, multipathd, iscsid and CSI registration were all correct.
+Measured:
+
+```
+k8s-lab1  sda vendor=ATA  SAMSUNG SSD SM87    <- local disk
+          sdb sdc sdd vendor=QNAP             <- LUNs, mpathd/h/n exist
+k8s-lab7  sda vendor=QNAP iSCSI Storage       <- a LUN, blacklisted by name
+```
+
+k8s-lab7's root is NVMe and it has **no SATA disk**, so its first iSCSI LUN
+enumerates as `/dev/sda`. The blacklist keyed on a device letter; it now keys
+on vendor, with a `blacklist_exceptions` for QNAP. `node_verify` gained the
+assertion that would have caught it: a node with an attached iSCSI session must
+have a multipath device.
+
+⚠️ **This one has a FLEET blast radius.** `needs_multipath` gained a fourth
+clause so the fix cannot land on k8s-lab7 alone, which means the next
+unrestricted `site.yml` or `10-baseline.yml` reports `multipath=BROKEN` on all
+six older nodes, rewrites their multipath.conf and runs `multipathd
+reconfigure` on lab1/2/3 (four LUNs each; lab3 holds both CNPG primaries). The
+new config is provably equivalent for them — their `sda` reports vendor ATA, so
+the blanket device rule blacklists it exactly as the devnode rule did — and
+`reconfigure` is in-place with no map teardown. It is still a storage change on
+live nodes: run `site.yml --check --diff --tags storage` first, then one
+`--limit` at a time, k8s-1 last per convention.
+
+**Remaining, in this order:**
+
+1. Reclaim the leaked PV from the first failed proof (attempt 2 cleaned up
+   after itself; this one predates the fix):
+   ```
+   kubectl patch pv pvc-685da985-e240-4348-a753-10f2a3170caa \
+     -p '{"spec":{"persistentVolumeReclaimPolicy":"Delete"}}'
+   ```
+   `Retain` + `Released` leaks the backend LUN as well as the PV object.
+2. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-7.home`
+   to land the new multipath.conf. `multipath=BROKEN` on the detect line is the
+   new fourth clause, and is expected. Then check the EFFECTIVE result, not the
+   file: `ssh tarjei@192.168.33.24 sudo multipathd show blacklist`.
+3. `ansible-playbook playbooks/46-prove-node-storage.yml -e target_node=k8s-lab7`
+   — no sudo, kubectl only. This is the new standalone gate; it refuses to run
+   on a node that is not cordoned. Watch for `mpath` in the PASSED line.
+4. Verify: `kubectl get nodes -o wide` (7 Ready, none cordoned, k8s-lab7 with
+   no roles), `kubectl get csinode k8s-lab7 -o jsonpath='{.spec.drivers[*].name}'`
    (must be non-empty), `kubectl -n kube-system get ds kube-vip-ds` (desired
    must stay **3** — kube-vip's nodeAffinity requires the control-plane label,
    so a new agent must not change it), and
    `kubectl get ds -A --no-headers | awk '$3!=$4 || $4!=$6'` must print
-   nothing once the new node's DaemonSet pods have settled.
+   nothing once the new node's DaemonSet pods have settled. On the node itself:
+   `systemctl is-active k3s-agent` is `active` and `k3s.service` does not
+   exist.
 
 Not needed, deliberately: no CI taint (`50-ci-taint.yml` is the reserve switch
 and the standing decision is cluster-wide CI scheduling), and no Cilium change

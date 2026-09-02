@@ -9,6 +9,17 @@
 # something needs to run, it should get its own namespace and its own considered
 # level.
 #
+# ⚠️ ONE EXCEPTION, and it is deliberate: ansible/playbooks/tasks/storage-proof.yml
+# creates an ephemeral PVC + pod here (`storage-proof-<node>`) to prove a node
+# can provision, attach, stage and mount a QNAP volume before it is uncordoned.
+# It is created and deleted inside a single play and is restricted-compliant --
+# it was made to fit this label rather than exempted from it, which is why the
+# proof still stands for the workloads it represents. If you tighten this
+# namespace further (a Kyverno rule, a ResourceQuota, a NetworkPolicy), check
+# that gate: when it fails, NO node can finish joining the cluster. That has
+# already happened once -- this label landed 2026-08-31 and broke it until
+# 2026-09-02.
+#
 # ⚠️ This does NOT prevent creation of the namespace or affect existing objects.
 # PSA gates pod creation only.
 apiVersion: v1

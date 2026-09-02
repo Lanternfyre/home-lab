@@ -22,10 +22,22 @@ node_nic: enp1s0
 # `agent` from the k3s_agents group and installs k3s-agent.service directly.
 #
 # 6 vCPU / 31 GiB / a single 238.5 GB NVMe (KIOXIA KBG40ZNS256G). Note there is
-# NO SATA disk: every other node in the fleet reports `sda`, this one reports
-# only `nvme0n1`. Nothing in the repo depends on the device name -- the
-# smartctl-exporter alerts discriminate on `scsi_vendor="QNAP"` rather than a
-# device letter, precisely so a node like this one is not a special case.
+# NO SATA disk: every other node in the fleet reports `sda` as its local disk,
+# this one reports only `nvme0n1`.
+#
+# ⚠️ That is not trivia, and this comment originally said "nothing in the repo
+# depends on the device name". It was wrong, and it cost a failed storage proof
+# on the join. /etc/multipath.conf blacklisted `sda` by NAME -- true on six
+# nodes, where sda is the local ATA disk. Here the first iSCSI LUN attaches AS
+# /dev/sda, so it was blacklisted, got no device-mapper entry, and Trident
+# failed to stage it with "multipath device not found when it is expected" on
+# a node that was otherwise entirely healthy. Fixed by keying the blacklist on
+# vendor (see roles/node_baseline/tasks/main.yml); k8s-lab7 is the node that
+# proves the fix, so re-run the storage proof here after any change to it.
+#
+# smartctl-exporter was already right about this -- its alerts discriminate on
+# `scsi_vendor="QNAP"`, not on a device letter -- which is why SMART worked on
+# this node and multipath did not.
 #
 # `enp1s0` verified over SSH. node_nic is DOCUMENTATION only; nothing consumes
 # it (kube-vip auto-detects the default-route interface, and it does not run

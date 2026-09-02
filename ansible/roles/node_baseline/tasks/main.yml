@@ -280,6 +280,20 @@
       # nvme is named explicitly because the blanket `device` rule matches on
       # SCSI inquiry strings and an NVMe namespace has none -- it is the local
       # root disk on lab5 and lab7 and must never be a multipath candidate.
+      #
+      # ⚠️ DO NOT PUT `sd` BACK IN THE devnode LINE "for safety". This config
+      # works precisely because sd* was REMOVED from it. multipath-tools
+      # filters in order -- property, devnode, device, protocol, wwid -- and
+      # returns on the first match, so a blacklist_exceptions entry only
+      # rescues a device from a blacklist of the SAME TYPE. The
+      # `device { vendor "QNAP" }` exception below CANNOT undo a devnode
+      # match. Re-adding sd there silently re-breaks exactly the k8s-lab7
+      # failure this replaced, and it looks like a storage fault, not an edit.
+      #
+      # Check the effective result on the node, never the file:
+      #   multipathd show blacklist     # entries + where each came from
+      #   multipath -t                  # the parsed config
+      # A syntax slip makes multipathd IGNORE a section rather than complain.
       blacklist {
           devnode "^(ram|zram|raw|loop|fd|md|dm-|sr|scd|st|nbd|nvme)[0-9]*"
           device {
