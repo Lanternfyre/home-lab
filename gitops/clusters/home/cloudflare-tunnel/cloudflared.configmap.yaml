@@ -1,0 +1,60 @@
+# The routing table, in git rather than in Cloudflare's dashboard.
+#
+# ── ONE TUNNEL, MANY HOSTNAMES ──────────────────────────────────────────────
+# There is no reason to create a tunnel per app. A tunnel is a named connection
+# to Cloudflare's edge; the `ingress` list below is what fans it out. Cloudflare
+# supports up to 25 replicas / 100 connections on a single tunnel, and every
+# replica serves every rule. Adding an app is a rule here, not new
+# infrastructure.
+#
+# ── ORIGIN: THE GATEWAY, NOT THE APP ────────────────────────────────────────
+# Every rule points at the SAME gated Envoy Service, and lets Envoy route by
+# Host as it already does for LAN traffic. Pointing cloudflared straight at app
+# Services would bypass the Gateway -- and with it the Authentik SecurityPolicy
+# attached to that Gateway, which is the only thing standing between the
+# internet and these apps.
+#
+# ⚠️ The Service name carries a hash Envoy generates: LOOK IT UP, never guess.
+#     kubectl get svc -n gateway-envoy
+#   `envoy-gateway-envoy-homelab-gated-06cddf46` is the GATED one (192.168.32.19).
+#   `envoy-gateway-envoy-homelab-b0a9a155` is the OPEN one -- do not use it.
+#
+# `originServerName` is required because the Gateway serves a WILDCARD
+# certificate. Without it cloudflared validates the cert against the Service's
+# internal DNS name, which no certificate covers, and every request fails TLS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudflared-config
+  namespace: cloudflare-tunnel
+data:
+  config.yaml: |
+    # 🔴 REPLACE BEFORE MERGE. This is the UUID from `cloudflared tunnel create`,
+    # which is also the TunnelID field inside the credentials JSON. It is NOT a
+    # secret -- it appears in public DNS as <uuid>.cfargotunnel.com.
+    tunnel: REPLACE_WITH_TUNNEL_UUID
+    credentials-file: /etc/cloudflared/creds/credentials.json
+
+    # Prometheus endpoint. Worth having: when the tunnel is down, everything
+    # published through it is down, and nothing else in the cluster will notice.
+    metrics: 0.0.0.0:2000
+
+    # The image is pinned by digest and updated through git. An in-place
+    # self-update would silently replace the binary this repo thinks it runs.
+    no-autoupdate: true
+
+    ingress:
+      # ── The canary, and nothing else yet ──────────────────────────────────
+      # Deliberately a SEPARATE hostname from canary.lab.techyon.dev, which
+      # keeps resolving to the LAN Gateway IP. Both paths therefore exist side
+      # by side and can be compared, and proving the tunnel needs no cutover of
+      # anything that already works.
+      - hostname: canary-public.lab.techyon.dev
+        service: https://envoy-gateway-envoy-homelab-gated-06cddf46.gateway-envoy.svc.cluster.local:443
+        originRequest:
+          originServerName: canary-public.lab.techyon.dev
+
+      # Required, and required LAST: cloudflared refuses to start without a
+      # catch-all. 404 rather than a redirect, so an unmapped hostname that
+      # somehow reaches this tunnel gets nothing.
+      - service: http_status:404

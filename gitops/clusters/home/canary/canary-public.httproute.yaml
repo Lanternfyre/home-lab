@@ -1,0 +1,38 @@
+# The canary's SECOND hostname: the one that goes through the tunnel.
+#
+# A separate HTTPRoute rather than a second entry on canary.httproute.yaml,
+# because external-dns watches `gateway-httproute` and applies its annotations
+# to EVERY hostname on the route. Adding this name to the existing route would
+# have pointed canary.lab.techyon.dev at the tunnel too, cutting over the very
+# path being used as the control.
+#
+# So: canary.lab.techyon.dev stays an A record on the LAN Gateway IP, and
+# canary-public.lab.techyon.dev becomes a proxied CNAME to the tunnel. Same
+# backend, same Authentik gate, two independent paths that can be compared.
+#
+# ⚠️ `policy: upsert-only` on external-dns means it NEVER deletes. Removing this
+# file leaves the CNAME behind, still pointing at the tunnel. Un-exposing is a
+# manual delete in the Cloudflare dashboard.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: canary-public
+  namespace: canary
+  labels:
+    app.kubernetes.io/name: canary
+  annotations:
+    # 🔴 REPLACE, same UUID as cloudflared.configmap.yaml.
+    external-dns.alpha.kubernetes.io/target: "REPLACE_WITH_TUNNEL_UUID.cfargotunnel.com"
+    # Proxied is mandatory, not a preference: an unproxied CNAME to
+    # cfargotunnel.com resolves to nothing a client can reach.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+  hostnames:
+    - canary-public.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: canary
+          port: 80

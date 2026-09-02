@@ -1,0 +1,79 @@
+# H1 for the tunnel. This pod is, by construction, the one thing in the cluster
+# whose job is to talk to the internet and to hand what it finds to strangers,
+# so its egress list is the one that matters most.
+#
+# Three destinations, and nothing else:
+#   - DNS, to resolve region*.v2.argotunnel.com and the Envoy Service
+#   - Cloudflare's edge on 7844 (QUIC/UDP by default, TCP as the fallback
+#     transport) and 443 for registration
+#   - the GATED Envoy Service on 443 -- and NOTHING else in the cluster
+#
+# 🔴 THE LAST ONE IS THE CONTAINMENT. cloudflared cannot reach app Services
+# directly, so a rule in config.yaml that pointed at one would simply fail
+# rather than quietly bypassing the Gateway and the Authentik policy attached
+# to it. The network refuses what a config mistake would otherwise allow.
+#
+# `world` for the edge is unavoidable and deliberate: Cloudflare's anycast
+# addresses are not a stable CIDR this repo can pin, and a toFQDNs rule for
+# region*.v2.argotunnel.com would still resolve to the same anycast space. The
+# port restriction is the real limit -- 7844 and 443 outbound, nothing else.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cloudflared-egress
+  namespace: cloudflare-tunnel
+spec:
+  endpointSelector: {}
+
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  egress:
+    # L7 DNS visibility, so a future toFQDNs rule can match at all. Without it
+    # Cilium never sees the answers and name-based rules silently match nothing.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Cloudflare's edge.
+    - toEntities:
+        - world
+      toPorts:
+        - ports:
+            - { port: "7844", protocol: UDP }
+            - { port: "7844", protocol: TCP }
+            - { port: "443",  protocol: TCP }
+
+    # The gated Gateway, and only the gated Gateway.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }
+
+  ingress:
+    # The kubelet probe path. `world` is correct here and must not be
+    # "tightened" -- see canary/canary.ciliumnetworkpolicy.yaml for the
+    # experiment that established it.
+    - fromEntities:
+        - host
+        - remote-node
+        - world
+
+    # Prometheus scraping the metrics endpoint.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - { port: "2000", protocol: TCP }

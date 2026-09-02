@@ -1,0 +1,28 @@
+# Like canary, this has no Helm chart, so it does not fit the
+# apps/<name>/app.yaml convention. Standalone Application, applied by home-root.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: cloudflare-tunnel
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/Lanternfyre/home-lab.git"
+    targetRevision: master
+    path: gitops/clusters/home/cloudflare-tunnel
+    directory:
+      recurse: true
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: cloudflare-tunnel
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

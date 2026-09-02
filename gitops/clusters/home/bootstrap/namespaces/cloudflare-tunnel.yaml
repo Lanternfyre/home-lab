@@ -1,0 +1,19 @@
+# cloudflare-tunnel
+#
+# Apps in this namespace: cloudflared (the outbound connector).
+#
+# `restricted`, like canary. cloudflared needs no privilege, no host namespace
+# and no hostPath -- it makes OUTBOUND connections to Cloudflare's edge and
+# proxies inbound requests down them. That is the whole point of a tunnel:
+# there is no listener to protect.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cloudflare-tunnel
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

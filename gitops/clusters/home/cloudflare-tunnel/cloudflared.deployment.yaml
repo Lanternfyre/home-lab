@@ -1,0 +1,116 @@
+# A plain Deployment this repo owns, and that is a decision, not laziness.
+#
+# The three community operators were each rejected for a reason this estate has
+# already paid for once:
+#   adyanth/cloudflare-operator   actively pushed, but last RELEASE is v0.13.1
+#                                 (2025-06) -- pin it and run 14-month-old
+#                                 controller code, or track main and repeat the
+#                                 `kaniko:latest` mistake. Also wants a broad
+#                                 Cloudflare API token that can create tunnels
+#                                 AND edit DNS, a far bigger credential than the
+#                                 tunnel-scoped JSON used here.
+#   StringKe fork                 7 stars, quiet since 2026-02.
+#   beezlabs                      untouched since 2023.
+# The official `cloudflare/cloudflare-tunnel` chart pins a two-year-old
+# cloudflared; `cloudflare-tunnel-remote` floats on `latest`.
+#
+# Cloudflare's own Kubernetes guide recommends no chart and no operator -- a
+# plain Deployment. This is that, with the image pinned by digest instead of
+# their `:latest`, and with the routing config in git instead of the dashboard.
+#
+# ── REPLICAS ARE FOR AVAILABILITY, NOT THROUGHPUT ──────────────────────────
+# Each replica opens four connections to four different Cloudflare data centres
+# and registers against the SAME tunnel; a request is served by whichever
+# replica is closest to the edge that received it. They do not share load in
+# any way you can steer.
+#
+# ⚠️ NEVER put an HPA on this. Cloudflare is explicit that scaling DOWN breaks
+# every connection currently held by the replica being removed. Two is a fixed
+# number chosen so that a node drain does not take the tunnel with it.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudflared
+  namespace: cloudflare-tunnel
+  labels:
+    app.kubernetes.io/name: cloudflared
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: cloudflared
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: cloudflared
+      annotations:
+        # The routing table lives in a ConfigMap, and cloudflared reads it once
+        # at startup. Without this, editing a route syncs cleanly in ArgoCD and
+        # changes nothing that is running -- the same "it landed but did not
+        # take effect" failure this repo keeps hitting.
+        configmap.reloader.stakater.com/reload: "cloudflared-config"
+    spec:
+      serviceAccountName: cloudflared
+      automountServiceAccountToken: false
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: cloudflared
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: cloudflared
+          # 2026.8.3. The tag is here for humans; the digest is what runs.
+          image: cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
+          imagePullPolicy: IfNotPresent
+          args:
+            - tunnel
+            - --config
+            - /etc/cloudflared/config/config.yaml
+            - --no-autoupdate
+            - run
+          ports:
+            - name: metrics
+              containerPort: 2000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          # cloudflared serves /ready on the metrics port: 200 once at least one
+          # connection to the edge is established. That is the honest readiness
+          # signal -- a running process with zero edge connections serves
+          # nothing, and would otherwise sit Ready while the tunnel is dead.
+          readinessProbe:
+            httpGet: { path: /ready, port: metrics }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /ready, port: metrics }
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          volumeMounts:
+            - { name: config, mountPath: /etc/cloudflared/config, readOnly: true }
+            - { name: creds,  mountPath: /etc/cloudflared/creds,  readOnly: true }
+            - { name: tmp,    mountPath: /tmp }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits:   { memory: 256Mi }
+      volumes:
+        - name: config
+          configMap:
+            name: cloudflared-config
+        - name: creds
+          secret:
+            secretName: cloudflare-tunnel-credentials
+            defaultMode: 0400
+        # readOnlyRootFilesystem is on, so give it somewhere to scribble.
+        - name: tmp
+          emptyDir: {}
