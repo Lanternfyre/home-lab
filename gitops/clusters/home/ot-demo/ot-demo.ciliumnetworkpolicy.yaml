@@ -1,0 +1,44 @@
+# Same containment posture as the canary, adapted to the one thing that differs.
+#
+# ⚠️ TCP through the tunnel BYPASSES ENVOY ENTIRELY. There is no Gateway, no
+# HTTPRoute and no SecurityPolicy in this path, so there is NO AUTHENTIK GATE
+# on these ports -- Cloudflare cannot run an OIDC redirect over a raw TCP
+# stream. What protects them is that reaching a TCP hostname requires
+# `cloudflared access tcp` on the client, and (if configured) a Cloudflare
+# Access policy in front of it. That is a genuinely weaker gate than the HTTP
+# path has, and it is the reason this demo lives on throwaway services.
+#
+# Egress: NOTHING, exactly as the canary. Neither listener initiates anything.
+# Ingress: cloudflared only, plus the node for probes.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ot-demo-containment
+  namespace: ot-demo
+spec:
+  endpointSelector: {}
+
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # The kubelet probe path. `world` is correct and must not be "tightened" --
+    # see canary/canary.ciliumnetworkpolicy.yaml for the experiment.
+    - fromEntities:
+        - host
+        - remote-node
+        - world
+
+    # cloudflared, and only cloudflared. Note the ports are the CONTAINER's,
+    # which here happen to equal the Service's -- unlike the Envoy case, where
+    # 443 maps to 10443 and naming the Service port silently denied everything.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: cloudflare-tunnel
+      toPorts:
+        - ports:
+            - { port: "7171", protocol: TCP }
+            - { port: "7172", protocol: TCP }
+
+  # No egress block. Deliberately.

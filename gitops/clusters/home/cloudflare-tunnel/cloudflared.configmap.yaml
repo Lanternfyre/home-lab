@@ -60,6 +60,33 @@ data:
         originRequest:
           originServerName: canary.techyon.dev
 
+      # ── The two-port TCP demo ─────────────────────────────────────────────
+      # An Open-Tibia-shaped protocol: LOGIN on one port, GAME on another, each
+      # its own hostname so a failure is visibly on one of them.
+      #
+      # ⚠️ THESE BYPASS ENVOY COMPLETELY. `tcp://` points at the Service, not at
+      # a Gateway, so there is no HTTPRoute, no SecurityPolicy and NO AUTHENTIK
+      # GATE -- OIDC is a browser redirect flow and cannot run over a raw TCP
+      # stream. Cloudflare Access in front of the hostname is the only gate
+      # available here, and it is not configured. Throwaway services only.
+      #
+      # ⚠️ NOT reachable by a plain client. A public hostname serves HTTP(S)
+      # only; raw TCP needs `cloudflared access tcp` on the CLIENT machine, or
+      # WARP with private network routes. See MANUAL-STEPS.md for the exact
+      # commands and for the Open Tibia handoff problem, which is the thing
+      # that will actually bite: an OT login server hands the client an address
+      # for the game server, and through a tunnel that address has to be the
+      # client's own local proxy, not a public one.
+      #
+      # ⚠️ DNS for these is NOT created by external-dns. It watches Gateway API
+      # routes, and these have none -- so here, and ONLY here, `cloudflared
+      # tunnel route dns` is the right tool. On the HTTP side it is exactly the
+      # wrong tool, because it creates a record external-dns cannot reconcile.
+      - hostname: ot-login.techyon.dev
+        service: tcp://ot-login.ot-demo.svc.cluster.local:7171
+      - hostname: ot-game.techyon.dev
+        service: tcp://ot-game.ot-demo.svc.cluster.local:7172
+
       # Required, and required LAST: cloudflared refuses to start without a
       # catch-all. 404 rather than a redirect, so an unmapped hostname that
       # somehow reaches this tunnel gets nothing.

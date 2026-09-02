@@ -1,0 +1,28 @@
+# Standalone Application, like canary and cloudflare-tunnel: no Helm chart, so
+# it does not fit the apps/<name>/app.yaml convention.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: ot-demo
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: default
+  source:
+    repoURL: "https://github.com/Lanternfyre/home-lab.git"
+    targetRevision: master
+    path: gitops/clusters/home/ot-demo
+    directory:
+      recurse: true
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: ot-demo
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

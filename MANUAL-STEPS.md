@@ -836,3 +836,62 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   `selfHeal` silently reverts imperative patches. Change them in git.
 - **Backups live on the same NAS as the data.** They cover driver bugs,
   accidental deletion and bad restores. They do **not** cover the NAS failing.
+
+## Reaching the two-port TCP demo (ot-demo)
+
+`ot-login.techyon.dev:7171` and `ot-game.techyon.dev:7172` are published through
+the Cloudflare Tunnel as `tcp://` ingress rules. Two things about them are not
+like the HTTP side, and both are easy to get wrong.
+
+### 1. DNS is created BY HAND here, and only here
+
+external-dns watches Gateway API routes. A `tcp://` ingress rule has none — the
+traffic never touches Envoy — so nothing generates these records:
+
+```
+cloudflared tunnel route dns homelab ot-login.techyon.dev
+cloudflared tunnel route dns homelab ot-game.techyon.dev
+```
+
+⚠️ On the HTTP side this same command is exactly the WRONG tool: it creates a
+record external-dns does not own and can never reconcile (`owner id does not
+match`). The rule is: HTTPRoute → external-dns owns it; `tcp://` → you own it.
+
+### 2. A plain client CANNOT connect
+
+A Cloudflare public hostname serves HTTP(S). Raw TCP needs a local proxy on the
+client machine, one per port:
+
+```
+cloudflared access tcp --hostname ot-login.techyon.dev --url localhost:7171
+cloudflared access tcp --hostname ot-game.techyon.dev  --url localhost:7172
+```
+
+Then point the client at `127.0.0.1:7171`. Verify with:
+
+```
+printf '' | nc 127.0.0.1 7171     # expect: OT-LOGIN-SERVER port=7171
+printf '' | nc 127.0.0.1 7172     # expect: OT-GAME-SERVER  port=7172
+```
+
+The alternative is the WARP client with private network routes, which needs no
+per-port command but does need WARP installed and enrolled.
+
+### 🔴 The Open Tibia handoff, which is the thing that will actually bite
+
+An OT login server answers with the ADDRESS AND PORT of the game server, and
+the client then opens a second connection to whatever it was told. Behind a
+tunnel that address must be the client's OWN LOCAL PROXY — `127.0.0.1:7172` —
+because there is no public IP the client can reach directly.
+
+So a real deployment needs the login server's advertised game-server address to
+be configurable per client, which most OT server configs assume is a single
+public IP. Plan for it before building on this.
+
+### 🔴 There is NO authentik gate on these ports
+
+OIDC is a browser redirect flow and cannot run over a raw TCP stream, so the
+SecurityPolicy that protects every HTTP hostname does not apply here. The only
+gate available is a Cloudflare Access application in front of the hostname,
+and none is configured. That is why the demo runs throwaway `socat` echoes with
+zero egress rather than anything real.

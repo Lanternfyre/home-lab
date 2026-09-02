@@ -82,6 +82,22 @@ spec:
         - ports:
             - { port: "10443", protocol: TCP }
 
+    # The TCP demo, which is the one thing that legitimately does NOT go
+    # through Envoy -- `tcp://` ingress rules point straight at the Service,
+    # because there is no HTTP for a Gateway to route.
+    #
+    # Note these ARE the Service ports, unlike the 10443 above: ot-demo's pods
+    # listen on the same numbers their Services publish, so translation is a
+    # no-op. The difference is worth stating rather than leaving as an apparent
+    # inconsistency between two adjacent rules.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: ot-demo
+      toPorts:
+        - ports:
+            - { port: "7171", protocol: TCP }
+            - { port: "7172", protocol: TCP }
+
   ingress:
     # The kubelet probe path. `world` is correct here and must not be
     # "tightened" -- see canary/canary.ciliumnetworkpolicy.yaml for the
