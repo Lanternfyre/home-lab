@@ -1,18 +1,44 @@
 # The canary's SECOND hostname: the one that goes through the tunnel.
 #
 # A separate HTTPRoute rather than a second entry on canary.httproute.yaml,
-# because external-dns watches `gateway-httproute` and applies its annotations
-# to EVERY hostname on the route. Adding this name to the existing route would
-# have pointed canary.lab.techyon.dev at the tunnel too, cutting over the very
-# path being used as the control.
+# because external-dns applies its annotations to EVERY hostname on a route.
+# Adding this name to the existing route would have pointed
+# canary.lab.techyon.dev at the tunnel too, cutting over the very path being
+# used as the control.
 #
-# So: canary.lab.techyon.dev stays an A record on the LAN Gateway IP, and
-# canary-public.lab.techyon.dev becomes a proxied CNAME to the tunnel. Same
-# backend, same Authentik gate, two independent paths that can be compared.
+# ── 🔴 external-dns DOES NOT MANAGE THIS RECORD, and cannot ─────────────────
+# The first version of this file carried
+# `external-dns.alpha.kubernetes.io/target: <uuid>.cfargotunnel.com`. It was
+# silently ignored, and the reason is documented upstream:
 #
-# ⚠️ `policy: upsert-only` on external-dns means it NEVER deletes. Removing this
-# file leaves the CNAME behind, still pointing at the tunnel. Un-exposing is a
-# manual delete in the Cloudflare dashboard.
+#     "Gateway resource reads only the `target` annotation, while Route
+#      resources read all other annotations."
+#
+# So `cloudflare-proxied` was honoured -- it is a Route annotation -- and
+# `target` was not. external-dns therefore derived the target from the GATEWAY's
+# address and tried to publish
+#
+#     canary-public.lab.techyon.dev  A  192.168.32.19  (proxied)
+#
+# Cloudflare rejected it outright, which is the only reason no broken record
+# went live: `9003 Target 192.168.32.19 is not allowed for a proxied record`.
+# A private RFC1918 address cannot be proxied.
+#
+# `controller: none` is the documented way to make external-dns skip a
+# resource: any value other than `dns-controller` and the source ignores it.
+# The CNAME to <uuid>.cfargotunnel.com is created out of band --
+# `cloudflared tunnel route dns homelab canary-public.lab.techyon.dev`.
+#
+# ⚠️ That record is therefore NOT in git and NOT reconciled. It is the one
+# piece of this path that drifts silently. The scaling fix is a dedicated
+# `homelab-tunnel` Gateway carrying the `target` annotation, after which
+# attaching a route to that Gateway IS the act of publishing it -- but that
+# needs its own Authentik SecurityPolicy and redirect URIs, so it is not
+# smuggled in here.
+#
+# ⚠️ external-dns runs `policy: upsert-only` and never deletes. It has already
+# left an ownership TXT at `a-canary-public.lab.techyon.dev` for the A record it
+# failed to create; that has to be removed by hand.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -21,13 +47,8 @@ metadata:
   labels:
     app.kubernetes.io/name: canary
   annotations:
-    # The same tunnel UUID as cloudflared.configmap.yaml. If these two ever
-    # disagree, DNS points at a tunnel that is not serving this hostname and
-    # the failure is a 1033 from Cloudflare's edge, not anything visible here.
-    external-dns.alpha.kubernetes.io/target: "d5e075a5-879e-45e3-912b-92102f47378b.cfargotunnel.com"
-    # Proxied is mandatory, not a preference: an unproxied CNAME to
-    # cfargotunnel.com resolves to nothing a client can reach.
-    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    # Any value but `dns-controller` makes external-dns ignore this resource.
+    external-dns.alpha.kubernetes.io/controller: "none"
 spec:
   parentRefs:
     - name: homelab-gated
