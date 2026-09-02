@@ -76,9 +76,19 @@ metadata:
     # ⚠️ Must match `tunnel:` in cloudflare-tunnel/cloudflared.configmap.yaml.
     # A mismatch is a Cloudflare 1033 and nothing at all in-cluster.
     external-dns.alpha.kubernetes.io/target: "69f49aa0-f301-4aa0-9fb1-40025f21a963.cfargotunnel.com"
-    # Mandatory, not a preference: an unproxied CNAME to cfargotunnel.com
-    # resolves to nothing a client can reach.
-    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+    #
+    # ⚠️ `cloudflare-proxied` is NOT here, and must not be moved here. The split
+    # is exact and cuts both ways: the Gateway supplies ONLY `target`, and every
+    # OTHER annotation is read from the ROUTE. Both halves were learned by
+    # getting them backwards --
+    #   `target` on a route  -> ignored; external-dns published a proxied A
+    #                           record to 192.168.32.19 and Cloudflare said
+    #                           `9003 not allowed for a proxied record`
+    #   `proxied` on the Gateway -> ignored; the CNAME was created UNPROXIED and
+    #                           `dig` returned the raw cfargotunnel.com target
+    #                           instead of Cloudflare's anycast addresses,
+    #                           which resolves to nothing a client can reach.
+    # See canary/canary-tunnel.httproute.yaml for where it lives.
 spec:
   gatewayClassName: envoy
   listeners:

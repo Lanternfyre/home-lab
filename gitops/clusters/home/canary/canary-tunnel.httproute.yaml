@@ -5,11 +5,19 @@
 # apps/envoy-gateway/manifests/homelab-tunnel.gateway.yaml for the proof and
 # the decision.
 #
-# This route carries NO external-dns annotations, and that is the point of the
-# whole exercise: `homelab-tunnel` holds the `target` annotation, so attaching
-# a route to it is enough to publish a proxied CNAME to the tunnel, reconciled
-# from git. Route-level `target` is silently ignored -- that lesson is written
-# up on the Gateway.
+# `homelab-tunnel` holds the `target` annotation, so attaching a route to it is
+# enough to publish a CNAME to the tunnel, reconciled from git. Route-level
+# `target` is silently ignored -- that lesson is written up on the Gateway.
+#
+# ⚠️ `cloudflare-proxied` is the OTHER half of that split and belongs HERE, not
+# on the Gateway: external-dns reads `target` from the Gateway and every other
+# annotation from the route. Without it the CNAME is created UNPROXIED, and an
+# unproxied CNAME to cfargotunnel.com resolves to nothing a client can reach --
+# `dig` returns the raw target instead of Cloudflare's anycast addresses, and
+# there is no error anywhere to say so.
+#
+# 🔴 EVERY route on homelab-tunnel needs this annotation. Forgetting it on one
+# publishes a hostname that silently resolves nowhere.
 #
 # ⚠️ TWO changes are needed to publish a hostname, not one. This file is the
 # first; the second is its exact redirect URI in
@@ -28,6 +36,8 @@ metadata:
   namespace: canary
   labels:
     app.kubernetes.io/name: canary
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
 spec:
   parentRefs:
     - name: homelab-tunnel
