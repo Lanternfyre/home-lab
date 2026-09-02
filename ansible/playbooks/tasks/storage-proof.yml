@@ -52,6 +52,43 @@
             namespace: default
           spec:
             restartPolicy: Never
+            # ── PodSecurity `restricted` (added 2026-09-02) ───────────────
+            # `default` enforces restricted:v1.35 as of commit baecdb8
+            # (2026-08-31, "PSA for the argocd and default namespaces").
+            # This pod predates that and had NO securityContext at all, so
+            # from that day the API server refused to create it and EVERY
+            # join and role change failed at this gate. It failed SAFE -- the
+            # node stays cordoned, which is the whole design -- but it means
+            # no node could complete onboarding. Found on the k8s-7 join.
+            #
+            # The pod is made compliant rather than moved to a permissive
+            # namespace, and that is deliberate: a proof that needs an
+            # exemption proves less than the real workloads it stands in for.
+            # All four things restricted demands are things a `dd` + `md5sum`
+            # never needed anyway.
+            #
+            # ⚠️ runAsUser is NOT optional alongside runAsNonRoot. busybox's
+            # image USER is root, and `runAsNonRoot: true` with no uid fails
+            # at container CREATE with "container has runAsNonRoot and image
+            # will run as root" -- which surfaces as a pod that never starts,
+            # i.e. exactly like a storage failure, on a node whose storage is
+            # fine.
+            #
+            # ⚠️ fsGroup is what makes /data WRITABLE to a non-root uid: the
+            # volume arrives owned by root. Kubelet only applies it if the
+            # driver permits, so this was checked against the driver rather
+            # than assumed --
+            #   kubectl get csidriver csi.trident.qnap.io \
+            #     -o jsonpath='{.spec.fsGroupPolicy}'   -> ReadWriteOnceWithFSType
+            # and this claim is ReadWriteOnce with fsType ext4, which is the
+            # case that policy covers. If that driver value ever becomes
+            # `None`, this proof fails with EACCES on a healthy node.
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              fsGroup: 65532
+              seccompProfile: { type: RuntimeDefault }
           {% if proof_node is defined and proof_node %}
             # Pinned so the proof tests THIS node's storage path rather than
             # wherever the scheduler happens to place it. Set by the Cilium
@@ -65,6 +102,9 @@
             containers:
               - name: proof
                 image: busybox:1.37
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  capabilities: { drop: [ALL] }
                 command: [/bin/sh, -c]
                 args:
                   - |
@@ -111,12 +151,32 @@
   always:
     # Flip to Delete BEFORE removing the claim, or Retain leaks the PV and the
     # backend LUN and you are cleaning up with tridentctl later.
+    # ⚠️ RETRIES ARE LOAD-BEARING (added 2026-09-02). This is an `always`
+    # block, so it also runs when the play failed BEFORE the volume was bound
+    # -- which is what happened on the k8s-7 join: the PVC was created, the
+    # POD was rejected by PodSecurity, and this task read an EMPTY volumeName
+    # a fraction of a second later. Empty volumeName skips the flip to Delete
+    # AND the leak check, so the claim was deleted while Trident was still
+    # provisioning and the PV was left Released with reclaimPolicy Retain --
+    # a leaked PV and a leaked LUN, produced by the cleanup code itself.
+    # qnap-iscsi is `volumeBindingMode: Immediate`, so the binding does not
+    # wait for a consumer and a short wait always resolves it.
     - name: "storage proof | find the PV"
       ansible.builtin.command: >-
         kubectl -n default get pvc {{ proof_name }} -o jsonpath={.spec.volumeName}
       register: proof_pv
       changed_when: false
       failed_when: false
+      until: (proof_pv.stdout | trim | length) > 0
+      retries: 12
+      delay: 5
+      # ⚠️ ignore_errors, not just failed_when. Exhausting `until` marks a task
+      # failed no matter what failed_when says, and a failure HERE -- inside
+      # `always` -- would skip the pod and claim deletions below and leak the
+      # very objects this block exists to remove. The 60s wait is best-effort:
+      # if the PVC never existed (the apply itself failed) it costs a minute
+      # and then cleanup carries on, which is the correct trade.
+      ignore_errors: true
 
     # ⚠️ shell + single quotes, NOT command. ansible.builtin.command runs no
     # shell and shlex-splits, which STRIPS the double quotes out of the JSON

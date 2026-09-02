@@ -1,0 +1,69 @@
+---
+# Prove storage on a node and uncordon it -- on its own.
+#
+#   ansible-playbook playbooks/46-prove-node-storage.yml -e target_node=k8s-lab7
+#
+# No sudo, no --ask-become-pass: every task is kubectl from the WORKSTATION.
+#
+# ── Why this exists (2026-09-02) ─────────────────────────────────────────────
+#
+# The gate and the join were welded together. `tasks/prove-and-uncordon.yml`
+# had exactly two callers, 40-add-node.yml and 45-change-node-role.yml, both of
+# which install k3s as root first -- so a node that was correctly joined and
+# correctly cordoned, but whose PROOF failed for a reason unrelated to the
+# node, could only be retried by re-running the whole privileged join.
+#
+# That is not hypothetical. On the k8s-7 join the proof pod was rejected by
+# PodSecurity (`default` went `restricted` on 2026-08-31, and the pod carried
+# no securityContext), which left a healthy, joined, cordoned node and no way
+# to finish onboarding it short of re-running the join.
+#
+# The gate can fail independently of the join, so it gets its own entry point.
+# It is deliberately ONE include and nothing else -- the same tasks both
+# callers use, so a node proven here is proven by the same standard.
+#
+# ⚠️ target_node is the KUBERNETES node name (k8s-lab7), not the inventory
+# hostname (k8s-7.home). The tasks take a kubectl node name, and guessing which
+# one was meant is how "cordon k8s-6" -- a node object that does not exist --
+# got into 40-add-node.yml once already.
+- name: Prove storage on a node, then return it to service
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: "preflight | target_node is required, and must be a kubectl node name"
+      ansible.builtin.assert:
+        that:
+          - target_node is defined
+          - target_node is match('^k8s-lab[0-9]+$')
+        fail_msg: >-
+          Usage: -e target_node=<kubectl node name>, e.g. k8s-lab7.
+          Inventory names (k8s-7.home) are NOT accepted here on purpose --
+          see the header. `kubectl get nodes` lists the valid values.
+
+    - name: "preflight | the node must exist and be cordoned"
+      ansible.builtin.command: >-
+        kubectl get node {{ target_node }} -o jsonpath={.spec.unschedulable}
+      register: node_cordoned
+      changed_when: false
+
+    # Refuse on an already-schedulable node rather than proving it anyway. A
+    # node in service is one the proof has already passed for, and running a
+    # 1Gi provision + attach + mount against it is a real operation on the NAS,
+    # not a read-only check.
+    - name: "preflight | refuse to re-prove a node that is already in service"
+      ansible.builtin.assert:
+        that: node_cordoned.stdout | trim == 'true'
+        fail_msg: >-
+          {{ target_node }} is NOT cordoned, so it is already in service and
+          has nothing to prove. This playbook finishes an interrupted join; it
+          is not a health check. To re-test storage on a live node, cordon it
+          first and understand that you are moving its workload.
+
+    - name: "prove {{ target_node }}"
+      ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
+      vars:
+        joined_node: "{{ target_node }}"
