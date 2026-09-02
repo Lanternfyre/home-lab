@@ -27,6 +27,14 @@
 # ⚠️ NEVER put an HPA on this. Cloudflare is explicit that scaling DOWN breaks
 # every connection currently held by the replica being removed. Two is a fixed
 # number chosen so that a node drain does not take the tunnel with it.
+#
+# ── ADDING A SECOND TUNNEL LATER ────────────────────────────────────────────
+# Everything here is named for THIS tunnel (`homelab`) rather than for tunnels
+# in general, so a second one is a copy of this directory with three edits --
+# the `homelab` field label in the ExternalSecret, the UUID and ingress rules
+# in the ConfigMap, and these names -- and no rename of anything already
+# running. One cloudflared Deployment serves one tunnel; one tunnel serves as
+# many hostnames as its ingress list has rules.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -109,7 +117,7 @@ spec:
             name: cloudflared-config
         - name: creds
           secret:
-            secretName: cloudflare-tunnel-credentials
+            secretName: cloudflared-homelab-credentials
             defaultMode: 0400
         # readOnlyRootFilesystem is on, so give it somewhere to scribble.
         - name: tmp
