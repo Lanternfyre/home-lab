@@ -97,6 +97,15 @@ all:
         # etcd member. Hence the beefy nodes become agents.
         #
         # TARGET STATE REACHED 2026-08-22 (k8s-5, then k8s-6, then k8s-4).
+        #
+        # k8s-7 added 2026-09-02 as a FOURTH agent, straight in as an agent --
+        # it has never been a server, so it needs no role change, only
+        # 40-add-node.yml. Agent count is deliberately unconstrained: only the
+        # SERVER count has to stay odd, because only servers hold etcd votes.
+        # An agent adds capacity and nothing else -- no quorum arithmetic, no
+        # kube-vip pod (its nodeAffinity requires the control-plane label), no
+        # etcd write fan-out.
+        #
         # Demote ONE AT A TIME, moving one line here per run:
         #   ansible-playbook playbooks/45-change-node-role.yml \
         #     --ask-become-pass -e target=k8s-5.home
@@ -109,3 +118,4 @@ all:
             k8s-4.home:
             k8s-5.home:
             k8s-6.home:
+            k8s-7.home:

@@ -1,0 +1,42 @@
+---
+ansible_host: 192.168.33.24
+node_nic: enp1s0
+
+# ⚠️ .24 is a DHCP address, not a static one: `networkctl status enp1s0` reads
+# "192.168.33.24 (DHCP4 via 192.168.33.1)", MAC a4:bb:6d:a7:1c:b1. That is the
+# fleet norm -- k8s-1 (.3), k8s-5 (.22) and k8s-6 (.20) all report the same --
+# so the addresses are held by MikroTik reservations, not by netplan. This node
+# has no VERIFIED reservation, and the address it holds was blackbox-exporter's
+# `powerline-far` until 2026-09-02, which is what a pool hands out rather than
+# what a reservation pins. k3s bakes the node IP in at registration, so a lease
+# change after joining is a REJOIN, not a reconfigure. Confirm the reservation
+# on the router before trusting this line.
+
+# Added 2026-09-02. Registers as k8s-lab7 -- its static hostname is already
+# `k8s-lab7`, which is what kubelet uses, so the k8s_node_name derivation in
+# group_vars/all.yml (k8s-7 -> k8s-lab7) matches the machine and needs no
+# per-host override.
+#
+# Joins straight in as an AGENT. It has never been a server, so
+# 45-change-node-role.yml has nothing to do here -- 40-add-node.yml reads
+# `agent` from the k3s_agents group and installs k3s-agent.service directly.
+#
+# 6 vCPU / 31 GiB / a single 238.5 GB NVMe (KIOXIA KBG40ZNS256G). Note there is
+# NO SATA disk: every other node in the fleet reports `sda`, this one reports
+# only `nvme0n1`. Nothing in the repo depends on the device name -- the
+# smartctl-exporter alerts discriminate on `scsi_vendor="QNAP"` rather than a
+# device letter, precisely so a node like this one is not a special case.
+#
+# `enp1s0` verified over SSH. node_nic is DOCUMENTATION only; nothing consumes
+# it (kube-vip auto-detects the default-route interface, and it does not run
+# here at all -- its nodeAffinity requires the control-plane label).
+#
+# State at the time this file was written, measured over SSH, i.e. exactly what
+# 10-baseline.yml has to fix before this node may join:
+#   /usr/local/bin/k3s                     -> absent (not a cluster member)
+#   systemctl is-active iscsid             -> inactive (multipathd IS active)
+#   sysctl -n fs.inotify.max_user_watches  -> 248289 (kernel default, not 1048576)
+#   /etc/multipath.conf                    -> the 41-byte Ubuntu stock file,
+#                                             i.e. no `find_multipaths no`, so
+#                                             this node cannot stage a QNAP LUN
+#   nfs-common                             -> not installed

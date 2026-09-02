@@ -7,16 +7,19 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-08-03 (SMART monitoring landed — see "Immediately next")
+Last updated: 2026-09-02 (k8s-7 prepared as a 4th agent — see "Immediately next")
 
 ---
 
 ## Where we are
 
-k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 6 nodes. Topology is being split
-from "all `control-plane,etcd,master`, no workers" into **3 servers
-(k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3, k8s-5)** — see
-"Node roles" below for exactly how far that has got.
+k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 6 nodes live and a 7th prepared in
+the repo. Topology reached its target on 2026-08-22: **3 servers
+(k8s-1, k8s-2, k8s-3) + 3 agents (k8s-4, k8s-5, k8s-6)**, verified with
+`kubectl get nodes` on 2026-09-02. The earlier line here named the servers as
+{k8s-1, k8s-4, k8s-6}; that was the 2026-08-19 plan, revised after the k8s-5
+incident. **k8s-7 is in the inventory as a 4th AGENT and has not joined yet** —
+see "Immediately next".
 Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
 ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 
@@ -42,6 +45,85 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | CNI | flannel (in the k3s server process) | **Cilium 1.20.0 on all 5**, 63/63 pods, 5/5 reachable |
 
 ### Immediately next
+
+#### 🔄 2026-09-02 — k8s-7: a 4th agent, prepared but NOT joined
+
+`192.168.33.24`, static hostname already `k8s-lab7`, Ubuntu 24.04.3,
+6 vCPU / 31 GiB, a single 238.5 GB NVMe and **no SATA disk** — the first node
+in the fleet without one.
+
+The REPO changes have landed; **nothing has been run against the machine.**
+Live state is still 6 nodes. What exists now:
+
+* `ansible/inventory/homelab.yml` — `k8s-7.home` under `k3s_agents`. It joins
+  straight in as an agent, so `45-change-node-role.yml` has nothing to do here.
+* `ansible/inventory/host_vars/k8s-7.home.yml` — IP, NIC, and the measured
+  pre-join state (no k3s, `iscsid` inactive, stock 41-byte `multipath.conf`
+  with no `find_multipaths no`, inotify at the kernel default 248289,
+  `nfs-common` absent). All four are what `10-baseline.yml` exists to fix.
+* Pi-hole `customDnsEntries` gains `k8s-7.home`, and blackbox-exporter gains a
+  `k8s-node-7` ICMP probe.
+
+⚠️ **HUMAN STEP FIRST: pin the DHCP lease.** `192.168.33.24` is a DHCP address
+(`DHCP4 via 192.168.33.1`, MAC `a4:bb:6d:a7:1c:b1`), and so is every other node
+in the fleet — .3, .20 and .22 all report the same. The existing nodes have
+presumably held their addresses via MikroTik reservations; this one has no
+verified reservation, and the address it holds was `powerline-far`'s until
+recently, which is what a pool hands out rather than what a reservation pins.
+That matters more for a node than for anything else here: k3s bakes the node IP
+in at registration and `ansible_host` pins it in the inventory, so a lease
+change after the join is a rejoin, not a reconfigure. Confirm (or create) a
+static lease on the MikroTik for that MAC → 192.168.33.24 before step 3.
+
+⚠️ **`192.168.33.24` was `powerline-far` in blackbox-exporter until today.**
+The node has taken an address that a probe was already watching, so that probe
+had silently stopped measuring the powerline link. It is now `k8s-node-7`.
+`powerline-near` (.23) is "no route to host" as of 2026-09-02 — decide whether
+the adapter pair is retired and delete that entry, rather than leaving a
+permanently-red probe.
+
+**`40-add-node.yml` has never fresh-joined an agent** — k8s-4/5/6 all became
+agents by demotion through `45-change-node-role.yml` — but the agent code path
+itself is NOT unexercised, which is worth knowing before the run. The two
+playbooks carry byte-identical install recipes:
+`INSTALL_K3S_EXEC="{{ 'server' if k3s_role == 'server' else 'agent' }}"`,
+preceded by the same `k3s_config` include (whose template omits `disable:` for
+agents — not a valid agent flag, and k3s refuses to start on an unknown one).
+45 has run that recipe as an agent three times. What is new here is only the
+surrounding play: a node that has never held a datastore, with no uninstall or
+drain ahead of it.
+
+Still worth watching, because getting `INSTALL_K3S_EXEC` wrong does not error,
+it silently builds the other kind of node. After the run, `systemctl is-active
+k3s-agent` on the node must be `active` and `k3s.service` must not exist.
+
+**Remaining, in this order — every step needs `--ask-become-pass`:**
+
+1. `ansible-playbook playbooks/10-baseline.yml --ask-become-pass --limit k8s-7.home`
+   Expect `multipath=BROKEN, sysctls=BROKEN, services=BROKEN` on the detect
+   line — that is "baseline has never run here", not a fault.
+2. `ansible-playbook playbooks/90-preflight.yml --limit k8s-7.home` (no sudo).
+   Do not go on until it reports `sysctls=ok, multipath=ok, services=ok`.
+   `node_verify` correctly skips the containerd-pull and csinode gates while
+   `/usr/local/bin/k3s` is absent, and says so.
+3. `ansible-playbook playbooks/40-add-node.yml --ask-become-pass -e target=k8s-7.home`
+   → 3 servers, 4 agents, still 3 etcd members. **No quorum arithmetic
+   changes**: only servers hold votes, so agent count is free.
+   The playbook cordons on join, deletes any pod that came up on a flannel
+   address in the ~60s CNI window, runs the storage proof pinned to the node
+   with `nodeName`, and uncordons ONLY if it passes.
+4. Verify: `kubectl get nodes -o wide` (7 Ready, k8s-lab7 with no roles),
+   `kubectl get csinode k8s-lab7 -o jsonpath='{.spec.drivers[*].name}'`
+   (must be non-empty), `kubectl -n kube-system get ds kube-vip-ds` (desired
+   must stay **3** — kube-vip's nodeAffinity requires the control-plane label,
+   so a new agent must not change it), and
+   `kubectl get ds -A --no-headers | awk '$3!=$4 || $4!=$6'` must print
+   nothing once the new node's DaemonSet pods have settled.
+
+Not needed, deliberately: no CI taint (`50-ci-taint.yml` is the reserve switch
+and the standing decision is cluster-wide CI scheduling), and no Cilium change
+— the pool is `10.245.0.0/16` at `/24` per node, so a 7th node CIDR is already
+available.
 
 #### 🔄 2026-08-19 — Node roles: k8s-6 added, control plane shrinking to 3
 

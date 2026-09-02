@@ -40,7 +40,7 @@ data:
         {
           "type": "stat",
           "title": "Local drives monitored",
-          "description": "Seven expected as of 2026-08-19: one SATA disk per node across six nodes, plus k8s-lab5's NVMe. Was six before k8s-lab6 joined. A drop here means a node stopped reporting, which is the failure that looks like health.",
+          "description": "Eight expected as of 2026-09-02: one local disk per node across seven nodes, plus k8s-lab5's NVMe. Was seven before k8s-lab7 joined. Note k8s-lab7 contributes an NVMe rather than a SATA disk -- it has no sda. A drop here means a node stopped reporting, which is the failure that looks like health.",
           "id": 1,
           "gridPos": {"h": 4, "w": 5, "x": 0, "y": 0},
           "targets": [{"expr": "count(smartctl_device{scsi_vendor!=\"QNAP\"})", "refId": "A"}],
