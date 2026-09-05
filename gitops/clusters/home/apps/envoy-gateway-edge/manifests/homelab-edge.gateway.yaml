@@ -1,0 +1,191 @@
+# THE INTERNET-FACING TCP/UDP GATEWAY. This is what necronia's players connect
+# to, and it is the one path in this cluster with no authentication in front of
+# it at all -- by design, because a game client cannot sign in to authentik.
+#
+#   homelab         *.lab.techyon.dev   LAN, open            192.168.32.18
+#   homelab-gated   *.lab.techyon.dev   LAN, authentik       192.168.32.19
+#   homelab-tunnel  *.techyon.dev       INTERNET, ungated    via cloudflared
+#   homelab-edge    raw TCP/UDP         INTERNET, ungated    edge-1 public IP
+#
+# 🔴 ATTACHING A ROUTE HERE PUBLISHES A PORT TO THE ENTIRE INTERNET, with no
+# gate, no TLS termination and no Cloudflare in front of it. Cloudflare's proxy
+# carries HTTP; it cannot carry a game protocol. There is nothing between a
+# stranger and the backend Service except this Gateway.
+#
+# The containment is `allowedRoutes` below: a namespace must opt IN by carrying
+# a label, which is a reviewable commit to bootstrap/namespaces/, not a side
+# effect of deploying an app.
+---
+# The proxy's shape. Namespace-local to the Gateway, which is why it lives here
+# rather than with the LAN EnvoyProxy CRs (there are none -- this is the first
+# in the repo).
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyProxy
+metadata:
+  name: edge
+  namespace: gateway-edge
+spec:
+  provider:
+    type: Kubernetes
+    kubernetes:
+      # 🔴 Without this, Envoy Gateway shifts privileged listener ports by
+      # +10000 and would bind 10443 on the host for a :443 listener. 7171-7173
+      # are all above 1023 so nothing shifts today -- this is here so that
+      # adding a low port later fails LOUDLY (bind denied, no NET_BIND_SERVICE)
+      # rather than quietly listening on a port nobody is connecting to.
+      useListenerPortAsContainerPort: true
+
+      # Pinned so the Kyverno policy can name it. Left unset, Envoy Gateway
+      # generates `envoy-gateway-envoy-<gateway>-<hash>`, and the hash changes
+      # if the Gateway is ever renamed -- which would silently turn the
+      # hostNetwork exemption into a deny and take the public path down.
+      envoyServiceAccount:
+        name: envoy-edge
+
+      envoyService:
+        # MetalLB is L2 on 192.168.32.0/23 and this node is not on that segment,
+        # so a LoadBalancer would sit <pending> forever. hostNetwork is how this
+        # proxy reaches the network; the Service exists only because Envoy
+        # Gateway requires one.
+        #
+        # Also outside the `loadbalancer-no-nodeports` Kyverno policy, which
+        # matches `type == 'LoadBalancer'` only -- so no opt-out annotation is
+        # needed here.
+        type: ClusterIP
+
+      envoyDeployment:
+        replicas: 1
+
+        # 🔴🔴 MANDATORY, AND NOT FOR TIDINESS.
+        #
+        # Under hostNetwork the API SERVER DEFAULTS hostPort = containerPort,
+        # and Envoy Gateway declares containerPorts 19001 (metrics) and 19003
+        # (readiness). With the default RollingUpdate, a surge pod needs those
+        # same host ports on the node the running pod already holds -- so it
+        # sits Pending FOREVER. The rollout never completes and never errors,
+        # and `kubectl get deploy` just shows 1/2 indefinitely.
+        #
+        # Cost: ~60s of downtime on the public path per rollout. That is the
+        # correct trade for a path that otherwise cannot be updated at all.
+        #
+        # ⚠️ This is also why TWO hostNetwork Gateways cannot share this node.
+        # Scale to N game worlds by adding LISTENERS below, never by adding
+        # Gateways.
+        strategy:
+          type: Recreate
+
+        pod:
+          # The taint repels; the label attracts. Both are required and both
+          # come from group_vars/k3s_edge.yml, rendered into the kubelet's
+          # config at REGISTRATION so there is never a schedulable window.
+          nodeSelector:
+            infrastructure.techyon.dev/location: edge
+          tolerations:
+            - key: infrastructure.techyon.dev/edge
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+
+        container:
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+
+        # hostNetwork and dnsPolicy are not first-class fields on this CRD, so
+        # they go through a strategic-merge patch of the whole Deployment.
+        patch:
+          type: StrategicMerge
+          value:
+            spec:
+              template:
+                spec:
+                  hostNetwork: true
+                  # 🔴 WITHOUT THIS THE PROXY IS INERT AND LOOKS HEALTHY.
+                  # dnsPolicy defaults to ClusterFirst, which kubelet degrades
+                  # to the HOST's /etc/resolv.conf under hostNetwork. Envoy's
+                  # bootstrap xDS cluster is STRICT_DNS on
+                  # envoy-gateway.<ns>.svc.cluster.local., so the pod would
+                  # start, resolve nothing, receive no configuration and serve
+                  # no listeners -- while Running and Ready in `get pods`.
+                  dnsPolicy: ClusterFirstWithHostNet
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: homelab-edge
+  namespace: gateway-edge
+  annotations:
+    # 🔴 LOAD-BEARING. external-dns takes its target from this annotation and,
+    # ABSENT IT, falls back to the Gateway's Status.Addresses -- which for a
+    # ClusterIP Service is 10.43.x.y. It would publish an RFC1918 address for a
+    # public game port, and because `policy: upsert-only` it could never take
+    # the record back; the only fix would be deleting it by hand in Cloudflare.
+    #
+    # The VPS's public IP is not discoverable from inside the cluster, so this
+    # is the one place in git where it appears.
+    external-dns.alpha.kubernetes.io/target: "167.86.81.59"
+    #
+    # ⚠️ NO `cloudflare-proxied` anywhere on this path. Cloudflare's proxy
+    # carries HTTP; proxying a raw game port would break it while looking
+    # configured. The record must be a plain unproxied A record.
+spec:
+  gatewayClassName: envoy-edge
+  infrastructure:
+    parametersRef:
+      group: gateway.envoyproxy.io
+      kind: EnvoyProxy
+      name: edge          # namespace-local -- hence the CR above lives here
+
+  listeners:
+    # ⚠️ No `hostname:` on any listener -- Gateway API permits it only on
+    # HTTP/HTTPS/TLS. No `tls:` either: this is raw TCP, terminated nowhere.
+    #
+    # ⚠️ Every listener added here needs a matching entry in
+    # `edge_fw_service_tcp` / `edge_fw_service_udp` in
+    # ansible/roles/edge_firewall/defaults/main.yml. A listener with no firewall
+    # rule is a service that silently does not work; a firewall rule with no
+    # listener is a port that answers nothing.
+    - name: ot-login
+      protocol: TCP
+      port: 7171
+      allowedRoutes:
+        kinds:
+          - kind: TCPRoute
+        namespaces:
+          # Opt-IN by label, not `from: All`. This is what stops a route being
+          # attached here by accident and publishing something to the internet.
+          # The controller enforces it, so a mis-attached route reports
+          # `Accepted: False` in its own status where its author will look --
+          # unlike a Kyverno rule, which would be a second copy of a constraint
+          # Gateway API already expresses natively.
+          from: Selector
+          selector:
+            matchLabels:
+              homelab.techyon.dev/edge-publish: "true"
+
+    - name: ot-game
+      protocol: TCP
+      port: 7172
+      allowedRoutes:
+        kinds:
+          - kind: TCPRoute
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              homelab.techyon.dev/edge-publish: "true"
+
+    - name: ot-udp
+      protocol: UDP
+      port: 7173
+      allowedRoutes:
+        kinds:
+          - kind: UDPRoute
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              homelab.techyon.dev/edge-publish: "true"

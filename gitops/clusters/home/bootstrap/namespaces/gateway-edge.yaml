@@ -1,0 +1,48 @@
+# The edge data plane's own namespace, and the ONLY PSA-privileged namespace
+# that faces the internet.
+#
+# ── Why a second namespace and a second controller at all ───────────────────
+# The edge Envoy needs `hostNetwork` -- it is the only way to bind real TCP/UDP
+# ports on a VPS that MetalLB cannot serve (L2 on 192.168.32.0/23, and the VPS
+# is not on that segment). PSA `baseline`, which `gateway-envoy` enforces,
+# forbids hostNetwork AND hostPort. Proven by server-side dry-run rather than
+# read:
+#
+#   Error from server (Forbidden): violates PodSecurity "baseline:v1.35":
+#     host namespaces (hostNetwork=true)
+#   Error from server (Forbidden): violates PodSecurity "baseline:v1.35":
+#     hostPort (container "c" uses hostPort 7171)
+#
+# So hostPort is not an escape hatch either.
+#
+# ⚠️ AND A NEW NAMESPACE ALONE DOES NOT HELP: Envoy Gateway creates the proxy
+# Deployment in the CONTROLLER's namespace, not the Gateway's. Gateway-namespace
+# mode exists but is a cluster-wide controller setting -- turning it on would
+# relocate all three existing Envoy deployments, mint new Services and churn
+# their MetalLB allocations and DNS.
+#
+# Hence a SECOND Envoy Gateway controller, living here. The alternative was to
+# relax `gateway-envoy` to privileged and narrow it back with Kyverno -- which
+# would have made the namespace fronting ArgoCD, Grafana, authentik and every
+# other internal service PSA-privileged, with its safety resting on a webhook
+# instead of the API server. Rejected on that basis.
+#
+# 🔴 `privileged` here is NOT a licence. It is undone by
+# apps/kyverno/manifests/gateway-edge-pod-constraints.validatingpolicy.yaml,
+# which denies privilege unconditionally and permits hostNetwork ONLY for the
+# edge proxy's pinned ServiceAccount -- the same shape metallb uses. That policy
+# must land in the SAME change as this label, never after it.
+#
+# audit/warn stay `baseline` on purpose: anything that takes host namespaces
+# here still shows up in the audit log even though enforcement allows it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway-edge
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35

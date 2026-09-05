@@ -1,0 +1,6 @@
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "docker.io/envoyproxy"
+chart: "gateway-helm"
+targetRevision: "v1.8.3"
+releaseName: "gateway-edge"
+namespace: "gateway-edge"

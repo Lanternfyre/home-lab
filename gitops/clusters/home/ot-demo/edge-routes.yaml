@@ -1,0 +1,74 @@
+# ot-demo's routes on the internet-facing edge Gateway.
+#
+# 🔴 THESE PUBLISH RAW PORTS TO THE INTERNET, ungated. That is the point: they
+# are the proof that the edge path carries traffic a game client can actually
+# speak, which the existing `tcp://` entries in cloudflared cannot -- those need
+# `cloudflared access tcp` running on the CLIENT, which no game will ever do.
+#
+# ot-demo is `socat` echoing a fixed banner with no egress at all
+# (enableDefaultDeny.egress with zero rules), so what is exposed is a process
+# that can answer connections and initiate nothing. That is exactly why it, and
+# not necronia, goes first.
+#
+# ⚠️ Routes live in the APP's namespace, next to the app they expose -- the
+# convention stated in apps/envoy-gateway/manifests/homelab.gateway.yaml.
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: ot-login-edge
+  namespace: ot-demo
+  annotations:
+    # TCPRoute has no `spec.hostnames`, so external-dns takes the name from
+    # this annotation and the ADDRESS from the Gateway's `target` annotation.
+    # Both halves are required; the split is the same one documented on
+    # homelab-tunnel (target on the Gateway, everything else on the route).
+    #
+    # Only ONE route carries it -- duplicates are deduped by external-dns, but
+    # one record is what is wanted and one place to change it is clearer.
+    external-dns.alpha.kubernetes.io/hostname: edge-1.techyon.dev
+spec:
+  parentRefs:
+    - name: homelab-edge
+      namespace: gateway-edge
+      # 🔴 `sectionName` is effectively MANDATORY here. Without it a TCPRoute
+      # attaches to EVERY compatible TCP listener on the Gateway, so this route
+      # would also answer on 7172 and the two demos would be indistinguishable
+      # -- and with N game worlds it would be a silent cross-wiring.
+      sectionName: ot-login
+  rules:
+    # TCPRoute rules take no matches: the LISTENER is the selector.
+    - backendRefs:
+        - name: ot-login
+          port: 7171
+---
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: TCPRoute
+metadata:
+  name: ot-game-edge
+  namespace: ot-demo
+spec:
+  parentRefs:
+    - name: homelab-edge
+      namespace: gateway-edge
+      sectionName: ot-game
+  rules:
+    - backendRefs:
+        - name: ot-game
+          port: 7172
+---
+# The one that proves the least-trodden path: UDP through a hostNetwork Envoy.
+apiVersion: gateway.networking.k8s.io/v1alpha2
+kind: UDPRoute
+metadata:
+  name: ot-udp-edge
+  namespace: ot-demo
+spec:
+  parentRefs:
+    - name: homelab-edge
+      namespace: gateway-edge
+      sectionName: ot-udp
+  rules:
+    - backendRefs:
+        - name: ot-udp
+          port: 7173
