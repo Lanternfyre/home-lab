@@ -168,19 +168,44 @@
 # cleared key cleared, so this is a plain task rather than a handler: it detects
 # the live state and fixes only what is actually wrong, like every other role
 # here.
-- name: "detect | does the interface actually hold a private key?"
+# 🔴 RUN UNCONDITIONALLY, AND PROVE THE EFFECT.
+#
+# The previous version guarded this with `when: public-key is empty`, and was
+# never once executed -- because `wg show <if> public-key` on a KEYLESS
+# interface does not print an empty string. It prints a placeholder, so the
+# emptiness test was false and the fix was skipped, while the matching assert
+# passed on that same placeholder. Both guards were fooled by one value, which
+# is why the tunnel sat keyless through two full playbook runs reporting
+# success.
+#
+# Deduced rather than assumed: #98 was merged when the run happened, the play
+# REACHED the handshake check, so the keyed assertion must have passed -- on an
+# interface that `wg show` proved had no key at all.
+#
+# So this no longer asks a question it can get wrong. `wg set` is idempotent and
+# costs nothing, so it always runs, and the task then VERIFIES its own effect by
+# reading the key back and checking it is a real 44-character base64 key. A task
+# that cannot fail is not a fix.
+- name: "fix | put the private key on the live interface, and prove it took"
   become: true
-  ansible.builtin.command: "wg show {{ wg_interface }} public-key"
-  register: t_wg_ifkey
-  changed_when: false
-  failed_when: false
-  check_mode: false
-
-- name: "fix | re-assert the private key on the live interface"
-  become: true
-  ansible.builtin.command: "wg set {{ wg_interface }} private-key {{ wg_private_key_path }}"
-  when: (t_wg_ifkey.stdout | default('') | trim | length) == 0
-  changed_when: true
+  ansible.builtin.shell:
+    cmd: |
+      before=$(wg show {{ wg_interface }} public-key 2>/dev/null || true)
+      wg set {{ wg_interface }} private-key {{ wg_private_key_path }}
+      after=$(wg show {{ wg_interface }} public-key 2>/dev/null || true)
+      echo "before=${before:-EMPTY} after=${after:-EMPTY}"
+      # A WireGuard public key is exactly 43 base64 chars plus '='. Matching the
+      # SHAPE beats testing for absence: it cannot be satisfied by a
+      # placeholder, an error string, or an empty line.
+      printf '%s' "$after" | grep -Eq '^[A-Za-z0-9+/]{43}=$' || {
+        echo "KEYFAIL: {{ wg_interface }} still holds no usable key" >&2
+        exit 1
+      }
+    executable: /bin/bash
+  register: wg_keyed
+  changed_when: >-
+    (wg_keyed.stdout | regex_search('before=(\S+)', '\\1') | first | default(''))
+    != (wg_keyed.stdout | regex_search('after=(\S+)', '\\1') | first | default(''))
 
 # ───────────────────────────── VERIFY ─────────────────────────────
 # Assert behaviour and values, never file presence.
@@ -195,9 +220,11 @@
   register: v_ifkey
   changed_when: false
 
+# Shape, not emptiness -- see the fix task above for why `length > 0` was
+# satisfied by a keyless interface.
 - name: "verify | assert the interface is keyed"
   ansible.builtin.assert:
-    that: (v_ifkey.stdout | trim | length) > 0
+    that: v_ifkey.stdout | trim is match('^[A-Za-z0-9+/]{43}=$')
     fail_msg: >-
       {{ wg_interface }} has NO private key. The link will be up, addressed,
       listening and fully peered, and it cannot complete a single handshake --
