@@ -90,147 +90,161 @@
   loop_control:
     label: "{{ item.item.key }}"
 
-- name: Read multipath.conf
-  ansible.builtin.slurp:
-    src: /etc/multipath.conf
-  register: multipath_content
-  check_mode: false
-
-# This exact assertion would have caught k8s-4 and k8s-5 before they were ever
-# allowed to schedule a PVC-bearing pod.
-- name: Assert multipath.conf actually sets find_multipaths
-  ansible.builtin.assert:
-    that:
-      - "'find_multipaths' in (multipath_content.content | b64decode)"
-      - "(multipath_content.content | b64decode) is search('find_multipaths\\s+' ~ node_multipath_find_multipaths)"
-    fail_msg: >-
-      /etc/multipath.conf on {{ inventory_hostname }} does not set
-      "find_multipaths {{ node_multipath_find_multipaths }}". multipath-tools
-      defaults to strict, so a single-path QNAP LUN gets no device-mapper entry
-      and Trident fails to stage it with "multipath device not found when it is
-      expected". THE FILE EXISTING IS NOT ENOUGH.
-    success_msg: "multipath.conf sets find_multipaths {{ node_multipath_find_multipaths }}"
-
-# The assertion above reads the FILE. That is not the same as multipathd having
-# LOADED it, and the difference is not academic: on 2026-08-02 lab5 passed the
-# content check with a correct multipath.conf written at 08:39 that multipathd
-# -- last started 2026-07-31 -- had never read. The node still failed to stage a
-# qnap-iscsi volume ("multipath device not found when it is expected"). A
-# green verify run on a node that cannot mount a PVC is the exact failure this
-# role exists to prevent, so assert the DAEMON, not just the file.
-- name: Read multipath.conf mtime, multipathd start time, and live mpath devices
-  ansible.builtin.shell: |
-    set -e
-    conf=$(stat -c %Y /etc/multipath.conf)
-    started=$(date -d "$(systemctl show multipathd -p ActiveEnterTimestamp --value)" +%s)
-    mpaths=$(ls /dev/mapper 2>/dev/null | grep -c mpath || true)
-    # LOGGED_IN only. A session left behind by a failed or torn-down attach
-    # sits in state FREE with its sd device `transport-offline`, and multipathd
-    # is CORRECT not to map an offline device -- counting those made the
-    # assertion below fail on debris rather than on a fault. Observed on
-    # k8s-lab7, 2026-09-05: one FREE session, sda transport-offline, from a
-    # storage proof that failed three days earlier.
-    sessions=$(grep -l LOGGED_IN /sys/class/iscsi_session/*/state 2>/dev/null | wc -l)
-    echo "$conf $started $mpaths $sessions"
-  register: mpath_freshness
-  changed_when: false
-  check_mode: false
-
-- name: "Interpret multipath freshness"
-  ansible.builtin.set_fact:
-    mp_conf_mtime: "{{ mpath_freshness.stdout.split()[0] | int }}"
-    mp_started: "{{ mpath_freshness.stdout.split()[1] | int }}"
-    mp_devices: "{{ mpath_freshness.stdout.split()[2] | int }}"
-    mp_sessions: "{{ mpath_freshness.stdout.split()[3] | int }}"
-
-- name: "Interpret multipath freshness | derive"
-  ansible.builtin.set_fact:
-    mp_stale: "{{ (mp_started | int) < (mp_conf_mtime | int) }}"
-
-# A stale config is NOT automatically a failure, and conflating the two would
-# make this role fail nodes that are behaving exactly as designed. node_baseline
-# DELIBERATELY writes multipath.conf and defers the restart on any node with
-# attached LUNs -- that is lab1/2/3, four LUNs each -- so the first time the
-# template changes they are legitimately stale until their next restart.
+# ── STORAGE ASSERTIONS — skipped WHOLE on a node with no storage ────────────
 #
-# The discriminator is behavioural, not temporal: does the running daemon still
-# produce device-mapper entries?
-#   * stale + mpath devices present  -> deferred restart, staging demonstrably
-#                                       works, takes effect at the next reboot.
-#                                       WARN.
-#   * stale + ZERO mpath devices     -> exactly lab5 on 2026-08-02: sessions
-#                                       attached, no dm entries, and a proven
-#                                       inability to stage a qnap-iscsi volume.
-#                                       FAIL.
-- name: "multipathd config is stale but staging still works (deferred restart)"
-  ansible.builtin.debug:
-    msg: >-
-      NOTE: multipathd on {{ inventory_hostname }} predates its multipath.conf
-      by {{ (mp_conf_mtime | int) - (mp_started | int) }}s, but the node has
-      {{ mp_devices }} live multipath device(s), so staging works and the
-      restart was deferred on purpose ({{ mp_sessions }} iSCSI session(s)
-      attached). The new config takes effect at the next restart or reboot --
-      which the k3s upgrade provides. To force it sooner, drain the node and
-      re-run with -e multipath_force_restart=true.
-  when:
-    - mp_stale | bool
-    - (mp_devices | int) > 0
-
-- name: Assert multipathd is not running a stale config on a node that cannot stage
-  ansible.builtin.assert:
-    that: "not (mp_stale | bool) or (mp_devices | int) > 0"
-    fail_msg: >-
-      multipathd on {{ inventory_hostname }} started
-      {{ (mp_conf_mtime | int) - (mp_started | int) }}s BEFORE
-      /etc/multipath.conf was last written, and the node has ZERO multipath
-      devices ({{ mp_sessions }} iSCSI session(s) attached). The running daemon
-      is using the OLD config and this node will fail to stage a QNAP volume
-      with "multipath device not found when it is expected" -- the file being
-      correct is not enough. Fix:
-      ansible-playbook playbooks/10-baseline.yml --ask-become-pass
-      --limit {{ inventory_hostname }} -e multipath_force_restart=true
-    success_msg: >-
-      multipath config effective ({{ mp_devices }} mpath device(s),
-      {{ 'daemon newer than config' if not (mp_stale | bool) else 'stale but staging works' }})
-
-# ── The assertion that would have caught k8s-lab7 (added 2026-09-02) ────────
+# ONE block with ONE `when:`, not a condition per task. Several asserts below
+# dereference facts that the set_fact tasks above them produce, so gating them
+# individually would leave those facts UNDEFINED on the edge node -- and an
+# assert on an undefined variable fails with a template error rather than
+# skipping. That is the same trap documented at the top of
+# roles/k3s_config/tasks/main.yml about skipped registers.
 #
-# The freshness check above only fires when the DAEMON predates the CONFIG. On
-# k8s-lab7 it did not -- multipathd restarted one second after the file was
-# written -- and the node still could not stage a volume, because the config
-# it correctly loaded blacklisted `sda`, and on that node (NVMe root, no SATA
-# disk) sda IS the QNAP LUN. Everything a file check or a freshness check can
-# see was right; the node was still the k8s-4 condition.
-#
-# So assert the outcome instead: a node with an iSCSI session attached must
-# have a multipath map for it. That is the whole contract between iscsid,
-# multipathd and the CSI driver, and it is what Trident means by "multipath
-# device not found when it is expected".
-- name: Assert an attached iSCSI session actually produced a multipath device
-  ansible.builtin.assert:
-    that: (mp_sessions | int) == 0 or (mp_devices | int) > 0
-    fail_msg: >-
-      {{ inventory_hostname }} has {{ mp_sessions }} LOGGED_IN iSCSI session(s)
-      and ZERO multipath devices. The LUN is visible to the SCSI layer and
-      multipathd is not mapping it, so Trident will fail to stage with
-      "multipath device not found when it is expected". The usual cause is the
-      blacklist: check what the LUN enumerates as and what vendor it reports --
-        for d in /sys/block/sd*; do echo "$d $(cat $d/device/vendor)"; done
-      A node whose only local disk is NVMe gets its first LUN at /dev/sda,
-      which the pre-2026-09-02 blacklist excluded by name.
-    success_msg: >-
-      {{ mp_sessions }} iSCSI session(s), {{ mp_devices }} multipath device(s)
-      -- the LUNs attached here are mapped
+# Nothing here is weakened for the seven real nodes: every one of them
+# evaluates node_storage_enabled as true and runs exactly what it ran before.
+- name: "verify | storage stack"
+  when: node_storage_enabled | bool
+  block:
+  - name: Read multipath.conf
+    ansible.builtin.slurp:
+      src: /etc/multipath.conf
+    register: multipath_content
+    check_mode: false
 
-- name: Assert storage services are running
-  ansible.builtin.command: "systemctl is-active {{ item }}"
-  register: svc_check
-  changed_when: false
-  failed_when: svc_check.stdout != 'active'
-  check_mode: false
-  loop:
-    - iscsid
-    - multipathd
+  # This exact assertion would have caught k8s-4 and k8s-5 before they were ever
+  # allowed to schedule a PVC-bearing pod.
+  - name: Assert multipath.conf actually sets find_multipaths
+    ansible.builtin.assert:
+      that:
+        - "'find_multipaths' in (multipath_content.content | b64decode)"
+        - "(multipath_content.content | b64decode) is search('find_multipaths\\s+' ~ node_multipath_find_multipaths)"
+      fail_msg: >-
+        /etc/multipath.conf on {{ inventory_hostname }} does not set
+        "find_multipaths {{ node_multipath_find_multipaths }}". multipath-tools
+        defaults to strict, so a single-path QNAP LUN gets no device-mapper entry
+        and Trident fails to stage it with "multipath device not found when it is
+        expected". THE FILE EXISTING IS NOT ENOUGH.
+      success_msg: "multipath.conf sets find_multipaths {{ node_multipath_find_multipaths }}"
+
+  # The assertion above reads the FILE. That is not the same as multipathd having
+  # LOADED it, and the difference is not academic: on 2026-08-02 lab5 passed the
+  # content check with a correct multipath.conf written at 08:39 that multipathd
+  # -- last started 2026-07-31 -- had never read. The node still failed to stage a
+  # qnap-iscsi volume ("multipath device not found when it is expected"). A
+  # green verify run on a node that cannot mount a PVC is the exact failure this
+  # role exists to prevent, so assert the DAEMON, not just the file.
+  - name: Read multipath.conf mtime, multipathd start time, and live mpath devices
+    ansible.builtin.shell: |
+      set -e
+      conf=$(stat -c %Y /etc/multipath.conf)
+      started=$(date -d "$(systemctl show multipathd -p ActiveEnterTimestamp --value)" +%s)
+      mpaths=$(ls /dev/mapper 2>/dev/null | grep -c mpath || true)
+      # LOGGED_IN only. A session left behind by a failed or torn-down attach
+      # sits in state FREE with its sd device `transport-offline`, and multipathd
+      # is CORRECT not to map an offline device -- counting those made the
+      # assertion below fail on debris rather than on a fault. Observed on
+      # k8s-lab7, 2026-09-05: one FREE session, sda transport-offline, from a
+      # storage proof that failed three days earlier.
+      sessions=$(grep -l LOGGED_IN /sys/class/iscsi_session/*/state 2>/dev/null | wc -l)
+      echo "$conf $started $mpaths $sessions"
+    register: mpath_freshness
+    changed_when: false
+    check_mode: false
+
+  - name: "Interpret multipath freshness"
+    ansible.builtin.set_fact:
+      mp_conf_mtime: "{{ mpath_freshness.stdout.split()[0] | int }}"
+      mp_started: "{{ mpath_freshness.stdout.split()[1] | int }}"
+      mp_devices: "{{ mpath_freshness.stdout.split()[2] | int }}"
+      mp_sessions: "{{ mpath_freshness.stdout.split()[3] | int }}"
+
+  - name: "Interpret multipath freshness | derive"
+    ansible.builtin.set_fact:
+      mp_stale: "{{ (mp_started | int) < (mp_conf_mtime | int) }}"
+
+  # A stale config is NOT automatically a failure, and conflating the two would
+  # make this role fail nodes that are behaving exactly as designed. node_baseline
+  # DELIBERATELY writes multipath.conf and defers the restart on any node with
+  # attached LUNs -- that is lab1/2/3, four LUNs each -- so the first time the
+  # template changes they are legitimately stale until their next restart.
+  #
+  # The discriminator is behavioural, not temporal: does the running daemon still
+  # produce device-mapper entries?
+  #   * stale + mpath devices present  -> deferred restart, staging demonstrably
+  #                                       works, takes effect at the next reboot.
+  #                                       WARN.
+  #   * stale + ZERO mpath devices     -> exactly lab5 on 2026-08-02: sessions
+  #                                       attached, no dm entries, and a proven
+  #                                       inability to stage a qnap-iscsi volume.
+  #                                       FAIL.
+  - name: "multipathd config is stale but staging still works (deferred restart)"
+    ansible.builtin.debug:
+      msg: >-
+        NOTE: multipathd on {{ inventory_hostname }} predates its multipath.conf
+        by {{ (mp_conf_mtime | int) - (mp_started | int) }}s, but the node has
+        {{ mp_devices }} live multipath device(s), so staging works and the
+        restart was deferred on purpose ({{ mp_sessions }} iSCSI session(s)
+        attached). The new config takes effect at the next restart or reboot --
+        which the k3s upgrade provides. To force it sooner, drain the node and
+        re-run with -e multipath_force_restart=true.
+    when:
+      - mp_stale | bool
+      - (mp_devices | int) > 0
+
+  - name: Assert multipathd is not running a stale config on a node that cannot stage
+    ansible.builtin.assert:
+      that: "not (mp_stale | bool) or (mp_devices | int) > 0"
+      fail_msg: >-
+        multipathd on {{ inventory_hostname }} started
+        {{ (mp_conf_mtime | int) - (mp_started | int) }}s BEFORE
+        /etc/multipath.conf was last written, and the node has ZERO multipath
+        devices ({{ mp_sessions }} iSCSI session(s) attached). The running daemon
+        is using the OLD config and this node will fail to stage a QNAP volume
+        with "multipath device not found when it is expected" -- the file being
+        correct is not enough. Fix:
+        ansible-playbook playbooks/10-baseline.yml --ask-become-pass
+        --limit {{ inventory_hostname }} -e multipath_force_restart=true
+      success_msg: >-
+        multipath config effective ({{ mp_devices }} mpath device(s),
+        {{ 'daemon newer than config' if not (mp_stale | bool) else 'stale but staging works' }})
+
+  # ── The assertion that would have caught k8s-lab7 (added 2026-09-02) ────────
+  #
+  # The freshness check above only fires when the DAEMON predates the CONFIG. On
+  # k8s-lab7 it did not -- multipathd restarted one second after the file was
+  # written -- and the node still could not stage a volume, because the config
+  # it correctly loaded blacklisted `sda`, and on that node (NVMe root, no SATA
+  # disk) sda IS the QNAP LUN. Everything a file check or a freshness check can
+  # see was right; the node was still the k8s-4 condition.
+  #
+  # So assert the outcome instead: a node with an iSCSI session attached must
+  # have a multipath map for it. That is the whole contract between iscsid,
+  # multipathd and the CSI driver, and it is what Trident means by "multipath
+  # device not found when it is expected".
+  - name: Assert an attached iSCSI session actually produced a multipath device
+    ansible.builtin.assert:
+      that: (mp_sessions | int) == 0 or (mp_devices | int) > 0
+      fail_msg: >-
+        {{ inventory_hostname }} has {{ mp_sessions }} LOGGED_IN iSCSI session(s)
+        and ZERO multipath devices. The LUN is visible to the SCSI layer and
+        multipathd is not mapping it, so Trident will fail to stage with
+        "multipath device not found when it is expected". The usual cause is the
+        blacklist: check what the LUN enumerates as and what vendor it reports --
+          for d in /sys/block/sd*; do echo "$d $(cat $d/device/vendor)"; done
+        A node whose only local disk is NVMe gets its first LUN at /dev/sda,
+        which the pre-2026-09-02 blacklist excluded by name.
+      success_msg: >-
+        {{ mp_sessions }} iSCSI session(s), {{ mp_devices }} multipath device(s)
+        -- the LUNs attached here are mapped
+
+  - name: Assert storage services are running
+    ansible.builtin.command: "systemctl is-active {{ item }}"
+    register: svc_check
+    changed_when: false
+    failed_when: svc_check.stdout != 'active'
+    check_mode: false
+    loop:
+      - iscsid
+      - multipathd
 
 # THE HEADLINE GATE. An empty csinode.spec.drivers on a Ready, untainted,
 # schedulable node is exactly k8s-4.home's condition, and NOTHING in
@@ -262,15 +276,98 @@
   delegate_to: "{{ k3s_control_plane_host }}"
   # A node that has not joined has no csinode object -- and no Node object
   # either. Skipped rather than failed; see the probe at the top of this file.
-  when: k3s_binary.stat.exists
+  #
+  # ⚠️ And skipped on the edge node, where "no CSI driver" is the DESIRED state
+  # rather than the k8s-4 fault. The assertion below inverts it there.
+  when: k3s_binary.stat.exists and node_storage_enabled | bool
+
+
+# ══ EDGE-ONLY ASSERTIONS ═══════════════════════════════════════════════════
+# The edge node cannot satisfy the storage gate above -- it deliberately has no
+# CSI driver at all -- so CLAUDE.md's "do not uncordon until a storage proof
+# passes" needs a stated replacement rather than a silent exemption. These are
+# it, and there are MORE of them than a home node runs, not fewer.
+
+- name: "verify | read the edge node's registered CSI drivers"
+  ansible.builtin.shell: >-
+    /usr/local/bin/k3s kubectl get csinode {{ k8s_node_name }}
+    -o jsonpath='{.spec.drivers[*].name}'
+  register: csinode_edge
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  delegate_to: "{{ k3s_control_plane_host }}"
+  when: k3s_binary.stat.exists and not (node_storage_enabled | bool)
+
+# 🔴 THE INVERSE OF THE HEADLINE GATE, AND IT IS A SECURITY ASSERTION.
+# trident-node-linux tolerates every NoSchedule taint and carries no
+# nodeSelector, so the taint ALONE does not keep it off this machine. If it
+# lands here, the QNAP iSCSI credentials are on a box with a public IP.
+#
+# No `retries:` deliberately. The fault this catches is the PRESENCE of
+# something, and presence does not resolve by waiting -- retrying would only
+# delay the failure while the driver stayed registered.
+- name: "verify | the edge node registers NO storage driver"
+  ansible.builtin.assert:
+    that: "csinode_edge.stdout | default('') | trim | length == 0"
+    fail_msg: >-
+      {{ k8s_node_name }} has registered CSI driver(s):
+      '{{ csinode_edge.stdout | default('') }}'. This node is on the PUBLIC
+      INTERNET and must carry no storage driver -- the QNAP CSI driver holds the
+      NAS iSCSI credentials. A taint does not stop trident-node-linux: it
+      tolerates every NoSchedule and has no nodeSelector. Fix the nodeSelector
+      in gitops, let ArgoCD sync, then delete the pod on this node.
+    success_msg: "{{ k8s_node_name }} registers no CSI driver, as intended"
+  when: k3s_binary.stat.exists and not (node_storage_enabled | bool)
+
+- name: "verify | read the edge node's InternalIP, taint and label"
+  ansible.builtin.shell: >-
+    /usr/local/bin/k3s kubectl get node {{ k8s_node_name }} -o jsonpath='
+    {.status.addresses[?(@.type=="InternalIP")].address}|
+    {.spec.taints[*].key}|
+    {.metadata.labels.infrastructure\.techyon\.dev/location}'
+  register: edge_node_facts
+  changed_when: false
+  check_mode: false
+  delegate_to: "{{ k3s_control_plane_host }}"
+  when: k3s_binary.stat.exists and not (node_storage_enabled | bool)
+
+# 🔴 If this is wrong the node must STAY CORDONED. A wrong InternalIP means
+# Cilium's VXLAN is riding the public NIC in the clear, and k3s bakes the value
+# in at registration -- so it is not fixable by a converge, only by uninstall
+# and rejoin.
+- name: "verify | the edge node is known by its tunnel address, tainted and labelled"
+  ansible.builtin.assert:
+    that:
+      - "(edge_node_facts.stdout | default('')).split('|')[0] | trim == k3s_node_ip"
+      - "'infrastructure.techyon.dev/edge' in (edge_node_facts.stdout | default('')).split('|')[1]"
+      - "(edge_node_facts.stdout | default('')).split('|')[2] | trim == 'edge'"
+    fail_msg: >-
+      Expected InternalIP={{ k3s_node_ip }}, an
+      infrastructure.techyon.dev/edge taint and location=edge; got
+      '{{ edge_node_facts.stdout | default('') }}'.
+      A wrong InternalIP means VXLAN (UDP 8473) is on the PUBLIC NIC
+      unencrypted, and k3s bakes it in at registration -- uninstall and rejoin,
+      do not converge. A missing taint means ordinary workloads can schedule
+      here. A missing label means the edge Gateway's EnvoyProxy nodeSelector
+      matches nothing and the Gateway never programs.
+    success_msg: >-
+      {{ k8s_node_name }}: InternalIP={{ k3s_node_ip }}, tainted, labelled
+  when: k3s_binary.stat.exists and not (node_storage_enabled | bool)
 
 - name: Summary
   ansible.builtin.debug:
     msg: >-
-      {{ inventory_hostname }}: DNS ok, sysctls ok, multipath.conf ok,
-      iscsid+multipathd active
-      {{ ', image pull ok, CSI drivers = ' ~ csinode_check.stdout
-         if k3s_binary.stat.exists
+      {{ inventory_hostname }}: DNS ok, sysctls ok
+      {{ ', multipath.conf ok, iscsid+multipathd active'
+         if node_storage_enabled | bool
+         else ', storage n/a (node_storage_enabled=false)' }}
+      {{ ('' if not k3s_binary.stat.exists else
+          (', image pull ok, CSI drivers = ' ~ (csinode_check.stdout | default('?'))
+           if node_storage_enabled | bool
+           else ', image pull ok, NO CSI driver (asserted), InternalIP='
+                ~ k3s_node_ip ~ ', tainted, labelled')) }}
+      {{ '' if k3s_binary.stat.exists
          else '-- OS baseline PASSES and this node is ready to join. Not a
                cluster member yet, so image pull and CSI drivers were not
                checked.' }}
