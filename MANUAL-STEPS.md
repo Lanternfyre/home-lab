@@ -9,6 +9,84 @@ Last updated: 2026-08-26
 
 ---
 
+## 🔴 Silo console login — the persisted OIDC config still points at Google (2026-09-05)
+
+**Symptom:** the console spins for ~10 seconds and then offers only the
+username/password form. No "Sign in with authentik" button, and the browser
+console fills with CSP `manifest-src` complaints and a 403 on
+`api/v1/session`. Those are downstream noise, not the fault.
+
+**Do this** (from the workstation; the credential never leaves the pod):
+
+```bash
+kubectl -n silo exec deploy/silo -- sh -c \
+  'export MC_HOST_local="http://$MINIO_ROOT_USER:$MINIO_ROOT_PASSWORD@127.0.0.1:9000"; \
+   mc admin config reset local identity_openid'
+kubectl -n silo rollout restart deploy/silo
+kubectl -n silo rollout status deploy/silo --timeout=180s
+```
+
+**Acceptance test, and it is unambiguous** — run it from inside the pod so the
+edge gate is out of the picture:
+
+```bash
+kubectl -n silo exec deploy/silo -- curl -s --max-time 25 \
+  -w "\ntotal=%{time_total}s\n" http://127.0.0.1:9001/api/v1/login
+```
+
+Broken: `{"loginStrategy":"form","redirectRules":null}` after **exactly
+10.000s**. Fixed: a redirect rule naming the authentik URL, returned in well
+under a second.
+
+Rollback: `mc admin config set local identity_openid claim_name=policy`, then
+restart.
+
+⚠️ `Recreate` + an RWO volume means a few seconds with no silo pod. CI writing
+to the store in that window fails loudly, by design.
+
+### Why, because the obvious diagnosis is wrong
+
+`config.env` is CORRECT — it names only the authentik issuer, sets
+`ROLE_POLICY`, and omits `CLAIM_NAME`, exactly as
+`apps/silo/manifests/silo-oidc-config.external-secret.yaml` renders it. The
+server reads it and configures OIDC fine; the startup log proves it:
+`INFO: IAM Roles: arn:minio:iam:::role/ty3JuSvz019boPCKhCrGwxGzb_Y`.
+
+The problem is a SECOND copy of the configuration that lives on the PVC, in
+MinIO's own config store, and therefore in no git repository:
+
+```
+config_url=          <- EMPTY, so MinIO falls back to its built-in
+                        default: https://accounts.google.com/...
+claim_name=policy    <- left over from the chart's `oidc:` block
+role_policy=         <- empty
+```
+
+`claim_name=policy` is the fingerprint the ExternalSecret's own comment warns
+about: the chart's `oidc:` block always emits `MINIO_IDENTITY_OPENID_CLAIM_NAME`
+defaulting to `policy`. Moving to authentik (commit 20d38fd) changed the env,
+and nothing ever cleared the stored copy.
+
+So the console's login builder resolves `accounts.google.com`, and
+`apps/silo/manifests/silo-egress.ciliumnetworkpolicy.yaml` permits exactly one
+FQDN — `authentik.lab.techyon.dev`. The SYN is dropped, MinIO waits out its 10s
+timeout, and the page degrades to form-only.
+
+Measured on 2026-09-05, not inferred:
+
+* `curl 127.0.0.1:9001/api/v1/login` inside the pod → `form` / `null`, 10.000s
+* Cilium DNS proxy during that call → the pod resolves `accounts.google.com`
+* `cilium-dbg monitor --type drop` during that call → 7 × `Policy denied
+  10.245.4.212 -> 142.251.127.84:443` (that address is `accounts.google.com`)
+* the same monitor, 25s idle with no login call → **0 drops**
+* every authentik endpoint from that same pod → 200/405/401 in under 0.35s
+
+The egress policy is not the bug and should not be widened to "fix" this. It is
+the reason the stale Google config was visible at all; a permissive policy would
+have let the console call Google forever and merely look slow.
+
+---
+
 ## 🔴 Silo (object store) — two things before the first sync (2026-08-26)
 
 `apps/silo/` is committed but will not come up correctly until both of these
