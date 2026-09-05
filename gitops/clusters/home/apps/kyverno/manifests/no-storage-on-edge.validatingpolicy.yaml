@@ -63,17 +63,52 @@ spec:
         resources: ["pods"]
 
   matchConditions:
-    # The DaemonSet controller sets spec.nodeName directly, so the target node
-    # is known at admission time -- there is no scheduler to consult.
+    # 🔴 A DAEMONSET POD HAS NO spec.nodeName AT ADMISSION TIME.
     #
-    # ⚠️ Matched by NAME, not by label. A node label is set by the kubelet from
-    # config we control, so a policy keyed on it would stop protecting the node
-    # the moment that label were removed -- which is precisely the situation
-    # where protection matters.
-    - name: is-on-an-edge-node
+    # The first version of this condition tested only `object.spec.nodeName`,
+    # on the belief that the DaemonSet controller assigns the node directly.
+    # It did until Kubernetes 1.12; since then the controller creates the pod
+    # with a nodeAffinity `matchFields` term and lets the DEFAULT SCHEDULER
+    # bind it. So at CREATE -- the only operation this policy matches --
+    # spec.nodeName is EMPTY, the condition was false, and the policy never
+    # applied to the one workload it exists to stop.
+    #
+    # It failed silently and looked healthy: the policy was Ready, its webhook
+    # was registered (vpol.validate.kyverno.svc-fail-finegrained-...) and
+    # `kubectl get validatingpolicy` showed nothing wrong. The QNAP CSI driver
+    # simply registered on the public node, and only node_verify's inverted
+    # csinode assertion caught it:
+    #
+    #   k8s-edge1 has registered CSI driver(s): 'csi.trident.qnap.io'
+    #
+    # Verified on the live pod -- this is what the DaemonSet actually writes:
+    #   nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution.
+    #     nodeSelectorTerms[0].matchFields[0] =
+    #       {key: metadata.name, operator: In, values: [k8s-edge1]}
+    #
+    # Both forms are matched below. nodeName still appears because a static pod
+    # or anything setting it explicitly bypasses the scheduler entirely, and
+    # that path must not become the hole.
+    #
+    # ⚠️ Matched by NODE NAME, not by node label. A label is set by the kubelet
+    # from config we control, so a policy keyed on it would stop protecting the
+    # node the moment the label were removed -- precisely when protection
+    # matters.
+    - name: is-targeted-at-an-edge-node
       expression: >-
-        has(object.spec.nodeName) &&
-        object.spec.nodeName.startsWith('k8s-edge')
+        (has(object.spec.nodeName) &&
+         object.spec.nodeName.startsWith('k8s-edge'))
+        ||
+        (has(object.spec.affinity) &&
+         has(object.spec.affinity.nodeAffinity) &&
+         has(object.spec.affinity.nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution) &&
+         object.spec.affinity.nodeAffinity
+           .requiredDuringSchedulingIgnoredDuringExecution
+           .nodeSelectorTerms.exists(term,
+             has(term.matchFields) &&
+             term.matchFields.exists(f,
+               f.key == 'metadata.name' &&
+               f.values.exists(v, v.startsWith('k8s-edge')))))
 
   validations:
     - expression: >-
