@@ -14,10 +14,32 @@
 # `wg-quick strip` is what turns the wg-quick config (which may carry Address,
 # MTU, PostUp) into the peer-only form `wg syncconf` accepts. Passing the raw
 # file instead fails with an unhelpful parse error.
+# 🔴 THE SECOND LINE IS NOT OPTIONAL, AND ITS ABSENCE IS SILENT.
+#
+# The config file deliberately carries no `PrivateKey` -- the key is applied by
+# `PostUp = wg set %i private-key <path>` so it never becomes an Ansible fact
+# and never passes through the workstation. But `wg-quick strip` emits the file
+# AS WRITTEN, so the stripped output has no PrivateKey either, and `syncconf`
+# applies that [Interface] section wholesale -- CLEARING the key from the live
+# interface.
+#
+# The result looks healthy in every way that is easy to check: the link is up,
+# the address is right, the port is listening, and every peer is present with
+# correct AllowedIPs. Only `wg show` reveals it, by omitting the `public key`
+# line entirely:
+#
+#   interface: wg0
+#     listening port: 51820        <-- no public key, no private key
+#
+# Observed on all eight nodes: one handshake at bring-up (180 B received,
+# 92 B sent) and nothing for the following 15 minutes, because a keyless
+# interface cannot complete another one.
 - name: sync wireguard config
   become: true
   ansible.builtin.shell:
-    cmd: "wg syncconf {{ wg_interface }} <(wg-quick strip {{ wg_interface }})"
+    cmd: |
+      wg syncconf {{ wg_interface }} <(wg-quick strip {{ wg_interface }})
+      wg set {{ wg_interface }} private-key {{ wg_private_key_path }}
     executable: /bin/bash
   # If the interface is not up yet there is nothing to sync -- the systemd task
   # that follows starts it with the new config already in place.
