@@ -18,6 +18,7 @@ trusting either line.
 | [MANUAL-STEPS.md](MANUAL-STEPS.md) | Actions needing a human: credentials, sudo, console, judgement calls |
 | [ansible/README.md](ansible/README.md) | Node config as code; why there is no state file |
 | [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md) | The join token: how it is managed, and the rotation runbook |
+| [EDGE-NODE.md](EDGE-NODE.md) | The public edge node: raw TCP/UDP for game servers, and a VPN walled off from the LAN. Nothing built yet |
 
 If work was interrupted, `MODERNIZATION.md` → "Immediately next" is the resume
 point. Do not re-derive the "Hard-won findings" section — those cost real effort.
