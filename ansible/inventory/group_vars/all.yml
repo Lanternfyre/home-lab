@@ -112,6 +112,20 @@ node_storage_enabled: true
 # here: k8s-1 -> 10.250.0.11 ... k8s-7 -> 10.250.0.17. The hub keeps .1 and the
 # 10.250.0.2-9 range is left free for anything that later needs a fixed slot.
 wg_address: "10.250.0.{{ 10 + (inventory_hostname.split('.')[0].split('-')[1] | int) }}"
+#
+# ⚠️ This references `inventory_hostname`, and the WireGuard templates read it
+# CROSS-HOST as `hostvars[peer].wg_address`. That is safe, and it was verified
+# rather than assumed, because it is a classic Ansible footgun:
+#
+#   $ ansible edge-1.edge -m debug -a 'msg="self={{ wg_address }}
+#       k8s-1={{ hostvars["k8s-1.home"].wg_address }}
+#       k8s-7={{ hostvars["k8s-7.home"].wg_address }}"'
+#   "self=10.250.0.1 k8s-1=10.250.0.11 k8s-7=10.250.0.17"
+#
+# hostvars templates each variable in the context of the host it BELONGS to, so
+# `inventory_hostname` inside it is the peer's, not the current host's. Do not
+# "fix" this into a static per-host list on the suspicion that it resolves to
+# the wrong host -- it does not.
 wg_subnet: "10.250.0.0/24"
 wg_port: 51820
 

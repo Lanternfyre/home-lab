@@ -1,0 +1,238 @@
+---
+# The WireGuard underlay: home nodes <-> the public edge node.
+#
+# ── Read this before running it limited ─────────────────────────────────────
+# Both sides are rendered from the WHOLE fleet's public keys, collected as
+# facts in this same play. A `--limit` run therefore writes a peer list with
+# holes, and a node missing from the hub's AllowedIPs is dropped SILENTLY --
+# no log, no counter, no error. The guard below refuses rather than letting
+# that happen.
+#
+# ── Keys never leave the node ───────────────────────────────────────────────
+# Private keys are generated ON each host and referenced by PATH from the
+# config (`PostUp = wg set %i private-key ...`), so the key is never templated,
+# never a fact, and never passes through the workstation. This repo is public
+# and has no vault; that is not an accident.
+
+# ───────────────────────────── DETECT ─────────────────────────────
+
+- name: "detect | wireguard-tools present?"
+  tags: [always]
+  ansible.builtin.command: "wg --version"
+  register: t_wg_bin
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | existing private key"
+  tags: [always]
+  ansible.builtin.stat:
+    path: "{{ wg_private_key_path }}"
+  register: t_wg_key
+  check_mode: false
+
+- name: "detect | live peer table"
+  tags: [always]
+  ansible.builtin.command: "wg show {{ wg_interface }} allowed-ips"
+  register: t_wg_peers
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+
+# ───────────────────────────── REMEDIATE ─────────────────────────────
+
+- name: "fix | install wireguard-tools"
+  become: true
+  ansible.builtin.apt:
+    name: wireguard-tools
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  when: t_wg_bin.rc != 0
+
+- name: "fix | create the key directory"
+  become: true
+  ansible.builtin.file:
+    path: "{{ wg_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+# `creates:` makes this a once-per-node event. Regenerating a key silently
+# re-keys the node and every peer entry that names it, which is a fleet-wide
+# outage dressed up as a converge.
+- name: "fix | generate this node's private key (once, ever)"
+  become: true
+  ansible.builtin.shell:
+    cmd: "umask 077 && wg genkey > {{ wg_private_key_path }}"
+    creates: "{{ wg_private_key_path }}"
+
+- name: "detect | this node's public key"
+  tags: [always]
+  become: true
+  ansible.builtin.shell:
+    cmd: "wg pubkey < {{ wg_private_key_path }}"
+  register: t_wg_pub
+  changed_when: false
+  check_mode: false
+
+- name: "detect | publish the public key as a fact for the templates"
+  tags: [always]
+  ansible.builtin.set_fact:
+    wg_pubkey: "{{ t_wg_pub.stdout | trim }}"
+
+# ───────────────────────────── GUARD ─────────────────────────────
+
+- name: "guard | every cluster node must be in this run"
+  ansible.builtin.assert:
+    that:
+      - groups['k3s_nodes'] | map('extract', hostvars, 'wg_pubkey')
+        | select('defined') | list | length == groups['k3s_nodes'] | length
+    fail_msg: >-
+      Only {{ groups['k3s_nodes'] | map('extract', hostvars, 'wg_pubkey')
+              | select('defined') | list | length }} of
+      {{ groups['k3s_nodes'] | length }} nodes have a public key in this run.
+      Both sides of this tunnel are rendered from the WHOLE fleet's keys, so a
+      --limit run writes a peer list with HOLES -- and a node missing from the
+      hub's AllowedIPs is dropped SILENTLY, with no log and no counter. Re-run
+      without --limit:
+      ansible-playbook playbooks/60-wireguard.yml --ask-become-pass
+    success_msg: >-
+      all {{ groups['k3s_nodes'] | length }} nodes present -- peer lists will be
+      complete.
+
+- name: "guard | exactly one edge node (the hub)"
+  ansible.builtin.assert:
+    that: groups['k3s_edge'] | default([]) | length == 1
+    fail_msg: >-
+      k3s_edge has {{ groups['k3s_edge'] | default([]) | length }} hosts. These
+      templates assume ONE hub -- the home-side config names
+      `groups['k3s_edge'] | first` as its only peer. Supporting a second hub is
+      a design change, not a variable.
+
+# ───────────────────────────── CONFIGURE ─────────────────────────────
+
+- name: "fix | render the tunnel config"
+  become: true
+  ansible.builtin.template:
+    src: "{{ 'wg0-edge.conf.j2' if inventory_hostname in groups['k3s_edge'] else 'wg0-home.conf.j2' }}"
+    dest: "{{ wg_dir }}/{{ wg_interface }}.conf"
+    owner: root
+    group: root
+    mode: "0600"
+  notify: sync wireguard config
+
+- name: "fix | enable and start the tunnel"
+  become: true
+  ansible.builtin.systemd:
+    name: "wg-quick@{{ wg_interface }}"
+    enabled: true
+    state: started
+    daemon_reload: true
+
+# ⚠️ k3s must not start before the tunnel exists. On the edge node `node-ip` is
+# the WireGuard address, so a reboot that starts k3s first fails node-ip
+# validation on a node that was healthy yesterday. Ordering only -- the drop-in
+# adds no other behaviour.
+- name: "fix | order k3s-agent after the tunnel (edge only)"
+  become: true
+  when: inventory_hostname in groups['k3s_edge']
+  block:
+    - name: "fix | drop-in directory"
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s-agent.service.d
+        state: directory
+        mode: "0755"
+
+    - name: "fix | k3s-agent waits for wg0"
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/k3s-agent.service.d/20-wireguard.conf
+        mode: "0644"
+        content: |
+          # Managed by Ansible -- roles/wireguard.
+          # node-ip is the WireGuard address, so k3s cannot start before it
+          # exists. Without this a reboot races and k3s loses.
+          [Unit]
+          After=wg-quick@{{ wg_interface }}.service
+          Requires=wg-quick@{{ wg_interface }}.service
+      notify: reload systemd
+
+- name: "flush | apply config changes before verifying them"
+  ansible.builtin.meta: flush_handlers
+
+# ───────────────────────────── VERIFY ─────────────────────────────
+# Assert behaviour and values, never file presence.
+
+- name: "verify | the client range is absent from the live peer table"
+  become: true
+  ansible.builtin.command: "wg show {{ wg_interface }} allowed-ips"
+  register: v_allowed
+  changed_when: false
+
+- name: "verify | assert the client range was not 'helpfully' added"
+  ansible.builtin.assert:
+    that: "wg_client_subnet.split('.')[0:2] | join('.') not in v_allowed.stdout"
+    fail_msg: >-
+      {{ wg_client_subnet }} appears in this node's AllowedIPs. It must not:
+      NetBird clients are SNAT'd at the hub to
+      {{ hostvars[groups['k3s_edge'] | first].wg_address }} before their traffic
+      enters the cluster, so no node can ever see such a source address. Adding
+      it changes nothing while looking exactly like a fix -- remove it before it
+      is mistaken for the reason something works.
+    success_msg: "client range correctly absent from AllowedIPs"
+
+- name: "verify | handshake with every expected peer"
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      now=$(date +%s)
+      wg show {{ wg_interface }} latest-handshakes | while read -r peer ts; do
+        if [ "$ts" = "0" ]; then echo "NEVER $peer"; else
+          age=$(( now - ts ))
+          [ "$age" -gt 180 ] && echo "STALE ${age}s $peer"
+        fi
+      done
+    executable: /bin/bash
+  register: v_hs
+  changed_when: false
+  # A handshake only happens once there is traffic or a keepalive, so give the
+  # tunnel a moment rather than asserting into a race.
+  retries: 12
+  delay: 5
+  until: v_hs.stdout | trim == ''
+
+- name: "verify | MTU boundary is where we think it is"
+  become: true
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      target={{ hostvars[groups['k3s_edge'] | first].wg_address
+                if inventory_hostname not in groups['k3s_edge']
+                else hostvars[(groups['k3s_nodes'] | difference(groups['k3s_edge']) | sort | first)].wg_address }}
+      # {{ wg_mtu }} - 28 (IP+ICMP) = the largest payload that must pass.
+      ping -c1 -W3 -M do -s {{ wg_mtu - 28 }} "$target" >/dev/null 2>&1 && ok=yes || ok=no
+      ping -c1 -W3 -M do -s {{ wg_mtu - 8 }}  "$target" >/dev/null 2>&1 && over=yes || over=no
+      echo "fits=$ok oversize=$over"
+    executable: /bin/bash
+  register: v_mtu
+  changed_when: false
+
+# The PAIR is the proof. "a ping works" says nothing about the boundary -- it is
+# the large-one-passes AND larger-one-fails combination that shows the MTU is
+# exactly where the config claims. Inner PMTUD does not work through VXLAN, so
+# an MTU that is wrong in the permissive direction shows up later as "large
+# responses hang", which looks like an application bug.
+- name: "verify | assert the MTU pair"
+  ansible.builtin.assert:
+    that: "v_mtu.stdout is search('fits=yes') and v_mtu.stdout is search('oversize=no')"
+    fail_msg: >-
+      MTU boundary is not at {{ wg_mtu }}: got '{{ v_mtu.stdout }}'
+      (expected fits=yes oversize=no). fits=no means the tunnel cannot carry a
+      full-size packet and Cilium's VXLAN on top of it certainly cannot --
+      expect large HTTP responses and image pulls to HANG rather than fail.
+      oversize=yes means the path is larger than declared, which is not harmful
+      but means this check is not proving anything.
+    success_msg: "MTU boundary confirmed at {{ wg_mtu }} ({{ v_mtu.stdout }})"

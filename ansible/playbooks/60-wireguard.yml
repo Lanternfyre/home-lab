@@ -1,0 +1,43 @@
+---
+# The WireGuard underlay between the home nodes and the public edge node.
+#
+#   ansible-playbook playbooks/60-wireguard.yml --ask-become-pass
+#
+# ⚠️ NEVER with --limit. Both sides of the tunnel are rendered from the whole
+# fleet's public keys, collected as facts in this one play, so a limited run
+# writes a peer list with HOLES. A node missing from the hub's AllowedIPs is
+# dropped silently -- no log, no counter, no error, just a node that never
+# joins or that goes NotReady later. The role asserts this rather than trusting
+# it.
+#
+# ⚠️ ONE sudo password is supplied per run, and this play spans the VPS AND all
+# seven home nodes. They must share a password (or the VPS must have
+# `configure_nopasswd_sudo`), or this cannot run as a single invocation -- and
+# it has to be a single invocation, per the paragraph above.
+#
+# ── Why this is not in site.yml ─────────────────────────────────────────────
+# Same reason 30-upgrade.yml and 40-add-node.yml are not: it is a deliberate
+# operation with its own verification window. A converge should never be able
+# to re-key or re-peer the tunnel that the cluster's own control traffic rides
+# over. Its `verify |` tasks are safe to re-run at any time, though, and that
+# is the intended way to re-prove the tunnel:
+#
+#   ansible-playbook playbooks/60-wireguard.yml --ask-become-pass --tags verify
+#
+# ── It is safe before k3s exists ────────────────────────────────────────────
+# Deliberately so: step 3 of the EDGE-NODE.md build order runs this BEFORE the
+# node joins, because `node-ip` on the edge is the WireGuard address and k3s
+# cannot register without it.
+
+- name: Converge the WireGuard underlay
+  hosts: k3s_nodes
+  # NOT serial. Every host's public key must be a fact before either template
+  # renders, and serial:1 would render the first host's config against a fleet
+  # of one -- the exact hole the guard exists to catch, arrived at by
+  # configuration rather than by mistake.
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [wireguard]
+
+  roles:
+    - role: wireguard
