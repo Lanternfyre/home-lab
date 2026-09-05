@@ -7,7 +7,7 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-09-02 (k8s-7 prepared as a 4th agent — see "Immediately next")
+Last updated: 2026-09-05 (k8s-7 in service — 7 nodes, 3 servers + 4 agents)
 
 ---
 
@@ -96,6 +96,27 @@ drain ahead of it.
 Still worth watching, because getting `INSTALL_K3S_EXEC` wrong does not error,
 it silently builds the other kind of node. After the run, `systemctl is-active
 k3s-agent` on the node must be `active` and `k3s.service` must not exist.
+
+#### ✅ 2026-09-05 — k8s-7 IS IN SERVICE
+
+Storage proven and uncordoned. The cluster is **7 nodes: 3 servers + 4 agents**,
+all Ready, none cordoned. The proof mounted `/dev/mapper/mpathb` — that mpath
+device is the blacklist fix working, because before it this node's LUN got no
+device-mapper entry at all. Verified: `csinode k8s-lab7` = csi.trident.qnap.io;
+`k3s-agent` active with no `k3s.service`; `kube-vip-ds` desired still 3; every
+DaemonSet desired == current == ready; no leaked PV and no LOGGED_IN session
+left behind.
+
+One more bug surfaced and was fixed on the way, in the assertion added three
+days earlier: it counted `ls /sys/class/iscsi_session | wc -l`, which counts a
+session left in state `FREE` by a torn-down attach exactly like a live one. The
+node had one such corpse — `sda` at `transport-offline` — from the proof that
+failed on 2026-09-02, and multipathd was RIGHT not to map an offline device. So
+the gate failed on debris rather than on a fault, twice, and sent the operator
+looking at a blacklist that was already correct. It now counts only `LOGGED_IN`
+sessions.
+
+The history below is kept because it is how the two gate bugs were found.
 
 #### Where it actually got to, 2026-09-02 evening
 
