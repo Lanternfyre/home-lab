@@ -158,6 +158,91 @@ Each of these was checked on 2026-09-05 and each one changed the design.
     request host. Two public hostnames therefore mint two different issuers —
     see the warning in Phase B.
 
+### Added 2026-09-05 while planning the build
+
+Each of these was verified the same way, and each one breaks something.
+
+13. 🔴 **PSA `baseline` forbids `hostNetwork` AND `hostPort`.** `gateway-envoy`
+    enforces `baseline`, so both are denied — `hostPort` is not an escape hatch.
+    Proven by server-side dry-run:
+    ```
+    Error from server (Forbidden): violates PodSecurity "baseline:v1.35":
+      host namespaces (hostNetwork=true)
+    Error from server (Forbidden): violates PodSecurity "baseline:v1.35":
+      hostPort (container "c" uses hostPort 7171)
+    ```
+    And a new namespace alone does not help: Envoy Gateway creates the proxy in
+    the **controller's** namespace. `deploy.type: GatewayNamespace` would fix
+    that but is controller-wide — it also flips xDS auth from mTLS to
+    projected-SA-token JWT for all three working Gateways.
+    **Decision: a second Envoy Gateway controller in its own `gateway-edge`
+    namespace** (PSA `privileged`, `crds.enabled: false`, distinct
+    `controllerName`), so `gateway-envoy` is never touched. Containment inside
+    it follows the `metallb` idiom — a ValidatingPolicy denying privilege
+    unconditionally and allowing `hostNetwork` only for the edge proxy's pinned
+    ServiceAccount.
+
+14. 🔴 **`strategy: Recreate` is mandatory, not tidiness.** Under `hostNetwork`
+    the API server **defaults `hostPort = containerPort`**, and Envoy Gateway
+    declares containerPorts 19001 (metrics) and 19003 (readiness). A
+    `RollingUpdate` surge pod therefore needs those same host ports on the same
+    node as the running one, and sits `Pending` **forever** — the rollout never
+    completes and never errors. Two corollaries: a Kyverno exemption must NOT
+    test `hostPort` (it is defaulted onto the exempt pod, so the rule would deny
+    the one pod it exists to allow), and **two hostNetwork Gateways cannot
+    coexist on one edge node**. Scale to N game worlds by adding listeners to
+    one Gateway, never by adding Gateways.
+
+15. 🔴 **`dnsPolicy: ClusterFirstWithHostNet` or the proxy is inert.** It
+    defaults to `ClusterFirst`, which kubelet degrades to the host's
+    `/etc/resolv.conf` under `hostNetwork`. Envoy's bootstrap xDS cluster is
+    `STRICT_DNS` on `envoy-gateway.<ns>.svc.cluster.local.`, so the proxy would
+    start, resolve nothing, receive no xDS and serve no listeners — while
+    looking perfectly healthy in `kubectl get pods`.
+
+16. 🔴 **external-dns will publish the ClusterIP if the `target` annotation is
+    missing.** Read out of `source/gateway.go` at the running v0.20.0: targets
+    come from the Gateway's `target` annotation and **fall back to
+    `Status.Addresses`**, which for a ClusterIP Service is `10.43.x.y`. Since
+    `policy: upsert-only`, external-dns can never take that record back — it
+    would have to be deleted by hand in Cloudflare. The annotation carries the
+    VPS's public IP and is the one place it appears in git.
+    Same file confirms the good half: a TCPRoute/UDPRoute has no
+    `spec.hostnames`, but `hosts()` reads the route's `hostname` annotation, and
+    nothing is published until the route reports `Accepted: True`.
+
+17. 🔴 **Envoy's admin ports bind `0.0.0.0`, and so does everything else.**
+    19001 (stats), 19002 (shutdown-manager) and 19003 (readiness) listen on all
+    interfaces — on a public NIC that is the internet. So do kubelet `:10250`,
+    Cilium health `:4240` and VXLAN `:8473/udp`: **`node-ip` changes what k3s
+    advertises, not what it binds.** There is no firewall role anywhere in
+    `ansible/`. An nftables role scoped to `k3s_edge` is a **prerequisite of the
+    join**, not a follow-up, and its check must be behavioural — probe those
+    ports from off-tunnel and assert silence, rather than reading back a
+    ruleset.
+
+18. 🔴 **`trident-node-linux` is operator-owned, so no chart value reaches it.**
+    Its `ownerReferences` name a `TridentOrchestrator` CR, and that CRD is
+    schemaless, so the supported fields cannot be read from the cluster.
+    Upstream NetApp Trident has `nodePluginNodeSelector`/`nodePluginTolerations`
+    and QNAP's v1.6.2 is a fork — but that is an inference. Try the CR fields,
+    confirm the operator reconciles them into the DaemonSet, and fall back to a
+    Kyverno policy denying the pod on the edge node. **Settle it before the node
+    joins**: the taint does not stop it, because the DaemonSet tolerates every
+    `NoSchedule`.
+
+19. 🔴 **`30-upgrade.yml` will fail mid-drain once the edge joins.** Inside its
+    per-node serial loop over `k3s_nodes` sits a csinode non-empty gate with
+    `retries: 30, delay: 10`. On a node with no CSI driver that burns five
+    minutes and then fails a **rolling k3s upgrade in flight**, with the edge
+    drained and cordoned. Whatever gates `node_verify`'s csinode assert must
+    gate this one too, in the same change.
+
+20. **`sectionName` is effectively mandatory on every edge route.** A TCPRoute
+    without it attaches to *every* compatible TCP listener on the Gateway, so
+    one route would answer on all of them and two game worlds would be
+    indistinguishable.
+
 ---
 
 ## Decisions, and what they cost
@@ -325,12 +410,27 @@ Build order, each step gated:
    join, not after.
    *Gate:* `kubectl get pods -A -o wide --field-selector spec.nodeName=k8s-edge1`
    returns Cilium and nothing else. No trident, no smartctl-exporter.
-5. **EnvoyProxy CR + `homelab-edge` Gateway.** `nodeSelector` and `tolerations`
-   for the edge node, `envoyService.type: ClusterIP`,
-   `useListenerPortAsContainerPort: true`, `hostNetwork` via
-   `envoyDeployment.patch`.
+5. **A second Envoy Gateway controller, then the `homelab-edge` Gateway.**
+   In order: the `gateway-edge` namespace (PSA `privileged`), its Kyverno
+   containment policy, the controller (`crds.enabled: false`, distinct
+   `controllerName`), its GatewayClass, then the EnvoyProxy CR and the Gateway.
+   The EnvoyProxy carries `nodeSelector` + `tolerations` for the edge node,
+   `envoyService.type: ClusterIP`, `useListenerPortAsContainerPort: true`,
+   `strategy: Recreate` (finding 14 — without it the rollout hangs forever),
+   and `hostNetwork` + `dnsPolicy: ClusterFirstWithHostNet` via
+   `envoyDeployment.patch` (finding 15).
+   ⚠️ The PSA label, the Kyverno policy and the Gateway live in **different
+   ArgoCD Applications with no sync-wave between them.** Land them in that
+   order. Out of order it self-heals — the ReplicaSet retries `FailedCreate`
+   until PSA relaxes — but the first place to look is
+   `kubectl -n gateway-edge get events --field-selector reason=FailedCreate`,
+   NOT the Gateway status, which says nothing about it.
    ⚠️ Ports below 1024 need `NET_BIND_SERVICE` under hostNetwork; 7171/7172 do
-   not, which is a small reason to keep the edge to high ports.
+   not, which is a real reason to keep the edge to high ports.
+   ⚠️ `infrastructure.techyon.dev/location=edge` and
+   `infrastructure.techyon.dev/edge=true:NoSchedule` appear nowhere in the repo
+   today. Ansible must emit them byte-for-byte — the taint repels and the label
+   attracts, and either one missing is a Gateway that never programs.
 6. **The last gate — `ot-demo`, not necronia.** Attach a TCPRoute for
    `ot-login:7171` and prove a real client connects to `edge-1.techyon.dev:7171`
    without `cloudflared access tcp`. Compare against the existing
