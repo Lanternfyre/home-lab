@@ -1,0 +1,67 @@
+---
+# Harden the public edge node. See EDGE-NODE.md finding 17.
+#
+#   ansible-playbook playbooks/61-edge-firewall.yml --ask-become-pass
+#
+# ⚠️ RUN THIS BEFORE 40-add-node.yml, ALWAYS. `node-ip` changes what k3s
+# advertises, not what it binds: the moment k3s installs, kubelet :10250,
+# Cilium health :4240 and VXLAN :8473/udp all listen on 0.0.0.0, and on this
+# machine 0.0.0.0 is the internet. Running the firewall afterwards means a
+# window -- of minutes, on a box anyone can port-scan -- in which the whole
+# cluster's node API is exposed.
+#
+# ── Two plays, because the honest check cannot run on the node ──────────────
+# Asking the node whether its own ports are closed proves very little: it can
+# read back its own ruleset and be wrong about the effect. The second play
+# probes from the WORKSTATION, which is outside the tunnel and therefore sees
+# what the internet sees. That is the difference between asserting the config
+# and asserting the behaviour, and this repo has been bitten by it three times.
+
+- name: Firewall the edge node
+  hosts: k3s_edge
+  gather_facts: true
+  any_errors_fatal: true
+  tags: [firewall]
+
+  roles:
+    - role: edge_firewall
+
+- name: Prove from OUTSIDE that the dangerous ports are closed
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  become: false
+  any_errors_fatal: true
+  tags: [firewall, verify]
+
+  tasks:
+    # ⚠️ These probe the PUBLIC address deliberately. Probing the tunnel
+    # address would prove nothing -- everything on wg0 is accepted by design.
+    - name: "verify | ports that must NOT answer from the internet"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item.0].ansible_host }}"
+        port: "{{ item.1 }}"
+        state: stopped
+        timeout: 6
+      loop: "{{ groups['k3s_edge'] | product([10250, 4240, 6443, 19001, 19003]) | list }}"
+      loop_control:
+        label: "{{ hostvars[item.0].ansible_host }}:{{ item.1 }} must be closed"
+
+    - name: "verify | ports that MUST answer from the internet"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item.0].ansible_host }}"
+        port: "{{ item.1 }}"
+        state: started
+        timeout: 6
+      loop: "{{ groups['k3s_edge'] | product([22]) | list }}"
+      loop_control:
+        label: "{{ hostvars[item.0].ansible_host }}:{{ item.1 }} must be open"
+
+    - name: "verify | report"
+      ansible.builtin.debug:
+        msg: >-
+          Edge firewall proven from outside the tunnel: 22 open;
+          10250, 4240, 6443, 19001 and 19003 closed. The service ports
+          (7171/7172 tcp, 7173 udp) are permitted by the ruleset but will not
+          answer until the edge Gateway is running -- an open rule with no
+          listener is not a finding.

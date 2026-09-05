@@ -1,0 +1,109 @@
+---
+# nftables on the public edge node.
+#
+# ⚠️ SCOPED TO k3s_edge, DELIBERATELY, and the playbook enforces it. A firewall
+# role that can fire on a home node is an outage waiting for a typo -- and
+# unlike most mistakes in this repo, that one locks you out of the machine you
+# would use to fix it.
+
+- name: "guard | refuse to firewall anything that is not an edge node"
+  ansible.builtin.assert:
+    that: inventory_hostname in groups['k3s_edge'] | default([])
+    fail_msg: >-
+      {{ inventory_hostname }} is not in k3s_edge. This role writes a
+      default-DROP input policy and is only ever correct on a node whose
+      untrusted side is the public internet. Applying it to a LAN node would
+      cut it off from the cluster it is part of.
+
+# ───────────────────────────── DETECT ─────────────────────────────
+
+- name: "detect | nftables present and what it currently holds"
+  tags: [always]
+  become: true
+  ansible.builtin.command: "nft list ruleset"
+  register: t_nft
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | what is listening on a public address right now"
+  tags: [always]
+  become: true
+  ansible.builtin.shell:
+    cmd: "ss -lntuH | awk '{print $1, $5}' | sort -u"
+  register: t_listen
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | report"
+  tags: [always]
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}:
+      nft rules={{ t_nft.stdout_lines | default([]) | length }},
+      listeners={{ t_listen.stdout_lines | default([]) | length }}
+
+# ───────────────────────────── REMEDIATE ─────────────────────────────
+
+- name: "fix | install nftables"
+  become: true
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "fix | write the ruleset"
+  become: true
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    owner: root
+    group: root
+    mode: "0755"
+    # ⚠️ VALIDATED BEFORE IT IS INSTALLED. `nft -c -f` checks the file without
+    # loading it. Writing a broken ruleset and then reloading would leave the
+    # node with `policy drop` and no accept rules -- which is a locked door with
+    # the key inside, on a machine reachable only over the network.
+    validate: "nft -c -f %s"
+  notify: reload nftables
+
+- name: "fix | enable nftables at boot"
+  become: true
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: "flush | apply before verifying"
+  ansible.builtin.meta: flush_handlers
+
+# ───────────────────────────── VERIFY ─────────────────────────────
+# Assert BEHAVIOUR, not the ruleset text. A file that says the right thing and
+# a kernel that is doing it are different claims, and this repo has been bitten
+# by the difference three times.
+
+- name: "verify | the policy is actually loaded in the kernel"
+  become: true
+  ansible.builtin.command: "nft list chain inet edge_filter input"
+  register: v_chain
+  changed_when: false
+
+- name: "verify | assert the input policy is drop"
+  ansible.builtin.assert:
+    that: "v_chain.stdout is search('policy drop')"
+    fail_msg: >-
+      The input chain is loaded but its policy is not drop. Everything not
+      explicitly dropped is therefore ACCEPTED, on a public machine -- which is
+      the opposite of what this file claims to do.
+    success_msg: "input policy is drop, and the chain is live in the kernel"
+
+- name: "verify | SSH survives (we are using it)"
+  ansible.builtin.assert:
+    that: "v_chain.stdout is search('dport 22')"
+    fail_msg: >-
+      Port 22 is not accepted by the live chain, yet this task ran over SSH --
+      so the ruleset in the kernel is not the one just written. Do not
+      disconnect: fix it in this session.

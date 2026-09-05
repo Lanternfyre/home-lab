@@ -1,0 +1,10 @@
+---
+# `nft -f` replaces the ruleset atomically (the file starts with `flush
+# ruleset`), so there is no window in which the node is unprotected or
+# unreachable. A `systemctl restart nftables` would do the same thing more
+# slowly and with a service stop in between -- on a box whose only management
+# path is SSH through the very rules being reloaded.
+- name: reload nftables
+  become: true
+  ansible.builtin.command: "nft -f /etc/nftables.conf"
+  changed_when: true

@@ -1,0 +1,38 @@
+---
+# nftables on the public edge node. See EDGE-NODE.md finding 17.
+#
+# ⚠️ WHY THIS EXISTS AT ALL: `node-ip` changes what k3s ADVERTISES, not what it
+# BINDS. The moment k3s installs, kubelet :10250, Cilium health :4240 and VXLAN
+# :8473/udp listen on 0.0.0.0 -- which on this machine is the internet. Envoy
+# adds :19001-19003 later. Measured on edge-1 before the join: `nft list
+# ruleset` was EMPTY and only sshd was listening.
+#
+# So this role is a PREREQUISITE OF THE JOIN, not a follow-up. It runs before
+# k3s exists, so there is never a window.
+
+# Ports reachable from anywhere. Keep this list short and justified; every
+# entry is a decision.
+edge_fw_public_tcp:
+  - { port: 22, why: "SSH -- the out-of-band path that must survive wg0 being down" }
+
+edge_fw_public_udp:
+  - { port: 51820, why: "WireGuard. Home dials in to this and nothing else." }
+
+# The game/service ports published through the edge Gateway. These are the
+# ONLY other things the internet may reach.
+#
+# ⚠️ Every listener added to the `homelab-edge` Gateway needs a line here too.
+# A Gateway listener with no firewall rule is a service that silently does not
+# work; a firewall rule with no listener is a port that answers nothing. The
+# EnvoyProxy admin ports (19001-19003) are deliberately NOT here -- they bind
+# 0.0.0.0 and must not be reachable.
+edge_fw_service_tcp:
+  - { port: 7171, why: "ot-demo login listener (the Phase C proof target)" }
+  - { port: 7172, why: "ot-demo game listener" }
+edge_fw_service_udp:
+  - { port: 7173, why: "ot-demo UDP echo (proves the UDPRoute path)" }
+
+# The interface facing the internet. Everything on wg0 is trusted; everything
+# arriving here is not.
+edge_fw_public_iface: "{{ node_nic | default('eth0') }}"
+edge_fw_tunnel_iface: "{{ wg_interface | default('wg0') }}"
