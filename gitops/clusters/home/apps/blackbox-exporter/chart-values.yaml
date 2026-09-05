@@ -105,6 +105,19 @@ serviceMonitor:
       url: 192.168.33.24
       module: icmp
 
+    # The edge node, probed on its TUNNEL address on purpose. This single probe
+    # is the WireGuard liveness signal: if the tunnel drops, the node is
+    # unreachable at 10.250.0.1 and this goes red -- which is exactly the
+    # failure that would otherwise show up only as pods failing to schedule on
+    # a node nobody was watching.
+    #
+    # Probing its public IP instead would stay green through a total tunnel
+    # failure, because the VPS itself would still be up. That is the trap this
+    # entry avoids.
+    - name: k8s-edge-1
+      url: 10.250.0.1
+      module: icmp
+
     # --- Powerline link (paired TP-Link adapters) ---
     # Zero services on either adapter but they still ARP-reply; drops in
     # RTT to these vs the MikroTik indicate powerline degradation.

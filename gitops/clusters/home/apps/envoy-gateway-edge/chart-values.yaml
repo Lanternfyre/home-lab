@@ -1,0 +1,62 @@
+# A SECOND Envoy Gateway controller, for the internet-facing data plane only.
+#
+# Read bootstrap/namespaces/gateway-edge.yaml first -- it carries the argument
+# for why this exists rather than a fourth Gateway on the existing controller.
+# In one line: the edge proxy needs hostNetwork, PSA `baseline` forbids it, and
+# Envoy Gateway puts proxies in the CONTROLLER's namespace, so the only way to
+# keep `gateway-envoy` at `baseline` is to run a controller somewhere else.
+
+# 🔴 CRDs ARE NOT INSTALLED BY THIS RELEASE, AND THAT IS LOAD-BEARING.
+#
+# The Envoy Gateway and Gateway API CRDs are cluster-scoped and already owned by
+# the `envoy-gateway` Application. Two ArgoCD Applications both declaring the
+# same cluster-scoped objects fight over them forever -- each sync reverting the
+# other, both permanently OutOfSync.
+#
+# This repo has been bitten by precisely this shape: traefik is in `k3s_disable`
+# partly because its helm-install job crashlooped 640+ times over Gateway API
+# CRDs that lacked Helm ownership labels.
+#
+# The chart's own comment on this key: "Set to false when these resources are
+# managed separately." They are.
+crds:
+  enabled: false
+
+config:
+  envoyGateway:
+    gateway:
+      # 🔴 A DISTINCT controllerName. This is what keeps the two controllers
+      # from fighting: each one reconciles ONLY the GatewayClasses that name it,
+      # so `envoy` (the LAN classes) stays with the original controller and
+      # `envoy-edge` belongs to this one.
+      #
+      # ⚠️ It must match `spec.controllerName` in
+      # manifests/gateway-class.yaml exactly. A mismatch is not an error --
+      # it is a GatewayClass that no controller ever accepts, so the Gateway
+      # never programs and nothing anywhere says why.
+      controllerName: gateway.envoyproxy.io/edge-gatewayclass-controller
+
+    provider:
+      type: Kubernetes
+
+    # NOT enabled here, unlike the LAN controller. `enableEnvoyPatchPolicy` is
+    # an escape hatch that patches generated xDS directly, and the one policy
+    # that needs it (the Cloudflare Tunnel's doubled root path) applies to the
+    # tunnel Gateway, which this controller does not own. An escape hatch nobody
+    # is using is an escape hatch nobody is checking.
+
+    logging:
+      level:
+        default: info
+
+# One controller pod. It manages a single Gateway on a single node; a second
+# replica would add a leader election to watch and nothing else.
+deployment:
+  replicas: 1
+  envoyGateway:
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 256Mi

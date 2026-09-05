@@ -1,0 +1,25 @@
+---
+# The WireGuard underlay that carries cluster traffic between the home nodes
+# and the public edge node. See EDGE-NODE.md.
+#
+# ⚠️ This tunnel is NOT the client VPN. NetBird is that, it runs on the VPS
+# host, and it is deliberately a separate mechanism: cluster membership must
+# not depend on a VPN control plane that can be down or mid-upgrade, and k3s
+# bakes `node-ip` in at registration.
+
+wg_interface: wg0
+wg_dir: /etc/wireguard
+wg_private_key_path: "/etc/wireguard/{{ wg_interface }}.key"
+
+# MTU. WireGuard's own overhead leaves 1420 on a 1500-byte path; Cilium's VXLAN
+# then takes 50 more, which is why the pod-network MTU on this path is ~1370
+# against 1450 everywhere else.
+#
+# ⚠️ Inner PMTUD does not work through VXLAN, so getting this wrong does not
+# produce an error -- it produces "large responses hang" while pings and small
+# requests look perfect. The role proves the boundary with a DF-bit ping pair
+# rather than assuming it.
+wg_mtu: 1420
+
+# Seconds. Home side only -- see tasks/main.yml for why the hub must not set it.
+wg_keepalive: 25

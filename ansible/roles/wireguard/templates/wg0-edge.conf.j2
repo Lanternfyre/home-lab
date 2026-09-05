@@ -1,0 +1,47 @@
+{#
+  The HUB side, rendered on k3s_edge only.
+
+  One [Peer] per home node. There is deliberately no single home-side
+  terminator: every node dials the hub directly, so there is nothing to fail
+  over -- a dead node is an ordinary dead node and Kubernetes already handles
+  that.
+
+  ⚠️ No Endpoint on any peer. Home is behind NAT and always initiates; the hub
+  learns each peer's address from its first handshake. That is also why the
+  MikroTik needs no configuration at all and no inbound port is opened at home.
+#}
+# Managed by Ansible -- ansible/roles/wireguard. Do not edit on the node.
+#
+# Rendered from the whole k3s_nodes group. A --limit run would write a peer
+# list with HOLES, and a node missing from AllowedIPs is dropped SILENTLY --
+# no log, no counter, no error. The role refuses to run limited.
+
+[Interface]
+Address = {{ wg_address }}/24
+ListenPort = {{ wg_port }}
+MTU = {{ wg_mtu }}
+PostUp = wg set %i private-key {{ wg_private_key_path }}
+{% for host in groups['k3s_nodes'] | difference(groups['k3s_edge']) | sort %}
+
+# {{ host }} -- {{ hostvars[host].k8s_node_name }}
+[Peer]
+PublicKey = {{ hostvars[host].wg_pubkey }}
+{#
+  BOTH /32s, deliberately.
+
+  The node keeps its 192.168.33.x InternalIP (changing that is a seven-node
+  rejoin), so Cilium's VXLAN from here is addressed to the LAN address and it
+  must be permitted. But the SOURCE address a home node uses when IT initiates
+  is chosen by the kernel and depends on how Cilium binds its tunnel socket --
+  which could be either address.
+
+  Listing both makes the answer not matter. It cannot cause cross-peer
+  confusion because both belong to this one peer, and it costs nothing.
+
+  ⚠️ {{ wg_client_subnet }} (the NetBird client range) appears NOWHERE here,
+  and must not be added. Clients are SNAT'd at the hub to {{ wg_address }}
+  before their traffic enters the cluster, so no node ever sees such a source.
+  Adding it is a no-op that reads like a fix.
+#}
+AllowedIPs = {{ hostvars[host].ansible_host }}/32, {{ hostvars[host].wg_address }}/32
+{% endfor %}

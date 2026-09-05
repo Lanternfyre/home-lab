@@ -1,0 +1,40 @@
+{#
+  The SPOKE side, rendered on every k3s_nodes host that is not the edge.
+
+  One peer: the hub. Nothing here routes the LAN anywhere, and that is the
+  point -- the VPN reaches cluster services and deliberately nothing else, so
+  the router never learns the tunnel exists.
+#}
+# Managed by Ansible -- ansible/roles/wireguard. Do not edit on the node.
+
+[Interface]
+Address = {{ wg_address }}/32
+MTU = {{ wg_mtu }}
+PostUp = wg set %i private-key {{ wg_private_key_path }}
+{% set edge = groups['k3s_edge'] | first %}
+
+# {{ edge }} -- the hub
+[Peer]
+PublicKey = {{ hostvars[edge].wg_pubkey }}
+Endpoint = {{ hostvars[edge].wg_public_endpoint }}
+{#
+  🔴 ONLY the hub's /32, and this must be right on EVERY node.
+
+  A node whose peer lacks it routes to the hub via its DEFAULT GATEWAY instead,
+  so the packet arrives at the hub with a 192.168.33.x source that belongs to a
+  DIFFERENT peer -- and WireGuard drops a packet whose source does not match the
+  peer it decrypted under. Silently. No log, no counter, no error: the node just
+  never joins, or joins and then goes NotReady.
+
+  ⚠️ Do NOT add {{ wg_client_subnet }} here. NetBird clients are SNAT'd at the
+  hub, so this node can never see such a source address; adding it does nothing
+  while looking exactly like a fix. The role asserts its absence.
+#}
+AllowedIPs = {{ hostvars[edge].wg_address }}/32
+{#
+  Home dials out, so the hub can only reach this node while a mapping is open.
+  Without keepalive the hub cannot initiate until this node has spoken
+  recently, and apiserver->kubelet plus VXLAN from the edge work intermittently
+  -- which reads as a flapping NotReady node, not as a config error.
+#}
+PersistentKeepalive = {{ wg_keepalive }}

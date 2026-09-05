@@ -1,0 +1,23 @@
+# The edge GatewayClass. Separate from `envoy` (the LAN one) because it names a
+# DIFFERENT controller, and that is the whole mechanism keeping the two Envoy
+# Gateway installations from fighting: each controller reconciles only the
+# classes that name it.
+#
+# ⚠️ `controllerName` must match `config.envoyGateway.gateway.controllerName` in
+# ../chart-values.yaml exactly. A mismatch produces no error anywhere -- just a
+# GatewayClass that no controller ever Accepts, a Gateway that never programs,
+# and no event explaining it. Check with:
+#
+#   kubectl get gatewayclass envoy-edge \
+#     -o jsonpath='{.status.conditions[?(@.type=="Accepted")]}'
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: envoy-edge
+  annotations:
+    # Apply AFTER the chart, so the controller exists to accept it. Same
+    # sync-wave reasoning as the LAN gateway-class.yaml.
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  controllerName: gateway.envoyproxy.io/edge-gatewayclass-controller
+  description: "Internet-facing TCP/UDP GatewayClass, pinned to the edge node"

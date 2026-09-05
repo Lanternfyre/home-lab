@@ -5,8 +5,10 @@ one covers work that does not exist yet: a public VPS joined to the cluster as
 an agent, arbitrary TCP/UDP published through it by manifest, and a client VPN
 that reaches cluster services and deliberately nothing else.
 
-Started 2026-09-05. Nothing in Phase C or D has been built. Phase B is written
-and sitting on a branch.
+Started 2026-09-05. Phase B is **merged and verified live**. Phase C's repo
+work is written -- Ansible roles, the edge Gateway, the routes -- but **nothing
+has been run against any machine and the node has not joined**. Phase D is
+designed only.
 
 ---
 

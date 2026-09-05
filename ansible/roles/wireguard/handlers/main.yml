@@ -1,0 +1,30 @@
+---
+# ⚠️ `wg syncconf`, NOT `systemctl restart wg-quick@wg0`.
+#
+# A restart tears the interface down and brings it back up. On the edge node
+# that interface carries the node's own `node-ip`, the apiserver connection and
+# every VXLAN tunnel to home -- so a restart during a routine converge drops the
+# node out of the cluster for as long as it takes to come back, and on the home
+# nodes it drops the path the converge itself is running over.
+#
+# `syncconf` applies peer changes to a LIVE interface: peers that are unchanged
+# keep their handshakes and their sessions. It is the difference between
+# "reconfigure" and "outage".
+#
+# `wg-quick strip` is what turns the wg-quick config (which may carry Address,
+# MTU, PostUp) into the peer-only form `wg syncconf` accepts. Passing the raw
+# file instead fails with an unhelpful parse error.
+- name: sync wireguard config
+  become: true
+  ansible.builtin.shell:
+    cmd: "wg syncconf {{ wg_interface }} <(wg-quick strip {{ wg_interface }})"
+    executable: /bin/bash
+  # If the interface is not up yet there is nothing to sync -- the systemd task
+  # that follows starts it with the new config already in place.
+  failed_when: false
+  changed_when: true
+
+- name: reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true

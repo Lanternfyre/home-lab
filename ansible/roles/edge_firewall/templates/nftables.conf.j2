@@ -1,0 +1,67 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible -- ansible/roles/edge_firewall. Do not edit on the node.
+#
+# The public edge node's inbound policy. Everything on {{ edge_fw_tunnel_iface }}
+# is trusted; everything arriving on {{ edge_fw_public_iface }} is not, and is
+# dropped unless named below.
+#
+# ⚠️ INPUT ONLY. Nothing here touches forward or output, and that is
+# deliberate: Cilium and kube-proxy own the forward path and program their own
+# rules. A policy-drop forward chain here would break pod networking in a way
+# that looks like a CNI fault.
+
+flush ruleset
+
+table inet edge_filter {
+  chain input {
+    type filter hook input priority filter; policy drop;
+
+    # Conntrack first -- replies to connections this node opened.
+    ct state established,related accept
+    ct state invalid drop
+
+    iif lo accept
+
+    # The tunnel is the trusted side. Cluster traffic -- apiserver, kubelet,
+    # VXLAN, Hubble, everything -- arrives here and is not enumerated port by
+    # port, because enumerating it is how you discover a missing port during an
+    # upgrade instead of during a change.
+    iifname "{{ edge_fw_tunnel_iface }}" accept
+
+    # ICMP: keep it. Dropping echo breaks path-MTU discovery, and blackbox
+    # exporter probes this node's tunnel address as the WireGuard liveness
+    # signal.
+    ip protocol icmp accept
+    ip6 nexthdr icmpv6 accept
+
+{% for r in edge_fw_public_tcp %}
+    # {{ r.why }}
+    iifname "{{ edge_fw_public_iface }}" tcp dport {{ r.port }} accept
+{% endfor %}
+{% for r in edge_fw_public_udp %}
+    # {{ r.why }}
+    iifname "{{ edge_fw_public_iface }}" udp dport {{ r.port }} accept
+{% endfor %}
+
+    # ── Published services ──────────────────────────────────────────────
+{% for r in edge_fw_service_tcp %}
+    # {{ r.why }}
+    iifname "{{ edge_fw_public_iface }}" tcp dport {{ r.port }} accept
+{% endfor %}
+{% for r in edge_fw_service_udp %}
+    # {{ r.why }}
+    iifname "{{ edge_fw_public_iface }}" udp dport {{ r.port }} accept
+{% endfor %}
+
+    # 🔴 EVERYTHING ELSE IS DROPPED, and these are the ones that matter:
+    #   10250/tcp     kubelet -- full node API, binds 0.0.0.0
+    #    4240/tcp     Cilium health, binds 0.0.0.0
+    #    8473/udp     Cilium VXLAN. k3s docs say never expose this.
+    #   19001-3/tcp   Envoy admin, metrics and readiness, bind 0.0.0.0
+    #    6443/tcp     apiserver, if this node is ever wrongly made a server
+    #
+    # `node-ip` does NOT close any of them -- it changes what k3s advertises,
+    # not what it binds. This chain is the only thing that closes them.
+    counter comment "dropped-inbound"
+  }
+}

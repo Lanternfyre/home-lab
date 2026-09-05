@@ -1,0 +1,204 @@
+# The storage half of the node baseline: iSCSI, multipath and the QNAP CSI
+# prerequisites. Split out of main.yml on 2026-09-05, byte-identical apart
+# from this header.
+#
+# ── Why a separate file rather than a `when:` on each task ──────────────────
+# The edge node (a public VPS) must never get any of this: no open-iscsi, no
+# multipath-tools, no /etc/multipath.conf, no iscsid, no multipathd. It has no
+# NAS, cannot reach one, and the QNAP CSI driver carries credentials that have
+# no business on an internet-facing machine.
+#
+# Gating each task individually would be the same shape as the bug it fixes:
+# `fix | install storage packages` below carries NO `when:` at all, so on a
+# fresh VPS it apt-installs the whole storage stack. One condition on one
+# import cannot be forgotten the way an eighth `when:` can.
+#
+# ⚠️ `import_tasks`, NEVER `include_tasks`. import is STATIC, so the
+# `tags: [storage]` below still register with `--list-tags` and
+# `--tags storage` still selects them -- which is what MANUAL-STEPS.md and
+# README.md tell you to run. A dynamic include applies the INCLUDE's own tags
+# to its children instead, and the storage-only converge would silently select
+# nothing at all.
+#
+# The DETECT tasks stay in main.yml deliberately. Every one carries
+# `failed_when: false`, so they are harmless on a node with no storage, and
+# keeping them there means `detect | report` has the same shape on all eight
+# nodes instead of vanishing on one.
+
+# --- storage packages: idempotent, cheap, always ensured. ---
+- name: "fix | install storage packages"
+  tags: [storage]
+  ansible.builtin.apt:
+    name: "{{ node_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# --- multipath: only where find_multipaths is not already correct. ---
+- name: "fix | write multipath.conf"
+  tags: [storage]
+  when: needs_multipath
+  ansible.builtin.copy:
+    dest: /etc/multipath.conf
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- ansible/roles/node_baseline
+      #
+      # find_multipaths no is REQUIRED by the QNAP CSI driver. multipath-tools
+      # 0.9.4 defaults it to "strict", under which a single-path LUN gets no
+      # device-mapper entry and Trident fails to stage the volume with
+      #   "multipath device not found when it is expected"
+      # no_path_retry is what stops a partition to the NAS from destroying
+      # filesystems. Without it the SCSI layer returns EIO the moment iscsid
+      # gives up, ext4 aborts its journal, and the volume stays dead after the
+      # network returns -- see the 2026-08-08 incident in MODERNIZATION.md.
+      # With it, I/O queues for polling_interval * no_path_retry (~10 min) and
+      # the pods that touch the volume hang instead. See group_vars/all.yml for
+      # why bounded and not `queue`.
+      defaults {
+          find_multipaths {{ node_multipath_find_multipaths }}
+          user_friendly_names yes
+          polling_interval {{ node_multipath_polling_interval }}
+          no_path_retry {{ node_multipath_no_path_retry }}
+      }
+      # ── The blacklist discriminates on VENDOR, not on a device letter ──
+      #
+      # It used to read `devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st|sda)..."`,
+      # copied from the distro example. That `sda` encodes a hardware
+      # assumption -- "sda is the local disk" -- which was true on every node
+      # in the fleet until k8s-lab7, whose root is NVMe and which has no SATA
+      # disk at all. There the FIRST iSCSI LUN attaches as /dev/sda, was
+      # blacklisted, got no device-mapper entry, and Trident failed to stage
+      # it with the familiar "multipath device not found when it is expected"
+      # -- on a node whose multipath.conf, multipathd, iscsid and CSI driver
+      # were all correct. Measured on the k8s-7 join, 2026-09-02:
+      #
+      #   k8s-lab1  sda vendor=ATA  SAMSUNG SSD SM87   <- local disk
+      #             sdb sdc sdd vendor=QNAP            <- LUNs, mpathd/h/n
+      #   k8s-lab7  sda vendor=QNAP iSCSI Storage      <- a LUN, blacklisted
+      #
+      # So blacklist everything and except the one vendor that must be
+      # multipathed. This is the same discrimination smartctl-exporter's
+      # alerts make for the same reason: `scsi_vendor="QNAP"` means something,
+      # a device letter is an accident of enumeration order.
+      #
+      # ⚠️ Behaviour on the six older nodes is UNCHANGED: their sda reports
+      # vendor ATA, so the blanket device rule blacklists it exactly as the
+      # old devnode rule did, and their QNAP LUNs are excepted exactly as
+      # before. Verified against k8s-lab1's live maps (mpathd, mpathh, mpathn).
+      #
+      # nvme is named explicitly because the blanket `device` rule matches on
+      # SCSI inquiry strings and an NVMe namespace has none -- it is the local
+      # root disk on lab5 and lab7 and must never be a multipath candidate.
+      #
+      # ⚠️ DO NOT PUT `sd` BACK IN THE devnode LINE "for safety". This config
+      # works precisely because sd* was REMOVED from it. multipath-tools
+      # filters in order -- property, devnode, device, protocol, wwid -- and
+      # returns on the first match, so a blacklist_exceptions entry only
+      # rescues a device from a blacklist of the SAME TYPE. The
+      # `device { vendor "QNAP" }` exception below CANNOT undo a devnode
+      # match. Re-adding sd there silently re-breaks exactly the k8s-lab7
+      # failure this replaced, and it looks like a storage fault, not an edit.
+      #
+      # Check the effective result on the node, never the file:
+      #   multipathd show blacklist     # entries + where each came from
+      #   multipath -t                  # the parsed config
+      # A syntax slip makes multipathd IGNORE a section rather than complain.
+      blacklist {
+          devnode "^(ram|zram|raw|loop|fd|md|dm-|sr|scd|st|nbd|nvme)[0-9]*"
+          device {
+              vendor ".*"
+              product ".*"
+          }
+      }
+      blacklist_exceptions {
+          device {
+              vendor "QNAP"
+              product ".*"
+          }
+      }
+  register: multipath_written
+
+# Writing the file is safe. RESTARTING multipathd is the risky part on a node
+# with attached LUNs -- so that, and only that, is gated. It is SKIPPED, never
+# fatal: an earlier `fail` here would have aborted the whole play on lab1/2/3
+# and refused to fix lab5, which carries a leftover test session.
+#
+# ⚠️ multipath_force_restart MUST short-circuit `multipath_written.changed`,
+# and getting that wrong made the escape hatch unreachable by the only node it
+# was built for. lab5's multipath.conf was already correct ON DISK -- written
+# 2026-08-02 08:39, never loaded, because multipathd last started 2026-07-31.
+# So `needs_multipath` was false, the copy task skipped, `multipath_written`
+# stayed undefined, and the restart was skipped EVEN WITH the force flag set.
+# The documented lab5 recovery command was a no-op that reported success.
+#
+# On a node WITH LUNs the config still has to land -- deferring it to "the next
+# reboot" is what left no_path_retry inert on exactly the nodes that need it.
+# `multipathd reconfigure` re-reads multipath.conf in place: no unit restart, no
+# teardown of existing maps, no I/O interruption. That is the documented way to
+# apply a config change to a live multipathd, and it is what should run here in
+# the normal case. The restart below stays for the case where multipathd itself
+# is in a bad state.
+- name: "fix | reconfigure multipathd in place"
+  tags: [storage]
+  when:
+    - multipath_written.changed | default(false)
+    - has_luns
+    - not (multipath_force_restart | default(false) | bool)
+  ansible.builtin.command: multipathd reconfigure
+  register: multipath_reconfigured
+  changed_when: true
+
+# Assert the value actually loaded rather than trusting that the command
+# returned 0 -- `multipathd reconfigure` reports success even when it has
+# silently kept a previous value, and this repo has been burned three times by
+# checking for a file instead of a behaviour.
+- name: "verify | no_path_retry is live in the running config"
+  tags: [storage]
+  when: multipath_reconfigured is not skipped
+  ansible.builtin.shell: >-
+    multipathd show config | tr -s ' ' |
+    grep -E "no_path_retry {{ node_multipath_no_path_retry }}"
+  register: multipath_live
+  changed_when: false
+  failed_when: multipath_live.rc != 0
+
+# Restart when: forced, OR (we just rewrote the file AND no LUNs are at risk).
+- name: "fix | restart multipathd"
+  tags: [storage]
+  when: >-
+    (multipath_force_restart | default(false) | bool)
+    or ((multipath_written.changed | default(false)) and not has_luns)
+  ansible.builtin.systemd:
+    name: multipathd
+    state: restarted
+
+- name: "fix | multipathd restart deferred"
+  tags: [storage]
+  when:
+    - multipath_written.changed | default(false)
+    - has_luns
+    - not (multipath_force_restart | default(false) | bool)
+  ansible.builtin.debug:
+    msg: >-
+      multipath.conf updated on {{ inventory_hostname }}, which has
+      {{ t_iscsi.stdout_lines | default([]) | length }} attached LUN(s). The new
+      config was applied in place with `multipathd reconfigure` and verified
+      live, so it is ALREADY in effect -- multipathd itself was not restarted
+      and no I/O was interrupted. A full restart is only needed if multipathd is
+      unhealthy: drain the node and re-run with -e multipath_force_restart=true.
+
+# NOT touching iscsid's replacement_timeout. The live sessions already run
+# recovery_tmo=5, which is the correct pairing with no_path_retry: fail the
+# path fast, then let multipath hold the I/O. Raising it would only slow
+# failover without protecting anything. See group_vars/all.yml.
+
+# --- services: enable/start only where not already active. ---
+- name: "fix | enable and start storage services"
+  tags: [storage]
+  when: needs_services
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [iscsid, multipathd]

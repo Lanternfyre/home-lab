@@ -109,3 +109,72 @@ spec:
   type: ClusterIP
   selector: { app.kubernetes.io/name: ot-game }
   ports: [{ name: game, port: 7172, targetPort: game }]
+---
+# The UDP listener, added 2026-09-05 for the edge Gateway.
+#
+# ot-demo was TCP-only, which would have made necronia's query port the FIRST
+# thing ever to traverse a UDPRoute through a hostNetwork Envoy. UDP through
+# that path is the least-trodden ground in the whole edge design, so it gets a
+# throwaway proof target like everything else here.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ot-udp
+  namespace: ot-demo
+  labels: { app.kubernetes.io/name: ot-udp }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: ot-udp }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: ot-udp }
+    spec:
+      serviceAccountName: ot-demo
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: socat
+          image: alpine/socat@sha256:5f275aa1b6e9889c851f61097142ee050fc6ac4615b4ea64ac1f2b0e81ff8d7f
+          args:
+            - "-d"
+            # ⚠️ UDP-RECVFROM + fork, NOT UDP-LISTEN. UDP-LISTEN binds to the
+            # first peer it hears from and then ignores everyone else, so it
+            # would answer exactly one client and appear to work in a single
+            # manual test. RECVFROM forks per datagram and replies from the same
+            # socket, which is what Envoy's UDP proxy expects.
+            - "UDP-RECVFROM:7173,fork,reuseaddr"
+            - "SYSTEM:echo OT-UDP-ECHO port=7173"
+          ports:
+            - name: udp
+              containerPort: 7173
+              protocol: UDP
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 5m, memory: 16Mi }
+            limits:   { memory: 32Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ot-udp
+  namespace: ot-demo
+spec:
+  type: ClusterIP
+  selector: { app.kubernetes.io/name: ot-udp }
+  # ⚠️ `protocol: UDP` is explicit on BOTH the containerPort above and here.
+  # The default is TCP, and getting it wrong produces a Service whose port
+  # matches no container port -- which surfaces as "Envoy has no upstream"
+  # rather than as a typo.
+  ports:
+    - name: udp
+      port: 7173
+      targetPort: udp
+      protocol: UDP

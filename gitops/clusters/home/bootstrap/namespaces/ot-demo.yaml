@@ -9,8 +9,21 @@
 # directly, bypassing Envoy entirely, so putting them in `canary` would mean
 # widening the one policy in the cluster whose strictness is the whole point.
 #
-# `restricted`, like canary. Both listeners are above 1024, so nothing here
+# `restricted`, like canary. All three listeners are above 1024, so nothing here
 # needs a capability to bind.
+#
+# ── 🔴 THE OPT-IN LABEL IS WHAT PUBLISHES THIS NAMESPACE TO THE INTERNET ────
+# `homelab.techyon.dev/edge-publish` is what the `homelab-edge` Gateway's
+# `allowedRoutes.namespaces.selector` matches. Without it, a TCPRoute here
+# reports `Accepted: False` / NotAllowedByListeners and nothing is exposed.
+#
+# It is a PURPOSE-BUILT label, not a reused one, so it cannot be granted as a
+# side effect of doing something else -- and adding it is a reviewable commit to
+# this directory rather than a consequence of deploying an app. That is the
+# containment for a Gateway with no authentication in front of it.
+#
+# Residual hole, stated rather than hidden: anyone who can label a namespace can
+# publish through the edge. That is cluster-admin -- ArgoCD and this repo.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -22,3 +35,4 @@ metadata:
     pod-security.kubernetes.io/audit-version: v1.35
     pod-security.kubernetes.io/warn: restricted
     pod-security.kubernetes.io/warn-version: v1.35
+    homelab.techyon.dev/edge-publish: "true"

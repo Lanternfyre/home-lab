@@ -46,6 +46,14 @@ dnsmasq:
     - address=/nas.home/192.168.33.14
     - address=/pc.home/192.168.33.8
     - address=/router.home/192.168.33.1
+    # The edge node, resolving to its TUNNEL address -- the only one a LAN
+    # client can reach. Its PUBLIC name (edge-1.techyon.dev) is a real DNS
+    # record created by external-dns from the homelab-edge Gateway, and is a
+    # different thing for a different audience.
+    #
+    # ⚠️ `.edge`, not `.home`: this box is not on the LAN. The inventory uses
+    # the same name for the same reason.
+    - address=/edge-1.edge/10.250.0.1
 
 env:
   TZ: "Europe/Warsaw"

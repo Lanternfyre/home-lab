@@ -89,6 +89,55 @@ node_dns_fallback: "8.8.4.4"
 # Proven on k8s-5.home on 2026-08-01.
 node_multipath_find_multipaths: "no"
 
+# ── Does this node get the storage stack at all? ────────────────────────────
+# True everywhere except `k3s_edge`, where it is false in
+# group_vars/k3s_edge.yml. Gates the whole iSCSI/multipath half of
+# node_baseline (roles/node_baseline/tasks/storage.yml) and the matching
+# assertions in node_verify.
+#
+# ⚠️ A VARIABLE rather than `--skip-tags storage`, deliberately. site.yml is
+# documented as "run it against everything, any time", and nobody will remember
+# to append a skip flag on the converge that matters. A CLI flag cannot encode
+# "this host never gets storage"; an inventory fact can -- which is the same
+# principle as "a node's role is its inventory GROUP".
+node_storage_enabled: true
+
+# ── The WireGuard underlay to the edge node ─────────────────────────────────
+# Hub and spoke: the VPS is the hub (10.250.0.1, set in group_vars/k3s_edge.yml)
+# and every home node peers with it DIRECTLY. There is deliberately no
+# home-side terminator -- nothing to fail over, because a dead node is just a
+# dead node and Kubernetes already handles that.
+#
+# Addresses are derived from the node number so adding k8s-8 needs no line
+# here: k8s-1 -> 10.250.0.11 ... k8s-7 -> 10.250.0.17. The hub keeps .1 and the
+# 10.250.0.2-9 range is left free for anything that later needs a fixed slot.
+wg_address: "10.250.0.{{ 10 + (inventory_hostname.split('.')[0].split('-')[1] | int) }}"
+#
+# ⚠️ This references `inventory_hostname`, and the WireGuard templates read it
+# CROSS-HOST as `hostvars[peer].wg_address`. That is safe, and it was verified
+# rather than assumed, because it is a classic Ansible footgun:
+#
+#   $ ansible edge-1.edge -m debug -a 'msg="self={{ wg_address }}
+#       k8s-1={{ hostvars["k8s-1.home"].wg_address }}
+#       k8s-7={{ hostvars["k8s-7.home"].wg_address }}"'
+#   "self=10.250.0.1 k8s-1=10.250.0.11 k8s-7=10.250.0.17"
+#
+# hostvars templates each variable in the context of the host it BELONGS to, so
+# `inventory_hostname` inside it is the peer's, not the current host's. Do not
+# "fix" this into a static per-host list on the suspicion that it resolves to
+# the wrong host -- it does not.
+wg_subnet: "10.250.0.0/24"
+wg_port: 51820
+
+# ⚠️ THE VPN CLIENT RANGE, AND IT MUST NEVER APPEAR IN ANY AllowedIPs.
+# NetBird's clients are SNAT'd at the VPS to 10.250.0.1 before their traffic
+# enters the cluster, so no node ever sees a 10.251.x source address. Adding it
+# to a peer is a no-op that READS like a fix, which is exactly the edit someone
+# makes while debugging something else. roles/wireguard asserts its absence.
+#
+# Declared here only so that the assertion has a single place to point at.
+wg_client_subnet: "10.251.0.0/24"
+
 # ── Surviving a partition to the NAS ─────────────────────────────────────────
 #
 # On 2026-08-08 00:25 UTC the QNAP went away for longer than the iSCSI

@@ -1,0 +1,114 @@
+# H3 -- privilege containment in the `gateway-edge` namespace.
+#
+# `gateway-edge` is PSA `privileged` for exactly ONE reason: the edge Envoy
+# needs `hostNetwork` to bind real TCP/UDP ports on a VPS that MetalLB cannot
+# serve. Nothing there needs privilege, host PID/IPC, host paths or added
+# capabilities, and this policy is what says so -- PSA has stopped enforcing it,
+# so something has to.
+#
+# Same shape as metallb-pod-constraints.validatingpolicy.yaml, which is the
+# established pattern here: a namespace is privileged because one workload
+# genuinely needs one host capability, and the exemption is narrowed back to
+# that workload by name.
+#
+# ⚠️ THIS MUST LAND IN THE SAME CHANGE AS THE PSA LABEL, never after it.
+# Between the label and this policy, `gateway-edge` is an unconstrained
+# privileged namespace on a cluster whose edge node is internet-facing.
+#
+# ── The exemption is TWO conditions, not one ────────────────────────────────
+# A pod creator can set `serviceAccountName` freely, and can set labels freely.
+# Neither alone identifies the edge proxy. Together they are only ever both
+# true on a pod Envoy Gateway generated: the SA name is pinned in the
+# EnvoyProxy CR, and the owning-gateway label is applied by the controller.
+#
+# ⚠️ DO NOT add a hostPort test here. Under hostNetwork the API server DEFAULTS
+# hostPort = containerPort, so the exempt pod acquires hostPorts 19001/19003
+# without anyone writing them -- a hostPort rule would deny the one pod this
+# policy exists to allow.
+#
+# ── failurePolicy ───────────────────────────────────────────────────────────
+# Left at the default (Fail). Unlike loadbalancer-no-nodeports, this matches
+# ONE namespace rather than every Service in the cluster, so Kyverno being
+# unhealthy blocks pod creation in `gateway-edge` alone. For a namespace whose
+# whole purpose is a privileged exemption, refusing to create pods while the
+# guard is down is the correct failure direction.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: gateway-edge-pod-constraints
+spec:
+  validationActions: [Deny]
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: gateway-edge
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+    # BOTH halves, deliberately -- see the header.
+    - name: isEdgeProxy
+      expression: >-
+        has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == 'envoy-edge' &&
+        has(object.metadata.labels) &&
+        'gateway.envoyproxy.io/owning-gateway-name' in object.metadata.labels &&
+        object.metadata.labels['gateway.envoyproxy.io/owning-gateway-name'] == 'homelab-edge'
+
+  validations:
+    # Unconditional. Nothing here has ever needed privilege, including the proxy.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: >-
+        Nothing in `gateway-edge` may run privileged. The namespace is PSA
+        `privileged` because the edge Envoy needs hostNetwork to bind real
+        TCP/UDP ports on a node MetalLB cannot serve -- not because anything
+        needs full privilege.
+
+    # hostNetwork for the edge proxy only; host PID and IPC for nothing at all.
+    - expression: >-
+        variables.isEdgeProxy ||
+        ((!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+         (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+         (!has(object.spec.hostIPC) || object.spec.hostIPC == false))
+      message: >-
+        Only the edge Envoy proxy may use host networking here. It has to bind
+        the real listener ports on the edge node's public interface, because
+        MetalLB is L2 on 192.168.32.0/23 and that node is not on that segment.
+        Everything else in this namespace runs on the pod network.
+
+    - expression: >-
+        !has(object.spec.hostPID) || object.spec.hostPID == false
+      message: "Nothing in `gateway-edge` may share the host PID namespace."
+
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          size(c.securityContext.capabilities.add) == 0)
+      message: >-
+        No container in `gateway-edge` may add capabilities. The edge listeners
+        are deliberately above port 1023 so that NET_BIND_SERVICE is never
+        needed -- if you are hitting this because a listener below 1024 was
+        added, reconsider the port before reconsidering this rule.
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        No hostPath volumes in `gateway-edge`. This namespace runs on a machine
+        with a public IP; its filesystem is not a shared resource.
