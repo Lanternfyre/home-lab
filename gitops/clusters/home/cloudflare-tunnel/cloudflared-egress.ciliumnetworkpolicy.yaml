@@ -100,8 +100,9 @@ spec:
 
   ingress:
     # The kubelet probe path. `world` is correct here and must not be
-    # "tightened" -- see canary/canary.ciliumnetworkpolicy.yaml for the
-    # experiment that established it.
+    # "tightened" -- see apps/mealie/manifests/mealie-ingress.ciliumnetworkpolicy.yaml
+    # for the experiment that established it. (Was a pointer to the canary,
+    # retired 2026-09-05; mealie is where the finding was actually made.)
     - fromEntities:
         - host
         - remote-node
