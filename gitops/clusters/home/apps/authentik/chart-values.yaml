@@ -19,6 +19,12 @@ global:
 # A0b -- blueprints are discovered from mounted Secrets/ConfigMaps, only from
 # keys ending `.yaml`, and only the WORKER mounts them.
 blueprints:
+  # The brand/theme blueprint carries no secret, so it is a plain ConfigMap and
+  # its CSS stays readable in git. Same discovery rules as `secrets` below --
+  # `.yaml` keys only, worker-mounted only.
+  configMaps:
+    - authentik-blueprint-brand
+
   secrets:
     - authentik-blueprints
     - authentik-blueprint-grafana
