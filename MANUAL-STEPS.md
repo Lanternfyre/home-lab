@@ -666,10 +666,13 @@ can join a **server** to your cluster — which is etcd, which is everything.
 runbook. Three things that document establishes and this line used to miss:
 
 - Rotation alone is not the fix. The token is unmanaged — not in Ansible, not
-  in `config.yaml`, inline in each node's systemd unit — so rotating replaces
-  one unmanaged secret with another.
-- **Unit normalisation is a precondition.** While `--token` sits in `ExecStart`,
-  a token in `config.yaml` is ignored.
+  in `config.yaml` — so rotating replaces one unmanaged secret with another.
+- **Normalising the unit ENV is a precondition** (corrected 2026-09-06: this
+  used to say `ExecStart`). The token is not in `ExecStart` — servers pass no
+  arguments at all. It is `K3S_TOKEN=` in each agent's
+  `k3s-agent.service.env`, and that env var overrides `config.yaml` exactly as a
+  CLI flag would. Note `30-upgrade.yml` wipes that file on every upgrade, which
+  is why `token-file:` in `config.yaml` is the durable target.
 - **Keep the old token when you rotate.** Snapshots taken before a rotation
   require it to restore.
 
