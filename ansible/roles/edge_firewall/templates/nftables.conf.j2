@@ -28,11 +28,40 @@ table inet edge_filter {
     # upgrade instead of during a change.
     iifname "{{ edge_fw_tunnel_iface }}" accept
 
-    # ICMP: keep it. Dropping echo breaks path-MTU discovery, and blackbox
-    # exporter probes this node's tunnel address as the WireGuard liveness
-    # signal.
-    ip protocol icmp accept
-    ip6 nexthdr icmpv6 accept
+    # ── ICMP: the useful kinds only, and NOT echo on the public side ───
+    #
+    # Dropping ICMP wholesale is a classic self-inflicted wound: it breaks
+    # path-MTU discovery, and on a tunnel whose MTU is already 1420 (1370 once
+    # VXLAN is inside it) that surfaces as large responses HANGING with no
+    # error anywhere. So `destination-unreachable` -- which carries
+    # fragmentation-needed -- is accepted unconditionally, and so is
+    # `time-exceeded`.
+    #
+    # ECHO IS DIFFERENT. It is the one ICMP type that exists to tell a stranger
+    # this host is here, and nothing needs it from the internet:
+    #   * PMTUD does not use echo.
+    #   * The blackbox probe targets the TUNNEL address (10.250.0.1), which
+    #     arrives on {{ edge_fw_tunnel_iface }} and is accepted wholesale above.
+    # So echo is accepted on the tunnel and dropped on the public NIC, which
+    # makes this host silent to a ping sweep without costing any diagnostics
+    # that matter.
+    #
+    # ⚠️ It does NOT make the host unfindable. The published service ports still
+    # answer, and a TCP scan finds them regardless -- that is what publishing a
+    # game server means. This removes the free "is anything here?" signal, not
+    # the service itself.
+    icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+    icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem } accept
+
+    # ICMPv6 neighbour discovery is not optional -- dropping it breaks IPv6 on
+    # the link entirely, including the tunnel if it ever runs over v6.
+    icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert } accept
+
+    # Echo needs NO rule of its own: `iifname {{ edge_fw_tunnel_iface }} accept`
+    # above already admits everything on the tunnel, and the public NIC has no
+    # echo rule, so it falls through to `policy drop`. Adding an explicit
+    # tunnel-echo accept here would be a redundant rule that reads like the
+    # thing doing the work -- and the next person would "tidy" the wrong one.
 
 {% for r in edge_fw_public_tcp %}
     # {{ r.why }}
