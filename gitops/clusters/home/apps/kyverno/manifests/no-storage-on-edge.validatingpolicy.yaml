@@ -1,0 +1,90 @@
+# Keep the storage stack off the public edge node.
+#
+# ── Why a policy and not a nodeSelector ─────────────────────────────────────
+# `trident-node-linux` tolerates EVERYTHING:
+#
+#   [{"effect":"NoExecute","operator":"Exists"},
+#    {"effect":"NoSchedule","operator":"Exists"}]
+#
+# `operator: Exists` with no key tolerates every taint of that effect, so the
+# `infrastructure.techyon.dev/edge` taint does not repel it. That is deliberate
+# upstream -- a CSI node plugin is meant to run everywhere -- and it means the
+# taint that keeps ordinary workloads off this node cannot keep the driver off.
+#
+# Three routes were checked and rejected before this one:
+#
+#   * a nodeSelector in qnap-trident/chart-values.yaml -- the DaemonSet is owned
+#     by a TridentOrchestrator CR, not the chart, so no chart value reaches it.
+#   * `kubectl patch` on the DaemonSet -- the operator reconciles it straight
+#     back, which is CLAUDE.md's "never patch chart-managed resources" one layer
+#     down.
+#   * `nodePluginNodeSelector` on the CR -- upstream NetApp Trident supports it
+#     and QNAP's v1.6.2 is a fork, but the CRD is SCHEMALESS
+#     (x-kubernetes-preserve-unknown-fields), so the cluster cannot say whether
+#     the field is honoured, and the CR itself is ArgoCD-managed by a private
+#     chart. An unverifiable field that silently does nothing is worse than no
+#     control at all: it would look like protection.
+#
+# ── What this actually protects ────────────────────────────────────────────
+# trident-node-linux mounts `trident-csi` and `trident-encryption-keys` and runs
+# hostNetwork. The edge node has a public IP, so those keys would be sitting on
+# an internet-facing machine.
+#
+# It could not reach the NAS from there -- the WireGuard AllowedIPs cover node
+# /32s only, not 192.168.33.14 -- so this is about the SECRETS, not about
+# connectivity. That is still worth a hard stop.
+#
+# ── The cost, stated ───────────────────────────────────────────────────────
+# The DaemonSet controller will retry the denied pod forever, so
+# `kubectl -n storage get events` will show a steady trickle of FailedCreate on
+# this one node. That noise is the price of a deterministic control, and it is
+# preferable to a nodeSelector that may or may not be honoured. If the QNAP
+# chart ever gains a nodePluginNodeSelector passthrough -- it is our chart, so
+# that is a small change -- prefer it and delete this file.
+#
+# ⚠️ failurePolicy is left at the default (Fail). This matches ONE namespace and
+# one label, so Kyverno being down blocks storage pods in `storage` alone. For a
+# rule whose whole job is keeping keys off a public box, refusing to create the
+# pod while the guard is down is the correct direction.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: no-storage-on-edge
+spec:
+  validationActions: [Deny]
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+
+  matchConditions:
+    # The DaemonSet controller sets spec.nodeName directly, so the target node
+    # is known at admission time -- there is no scheduler to consult.
+    #
+    # ⚠️ Matched by NAME, not by label. A node label is set by the kubelet from
+    # config we control, so a policy keyed on it would stop protecting the node
+    # the moment that label were removed -- which is precisely the situation
+    # where protection matters.
+    - name: is-on-an-edge-node
+      expression: >-
+        has(object.spec.nodeName) &&
+        object.spec.nodeName.startsWith('k8s-edge')
+
+  validations:
+    - expression: >-
+        !has(object.metadata.labels) ||
+        !('app' in object.metadata.labels) ||
+        object.metadata.labels['app'] != 'node.csi.trident.qnap.io'
+      message: >-
+        The QNAP CSI node plugin may not run on an edge node. It mounts
+        trident-csi and trident-encryption-keys and runs hostNetwork, and an
+        edge node has a PUBLIC IP -- those keys must not be on it. The
+        infrastructure.techyon.dev/edge taint does not stop this DaemonSet
+        because it tolerates every taint (operator: Exists), which is why this
+        policy exists. If the node genuinely needs storage, it is not an edge
+        node.
