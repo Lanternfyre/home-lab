@@ -41,6 +41,28 @@
 # replaced by a Lua filter on the connection manager, which would be
 # host-agnostic. The status block below is the tripwire: `Programmed` goes
 # False if the patch cannot apply.
+#
+# ── RETARGETED 2026-09-05, canary -> authentik ──────────────────────────────
+# The `cluster` below named `httproute/canary/canary-tunnel/rule/0`. The canary
+# was retired, so that cluster no longer exists and this patch would have gone
+# `Programmed: False` -- taking the ONLY defence against the doubled root path
+# with it, silently, on the very hostname replacing it.
+#
+# 🔴 authentik NEEDS this more than the canary did. The canary's `//` loop cost
+# a debugging session on a throwaway echo server; here the doubled path lands on
+# the LOGIN PAGE of the identity provider that every other service trusts. The
+# failure is ERR_TOO_MANY_REDIRECTS on sign-in, with authentik itself perfectly
+# healthy and nothing in its logs to explain it.
+#
+# ⚠️ VERIFY, DO NOT ASSUME, that the cluster name below matches reality after
+# the route is applied. It is derived from the HTTPRoute's namespace, name and
+# rule index, so a rename of the route silently breaks it:
+#   kubectl -n gateway-envoy exec deploy/<envoy-tunnel-pod> -- \
+#     curl -s localhost:19000/config_dump?resource=dynamic_route_configs \
+#     | grep -o 'httproute/[a-z0-9/-]*'
+# and then check the policy actually took:
+#   kubectl -n gateway-envoy get envoypatchpolicy tunnel-root-path \
+#     -o jsonpath='{.status.conditions[?(@.type=="Programmed")]}'
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
@@ -65,7 +87,7 @@ spec:
           match:
             path: "//"
           route:
-            cluster: "httproute/canary/canary-tunnel/rule/0"
+            cluster: "httproute/authentik/authentik-tunnel/rule/0"
             regex_rewrite:
               pattern:
                 regex: "^//$"

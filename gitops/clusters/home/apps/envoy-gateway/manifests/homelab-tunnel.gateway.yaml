@@ -111,99 +111,59 @@ spec:
   # listener nobody checks.
   #
   # It still gets a MetalLB LoadBalancer, like the other two. ClusterIP would
-  # be tighter -- no LAN listener at all -- but that needs an EnvoyProxy CR,
-  # a concept this repo does not otherwise use, for marginal gain: the
-  # listener is authentik-gated either way and no LAN name resolves to it.
----
-# The gate for the internet-facing Gateway.
+  # be tighter -- no LAN listener at all -- but that needs an EnvoyProxy CR.
+  #
+  # ⚠️ REASSESSED 2026-09-05, because the argument that used to close this
+  # paragraph is now WRONG. It read: "the listener is authentik-gated either
+  # way and no LAN name resolves to it". The first half died with `tunnel-gate`
+  # below -- this LoadBalancer is now an UNGATED path to authentik from
+  # anywhere on 192.168.32.0/23, reachable by IP without any name at all.
+  #
+  # That is judged acceptable and not ignored: `authentik.lab.techyon.dev`
+  # already serves the same application ungated on the open `homelab` Gateway,
+  # so the LAN could always reach authentik's login page. This adds a second
+  # address for something already LAN-reachable, not a new exposure.
+  #
+  # It is worth tightening when the edge node lands, because that work
+  # introduces the EnvoyProxy CR anyway and the "concept this repo does not
+  # use" objection disappears with it.
+
+# ⚠️⚠️ THERE IS DELIBERATELY NO SecurityPolicy ON THIS GATEWAY. ⚠️⚠️
 #
-# Same authentik client (`envoy-gateway`) and same client-secret Secret as the
-# LAN gate, so publishing a service adds redirect URIs to an existing provider
-# rather than creating a second one. Every setting below is copied deliberately
-# from `google-workspace-only`; read that policy's comments before changing any
-# of them, because each was established by the Phase 6 spike rather than from
-# documentation.
-apiVersion: gateway.envoyproxy.io/v1alpha1
-kind: SecurityPolicy
-metadata:
-  name: tunnel-gate
-  namespace: gateway-envoy
-spec:
-  targetRefs:
-    - group: gateway.networking.k8s.io
-      kind: Gateway
-      name: homelab-tunnel
-      # Pinned to the HTTPS listener for the same reason as the LAN gate, even
-      # though this Gateway has no HTTP listener today. If one is ever added,
-      # the policy must not silently start gating it and deriving an http://
-      # callback.
-      sectionName: https
-
-  oidc:
-    provider:
-      issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
-    clientID: "envoy-gateway"
-    clientSecret:
-      name: gateway-oidc
-
-    # Omitted on purpose, exactly as on the LAN gate: Envoy derives
-    # %REQ(x-forwarded-proto)%://%REQ(:authority)%/oauth2/callback, so one
-    # policy serves every hostname. For a public visitor on
-    # `app.techyon.dev` that yields `https://app.techyon.dev/oauth2/callback`
-    # -- a name that resolves publicly, which is why no host rewriting is
-    # needed or wanted here.
-    #
-    # ⚠️ Every public hostname still needs its exact redirect URI added to the
-    # authentik provider (authentik/manifests/blueprint-envoy-gateway...), which
-    # uses `matching_mode: strict`. Missing it is an HTTP 400 from authentik at
-    # the authorize step, with the gate itself looking perfectly healthy.
-    logoutPath: "/logout"
-    scopes:
-      - openid
-      - email
-      - profile
-
-    # LOAD-BEARING -- see the LAN gate. Unset, Envoy Gateway appends a random
-    # per-policy suffix and the jwt provider below cannot read the cookie.
-    cookieNames:
-      idToken: "IdToken"
-      accessToken: "AccessToken"
-
-  # `oidc` alone does not verify the ID token signature (envoy gateway #5414).
-  # Without this the cookie is trusted on its face and the claim check is
-  # decorative.
-  jwt:
-    providers:
-      - name: authentik
-        issuer: "https://authentik.lab.techyon.dev/application/o/envoy-gateway/"
-        audiences:
-          - "envoy-gateway"
-        remoteJWKS:
-          # In-cluster on purpose: the public hostname resolves to a Gateway,
-          # so fetching keys through it would make the gate depend on the data
-          # path it guards.
-          uri: "http://authentik-server.authentik.svc.cluster.local/application/o/envoy-gateway/jwks/"
-        extractFrom:
-          cookies:
-            - "IdToken"
-
-  authorization:
-    # A typo in the rule below fails CLOSED (403) rather than open.
-    defaultAction: Deny
-    rules:
-      - name: homelab-admins
-        action: Allow
-        principal:
-          jwt:
-            provider: authentik
-            claims:
-              # ⚠️ COPIED EXACTLY from the LAN gate, including the space and
-              # the capital A. An almost-right value here is a 403 on every
-              # public hostname at once, because defaultAction is Deny -- and
-              # `homelab-admins`, which is what the RULE is called, is not the
-              # group's name. StringArray, not String: `groups` is a list and
-              # the wrong valueType matches nothing.
-              - name: groups
-                valueType: StringArray
-                values:
-                  - "authentik Admins"
+# It used to carry `tunnel-gate` -- an authentik OIDC gate, `defaultAction:
+# Deny`, cascading to every attached route. That was REMOVED on 2026-09-05, and
+# removing it inverted what this Gateway means. Read this before attaching
+# anything.
+#
+# ── Why it had to go ────────────────────────────────────────────────────────
+# The first thing to publish here is authentik itself, so that NetBird (and any
+# future client) can complete an OIDC login from the internet. A gate that
+# authenticates against authentik cannot stand in front of authentik: the
+# unauthenticated request is redirected to the IdP, which is the very host
+# being requested, which redirects again. A loop, not an error page.
+#
+# This is the same constraint that already put `authentik.lab.techyon.dev` on
+# the OPEN `homelab` Gateway rather than on `homelab-gated`. The public side now
+# mirrors the LAN side, which is the tidier outcome: in BOTH cases the IdP is
+# reached ungated and everything else sits behind it.
+#
+# ── 🔴 WHAT THIS CHANGES FOR YOU ────────────────────────────────────────────
+# Before: attaching a route here published it, BEHIND authentik.
+# Now:    attaching a route here publishes it, TO THE ENTIRE INTERNET, ungated.
+#
+# The safety that used to be structural is now a matter of remembering. So:
+#
+#   * Attach ONLY things that are safe unauthenticated, and say why in the
+#     route's own file.
+#   * Anything needing the gate goes on a NEW `homelab-tunnel-gated` Gateway
+#     with its own SecurityPolicy, its own MetalLB address and its own
+#     cloudflared ingress entry. Do NOT reintroduce a policy here and expect
+#     authentik to keep working -- that is the loop above.
+#
+# ── What is attached today ──────────────────────────────────────────────────
+#   authentik.techyon.dev -> authentik/authentik-tunnel  (the IdP; ungated by
+#                            necessity, and authentik owns its own auth anyway)
+#
+# `canary.techyon.dev` was the only other route and was retired with the canary
+# on 2026-09-05. It had served its purpose: proving the tunnel path end to end
+# before anything real depended on it.
