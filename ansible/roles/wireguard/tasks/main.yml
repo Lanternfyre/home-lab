@@ -183,18 +183,49 @@
       is mistaken for the reason something works.
     success_msg: "client range correctly absent from AllowedIPs"
 
+# ⚠️ THE SUCCESS CRITERION IS STDOUT, NOT THE EXIT CODE, and the script ends
+# with an explicit `exit 0` to make that true.
+#
+# The first version ended its loop with `[ "$age" -gt 180 ] && echo "STALE ..."`.
+# When the age check is FALSE -- i.e. the handshake is fresh, the outcome we
+# want -- `[` returns 1, `&&` short-circuits, and that becomes the loop's exit
+# status. So a perfectly healthy tunnel failed the check on all eight nodes with
+# empty stdout and rc=1. The check failed exactly when it passed.
+#
+# A real failure to read the peer table still surfaces: it prints WGFAIL, which
+# the `until` below refuses just as loudly as a stale peer.
 - name: "verify | handshake with every expected peer"
   become: true
   ansible.builtin.shell:
     cmd: |
-      set -o pipefail
       now=$(date +%s)
-      wg show {{ wg_interface }} latest-handshakes | while read -r peer ts; do
-        if [ "$ts" = "0" ]; then echo "NEVER $peer"; else
+      if ! hs=$(wg show {{ wg_interface }} latest-handshakes 2>/dev/null); then
+        echo "WGFAIL cannot read the peer table"
+        exit 0
+      fi
+
+      # 🔴 A vacuous pass is the other way this check could lie. An interface
+      # with NO peers produces no output, which would look identical to "every
+      # peer is healthy". Assert the count explicitly.
+      expected={{ (groups['k3s_nodes'] | length - 1)
+                  if inventory_hostname in groups['k3s_edge'] else 1 }}
+      count=$(printf '%s\n' "$hs" | grep -c . || true)
+      if [ "$count" -ne "$expected" ]; then
+        echo "PEERCOUNT $count expected $expected"
+      fi
+
+      printf '%s\n' "$hs" | while read -r peer ts; do
+        [ -z "$ts" ] && continue
+        if [ "$ts" = "0" ]; then
+          echo "NEVER $peer"
+        else
           age=$(( now - ts ))
-          [ "$age" -gt 180 ] && echo "STALE ${age}s $peer"
+          if [ "$age" -gt 180 ]; then
+            echo "STALE ${age}s $peer"
+          fi
         fi
       done
+      exit 0
     executable: /bin/bash
   register: v_hs
   changed_when: false
