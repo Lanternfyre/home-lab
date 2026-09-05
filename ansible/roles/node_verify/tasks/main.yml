@@ -124,7 +124,13 @@
     conf=$(stat -c %Y /etc/multipath.conf)
     started=$(date -d "$(systemctl show multipathd -p ActiveEnterTimestamp --value)" +%s)
     mpaths=$(ls /dev/mapper 2>/dev/null | grep -c mpath || true)
-    sessions=$(ls /sys/class/iscsi_session 2>/dev/null | wc -l)
+    # LOGGED_IN only. A session left behind by a failed or torn-down attach
+    # sits in state FREE with its sd device `transport-offline`, and multipathd
+    # is CORRECT not to map an offline device -- counting those made the
+    # assertion below fail on debris rather than on a fault. Observed on
+    # k8s-lab7, 2026-09-05: one FREE session, sda transport-offline, from a
+    # storage proof that failed three days earlier.
+    sessions=$(grep -l LOGGED_IN /sys/class/iscsi_session/*/state 2>/dev/null | wc -l)
     echo "$conf $started $mpaths $sessions"
   register: mpath_freshness
   changed_when: false
@@ -204,7 +210,7 @@
   ansible.builtin.assert:
     that: (mp_sessions | int) == 0 or (mp_devices | int) > 0
     fail_msg: >-
-      {{ inventory_hostname }} has {{ mp_sessions }} iSCSI session(s) attached
+      {{ inventory_hostname }} has {{ mp_sessions }} LOGGED_IN iSCSI session(s)
       and ZERO multipath devices. The LUN is visible to the SCSI layer and
       multipathd is not mapping it, so Trident will fail to stage with
       "multipath device not found when it is expected". The usual cause is the

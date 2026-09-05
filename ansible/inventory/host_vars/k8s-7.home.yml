@@ -43,8 +43,23 @@ node_nic: enp1s0
 # it (kube-vip auto-detects the default-route interface, and it does not run
 # here at all -- its nodeAffinity requires the control-plane label).
 #
-# State at the time this file was written, measured over SSH, i.e. exactly what
-# 10-baseline.yml has to fix before this node may join:
+# ✅ IN SERVICE 2026-09-05. Storage PROVEN and uncordoned by
+# playbooks/46-prove-node-storage.yml, verified by value:
+#   storage proof                -> PASSED, mounted /dev/mapper/mpathb on /data,
+#                                   ext4, 16 MiB written and read back. That
+#                                   mpath device IS the blacklist fix working --
+#                                   before it, this node's LUN got no map at all.
+#   kubectl get csinode k8s-lab7 -> csi.trident.qnap.io
+#   systemctl is-active k3s-agent -> active, and k3s.service does not exist,
+#                                    so it was built as an agent, not a server
+#   kube-vip-ds desired           -> still 3 (control-plane nodeAffinity)
+#   every DaemonSet               -> desired == current == ready
+#   leaked PVs                    -> none; the proof's volume and LUN were
+#                                    reclaimed and no iSCSI session was left
+#                                    LOGGED_IN
+#
+# State BEFORE the join, measured over SSH, kept because it is what
+# 10-baseline.yml had to fix:
 #   /usr/local/bin/k3s                     -> absent (not a cluster member)
 #   systemctl is-active iscsid             -> inactive (multipathd IS active)
 #   sysctl -n fs.inotify.max_user_watches  -> 248289 (kernel default, not 1048576)
