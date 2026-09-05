@@ -162,8 +162,49 @@
 - name: "flush | apply config changes before verifying them"
   ansible.builtin.meta: flush_handlers
 
+# ── The key, re-asserted unconditionally ────────────────────────────────────
+# The handler above restores it after a sync, but the handler only fires when
+# the config CHANGES. A converge that changes nothing would leave a previously
+# cleared key cleared, so this is a plain task rather than a handler: it detects
+# the live state and fixes only what is actually wrong, like every other role
+# here.
+- name: "detect | does the interface actually hold a private key?"
+  become: true
+  ansible.builtin.command: "wg show {{ wg_interface }} public-key"
+  register: t_wg_ifkey
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "fix | re-assert the private key on the live interface"
+  become: true
+  ansible.builtin.command: "wg set {{ wg_interface }} private-key {{ wg_private_key_path }}"
+  when: (t_wg_ifkey.stdout | default('') | trim | length) == 0
+  changed_when: true
+
 # ───────────────────────────── VERIFY ─────────────────────────────
 # Assert behaviour and values, never file presence.
+
+# 🔴 THE CHECK THAT WOULD HAVE CAUGHT THE KEY BEING CLEARED.
+# A keyless interface is up, addressed, listening and fully peered -- it simply
+# cannot complete a handshake. `wg show <if> public-key` is empty exactly then,
+# and non-empty otherwise.
+- name: "verify | the interface holds a private key"
+  become: true
+  ansible.builtin.command: "wg show {{ wg_interface }} public-key"
+  register: v_ifkey
+  changed_when: false
+
+- name: "verify | assert the interface is keyed"
+  ansible.builtin.assert:
+    that: (v_ifkey.stdout | trim | length) > 0
+    fail_msg: >-
+      {{ wg_interface }} has NO private key. The link will be up, addressed,
+      listening and fully peered, and it cannot complete a single handshake --
+      `wg show` omits the `public key` line entirely. This is what
+      `wg syncconf` does when the config carries no PrivateKey line; the
+      handler re-asserts it, and so does the fix task above.
+    success_msg: "{{ wg_interface }} is keyed ({{ v_ifkey.stdout | trim | truncate(12, true, '...') }})"
 
 - name: "verify | the client range is absent from the live peer table"
   become: true
