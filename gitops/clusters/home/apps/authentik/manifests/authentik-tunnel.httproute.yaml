@@ -1,0 +1,73 @@
+# authentik's PUBLIC name. This is the change that puts the identity provider
+# on the internet, and it should be read as exactly that rather than as "one
+# more route".
+#
+# ── Why publish the IdP at all ──────────────────────────────────────────────
+# Self-hosted NetBird authenticates its clients against authentik over OIDC. A
+# device enrolling from outside the house must reach the IdP BEFORE it has a
+# tunnel -- that is the whole point of enrolment. Keeping authentik LAN-only
+# makes the VPN circular: you would need the VPN to log into the thing that
+# authorises the VPN, and a new or reinstalled device could never get in.
+#
+# ⚠️ So this route is a PREREQUISITE for NetBird, not part of it. It lands and
+# soaks on its own, with nothing depending on it yet.
+#
+# ── One level deep, like every public name here ─────────────────────────────
+# `authentik.techyon.dev`, not `authentik.lab.techyon.dev`. Cloudflare's
+# Universal SSL covers the apex and FIRST-level subdomains only; a proxied
+# `*.lab.techyon.dev` name fails the handshake at the edge before any tunnel is
+# consulted. Proven previously with `openssl s_client` -- see
+# apps/envoy-gateway/manifests/homelab-tunnel.gateway.yaml.
+#
+# ── The LAN name stays, and it is not redundant ─────────────────────────────
+# `authentik.lab.techyon.dev` remains on the open `homelab` Gateway, unchanged.
+# It is the CONTROL: when public sign-in misbehaves, the LAN path answers "is
+# authentik broken, or is the exposure broken?". It is also the path every
+# in-cluster consumer already uses.
+#
+# 🔴 TWO HOSTNAMES, AND authentik DERIVES ITS OIDC `issuer` FROM THE REQUEST
+# HOST. A token minted through this route carries
+# `https://authentik.techyon.dev/application/o/<app>/`, while the Envoy gates
+# pin `https://authentik.lab.techyon.dev/application/o/envoy-gateway/`. They do
+# NOT match, and a mismatched issuer is a 403 from the jwt provider with no
+# useful message.
+#
+# That is survivable only because the two are used by DIFFERENT clients:
+#   * the Envoy gates are LAN/tunnel-side and always see the .lab name
+#   * NetBird will be configured against the public name and only that
+# No client may be reachable through both. Check this before adding any
+# provider here.
+#
+# ── Ungated, necessarily ────────────────────────────────────────────────────
+# `homelab-tunnel` no longer carries a SecurityPolicy -- gating the IdP with
+# itself is a redirect loop. authentik enforces its own authentication, so what
+# is exposed is a login page, which is what a login page is for. Everything
+# behind it is unchanged.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: authentik-tunnel
+  namespace: authentik
+  annotations:
+    # 🔴 REQUIRED ON EVERY ROUTE ON THIS GATEWAY. external-dns reads `target`
+    # from the Gateway and every OTHER annotation from the ROUTE. Without this
+    # the CNAME is created UNPROXIED, and an unproxied CNAME to
+    # cfargotunnel.com resolves to nothing a client can reach -- `dig` returns
+    # the raw target instead of Cloudflare's anycast addresses, and nothing
+    # anywhere reports an error.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  parentRefs:
+    - name: homelab-tunnel
+      namespace: gateway-envoy
+  hostnames:
+    - authentik.techyon.dev
+  rules:
+    # ⚠️ The name and namespace of this route, plus this rule's index, form the
+    # Envoy cluster name `httproute/authentik/authentik-tunnel/rule/0` that
+    # tunnel-root-path.envoypatchpolicy.yaml patches against. Renaming either,
+    # or inserting a rule above this one, breaks the doubled-root-path fix --
+    # and it breaks it silently, as a login redirect loop.
+    - backendRefs:
+        - name: authentik-server
+          port: 80

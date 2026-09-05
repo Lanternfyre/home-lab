@@ -55,10 +55,15 @@ data:
       # `canary.lab.techyon.dev` keeps resolving to the LAN Gateway and is
       # untouched by any of this. It is the CONTROL: when the public path
       # misbehaves it answers "is the app broken, or is the exposure broken?".
-      - hostname: canary.techyon.dev
+      - hostname: authentik.techyon.dev
         service: https://envoy-gateway-envoy-homelab-tunnel-6cc00307.gateway-envoy.svc.cluster.local:443
         originRequest:
-          originServerName: canary.techyon.dev
+          # ⚠️ Must match a name on the ORIGIN certificate
+          # (wildcard-techyon-dev-tls, `*.techyon.dev`), because this is what
+          # cloudflared validates the origin against -- not what the visitor
+          # asked for. Getting it wrong is a 502 at the edge with a healthy
+          # Envoy behind it.
+          originServerName: authentik.techyon.dev
 
       # ── The two-port TCP demo ─────────────────────────────────────────────
       # An Open-Tibia-shaped protocol: LOGIN on one port, GAME on another, each
