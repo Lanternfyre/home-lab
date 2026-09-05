@@ -1,0 +1,141 @@
+# The look of every authentik login page, as code.
+#
+# ── Why a ConfigMap and not an ExternalSecret ───────────────────────────────
+# Every other blueprint here is an ExternalSecret because it carries an OIDC
+# client secret. This one carries no secret at all -- it is a title and a
+# stylesheet. Routing it through External Secrets would hide the CSS behind a
+# secret store for no benefit and make it unreadable in review. The chart
+# mounts `blueprints.configMaps` exactly like `blueprints.secrets` (both
+# confirmed in the 2026.8.0 values), so nothing else differs.
+#
+# ⚠️ Only keys ending `.yaml` are discovered, and only the WORKER mounts them.
+#
+# ── It UPDATES the existing brand, it does not add one ──────────────────────
+# Checked against the live instance before writing: there is exactly ONE brand,
+# `authentik-default`, `default: true`, title "authentik", with an empty custom
+# CSS field. `identifiers.domain` below matches it, so this blueprint takes
+# ownership of that row. Using any other domain would create a SECOND brand
+# that never matches a request, and the login page would look untouched with
+# the blueprint reporting success.
+#
+# ── Field names are from the live model, not from the docs ──────────────────
+# The documentation lists UI labels ("Custom CSS"), not API fields. These came
+# from `Brand._meta.get_fields()` on the running 2026.8.0 instance:
+#   branding_title, branding_custom_css, branding_logo, branding_favicon,
+#   branding_default_flow_background
+# A misspelled attr does not fail loudly -- the blueprint applies and the
+# setting simply is not there.
+#
+# ── How to iterate ──────────────────────────────────────────────────────────
+# Edit the CSS below, commit, let ArgoCD sync; the worker re-applies the
+# blueprint within its discovery interval. Then hard-reload the login page --
+# the CSS is adopted into each component's shadow root and is cached hard.
+#
+#   kubectl -n authentik logs deploy/authentik-worker | grep -i blueprint
+#
+# ⚠️ Editing the brand in the admin UI is NOT the way. The blueprint reasserts
+# on every apply and will silently revert it -- the same "I changed it and it
+# went back" trap as patching a chart-managed resource.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-blueprint-brand
+  namespace: authentik
+data:
+  brand.yaml: |
+    version: 1
+    metadata:
+      name: brand-techyon
+    entries:
+      - model: authentik_brands.brand
+        identifiers:
+          domain: authentik-default
+        attrs:
+          branding_title: "techyon"
+
+          # ── The theme ───────────────────────────────────────────────────
+          # Deliberately SHORT. This is a first look, meant to be edited --
+          # every value worth changing is a variable at the top, and the rules
+          # below only reference those. Restyling means editing five lines,
+          # not hunting through selectors.
+          #
+          # ⚠️ Written without being rendered. authentik is PatternFly-based
+          # and these are its class names; if a selector misses, the page
+          # falls back to stock authentik rather than breaking. Look at it
+          # before assuming it landed.
+          branding_custom_css: |
+            :host,
+            :root {
+              --ak-accent:      #5eead4;
+              --ak-bg-deep:     #0b0f14;
+              --ak-bg-raised:   #111820;
+              --ak-border:      #1f2b36;
+              --ak-text:        #e6edf3;
+              --ak-text-muted:  #8b9aa8;
+              --ak-radius:      14px;
+            }
+
+            /* The page behind the card: near-black, with one soft accent
+               bloom so it is not a flat rectangle. */
+            .pf-c-background-image,
+            .pf-c-login {
+              background: radial-gradient(
+                            900px 520px at 50% -10%,
+                            rgba(94, 234, 212, 0.10),
+                            transparent 70%),
+                          var(--ak-bg-deep);
+            }
+            .pf-c-background-image::before { display: none; }
+
+            /* The card. Raised, softly bordered, no hard drop shadow. */
+            .pf-c-login__main {
+              background: var(--ak-bg-raised);
+              border: 1px solid var(--ak-border);
+              border-radius: var(--ak-radius);
+              box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+              overflow: hidden;
+            }
+            .pf-c-login__main-header,
+            .pf-c-login__main-body,
+            .pf-c-login__main-footer { background: transparent; }
+
+            .pf-c-title,
+            .pf-c-login__main-header-desc { color: var(--ak-text); }
+            .pf-c-form__label-text { color: var(--ak-text-muted); }
+
+            /* Inputs: flat, and the accent appears only on focus so the form
+               reads calm until you are actually in it. */
+            .pf-c-form-control {
+              background: #0d141b;
+              border: 1px solid var(--ak-border);
+              border-radius: 10px;
+              color: var(--ak-text);
+            }
+            .pf-c-form-control:focus {
+              border-color: var(--ak-accent);
+              box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.15);
+              outline: none;
+            }
+
+            /* One accent element on the page: the primary button. */
+            .pf-c-button.pf-m-primary {
+              background: var(--ak-accent);
+              border: none;
+              border-radius: 10px;
+              color: #04231f;
+              font-weight: 600;
+              letter-spacing: 0.01em;
+              transition: filter 120ms ease, transform 120ms ease;
+            }
+            .pf-c-button.pf-m-primary:hover { filter: brightness(1.08); }
+            .pf-c-button.pf-m-primary:active { transform: translateY(1px); }
+
+            .pf-c-button.pf-m-link { color: var(--ak-accent); }
+
+            /* The "Log in with Google" style source buttons. */
+            .pf-c-login__main-footer-links-item > button,
+            .pf-c-login__main-footer-links-item > a {
+              background: #0d141b;
+              border: 1px solid var(--ak-border);
+              border-radius: 10px;
+            }
