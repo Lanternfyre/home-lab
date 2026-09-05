@@ -15,9 +15,26 @@ kind: GatewayClass
 metadata:
   name: envoy-edge
   annotations:
-    # Apply AFTER the chart, so the controller exists to accept it. Same
-    # sync-wave reasoning as the LAN gateway-class.yaml.
-    argocd.argoproj.io/sync-wave: "10"
+    # 🔴 WAVE 0, AND IT MUST BE LOWER THAN THE GATEWAY'S.
+    #
+    # This carried sync-wave "10", copied from the LAN gateway-class.yaml where
+    # it is correct -- there the GatewayClass and the Gateways live in DIFFERENT
+    # Applications, so they cannot block each other.
+    #
+    # Here they are in the SAME Application, and that deadlocks:
+    #   Gateway (wave 0) applies first -> cannot go healthy without its
+    #   GatewayClass -> ArgoCD blocks on health before starting wave 10 ->
+    #   the GatewayClass never applies -> the Gateway never goes healthy.
+    #
+    # Observed on the first sync after merge, not reasoned about:
+    #   EnvoyProxy/edge          Synced
+    #   Gateway/homelab-edge     Synced
+    #   GatewayClass/envoy-edge  OutOfSync
+    #   "waiting for healthy state of .../Gateway/homelab-edge"
+    #
+    # The CRDs this depends on are cluster-scoped and owned by the OTHER
+    # Application, so there is nothing left for it to wait behind.
+    argocd.argoproj.io/sync-wave: "0"
 spec:
   controllerName: gateway.envoyproxy.io/edge-gatewayclass-controller
   description: "Internet-facing TCP/UDP GatewayClass, pinned to the edge node"

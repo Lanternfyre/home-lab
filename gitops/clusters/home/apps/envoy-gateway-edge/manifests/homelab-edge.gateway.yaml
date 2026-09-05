@@ -118,6 +118,10 @@ metadata:
   name: homelab-edge
   namespace: gateway-edge
   annotations:
+    # AFTER the GatewayClass (wave 0). A Gateway cannot go healthy without its
+    # class, and ArgoCD blocks on health between waves -- so the class must be
+    # in an earlier wave or the two deadlock. See gateway-class.yaml.
+    argocd.argoproj.io/sync-wave: "5"
     # 🔴 LOAD-BEARING. external-dns takes its target from this annotation and,
     # ABSENT IT, falls back to the Gateway's Status.Addresses -- which for a
     # ClusterIP Service is 10.43.x.y. It would publish an RFC1918 address for a
