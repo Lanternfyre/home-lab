@@ -1,7 +1,7 @@
 ---
 # Prove ONE freshly joined EDGE node, then return it to service.
 #
-# ══ THIS IS AN EXPLICIT EXCEPTION TO A STANDING INVARIANT ══════════════════
+# ══ AN EXPLICIT EXCEPTION TO A STANDING INVARIANT ══════════════════════════
 #
 # CLAUDE.md says, without qualification:
 #
@@ -9,40 +9,39 @@
 #    sufficient -- k8s-lab4 sat Ready and schedulable with zero CSI drivers."
 #
 # An edge node can NEVER satisfy that. It deliberately has no CSI driver, no
-# iSCSI and no route to the NAS: the QNAP driver carries credentials that have
-# no business on a machine with a public IP. Running tasks/storage-proof.yml
-# here would fail forever, and 46-prove-node-storage.yml refuses the name
-# outright (`^k8s-lab[0-9]+$`).
+# iSCSI and no route to the NAS -- the QNAP driver carries credentials that have
+# no business on a machine with a public IP, and a Kyverno policy actively
+# denies it. Running tasks/storage-proof.yml here would fail forever.
 #
-# So the exception is written down HERE, next to the gate, rather than left as
-# a silent skip. What replaces the storage proof is a proof of the thing this
-# node actually does: carry packets between the internet-facing Envoy and pods
-# at home, across WireGuard, AT FULL SIZE.
+# So the exception is written down HERE, next to the gate. What replaces the
+# storage proof is a proof of the thing this node actually does: carry pod
+# traffic between the internet-facing Envoy and pods at home, across WireGuard,
+# AT FULL SIZE.
 #
-# ── Why each check, and what its absence would hide ─────────────────────────
-#   1. pod CIDR      -- Cilium's IPAM reached this node. Without it the node is
-#                       Ready with no working pod network, which is exactly the
-#                       k8s-lab4 shape in a different layer.
-#   2. cluster DNS   -- the overlay carries real traffic, not just ARP.
-#   3. LARGE PAYLOAD -- the one that matters. VXLAN (50 bytes) inside WireGuard
-#                       (1420) leaves ~1370 here against 1450 everywhere else,
-#                       and inner PMTUD does NOT work. A ping proves nothing:
-#                       this fails as "large responses hang", which reads as an
-#                       application bug and gets debugged in the wrong place for
-#                       a day.
-#   4. InternalIP    -- if it is not the tunnel address, VXLAN is on the PUBLIC
-#                       NIC in the clear. k3s bakes it in at registration, so
-#                       this is uninstall-and-rejoin, not a converge. The node
-#                       must stay cordoned.
+# ── EVERY STEP BELOW WAS RUN BY HAND AGAINST k8s-edge1 BEFORE BEING WRITTEN ──
+# Three earlier drafts of this file each failed on a check that could not work:
+#   * `-o jsonpath={...[?(@.type==InternalIP)]...}` under `command:` -- Ansible
+#     strips the inner quotes, and jsonpath then rejects a bare identifier.
+#     Proven: unquoted returns EMPTY, `=="InternalIP"` returns 10.250.0.1.
+#   * fetching the API server's /openapi/v2 for a large payload -- anonymous
+#     access is 401, so it would have returned 0 bytes and failed the MTU
+#     assertion for entirely the wrong reason. Measured, not assumed.
+#   * `ping -s <big>` from the probe pod -- busybox ping needs CAP_NET_RAW,
+#     which `restricted` and this pod's own securityContext drop, so it exits
+#     "permission denied" REGARDLESS of the network. An earlier run of this
+#     file reported every packet size failing on a network that was perfectly
+#     healthy.
 #
-# Runs on localhost with the workstation's kubectl, like its storage sibling.
-# `nodeName` pins the pod, bypassing the scheduler AND the cordon -- which is
-# what lets the proof run before the uncordon rather than after it.
+# What is used instead is a two-pod TCP transfer of a known size, which needs
+# no capabilities, no auth and no application: `nc` on both ends, `wc -c` for
+# the verdict. Verified end to end -- 262144 bytes across the tunnel.
 
 - name: "{{ edge_node }} | the node must be known by its tunnel address"
-  ansible.builtin.command: >-
+  # `shell:`, NOT `command:`. The command module shlex-strips the inner quotes
+  # and jsonpath then fails with "unrecognized identifier InternalIP".
+  ansible.builtin.shell: >-
     kubectl get node {{ edge_node }}
-    -o jsonpath={.status.addresses[?(@.type=="InternalIP")].address}
+    -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'
   register: edge_internal_ip
   changed_when: false
 
@@ -52,112 +51,160 @@
     fail_msg: >-
       {{ edge_node }} registered InternalIP '{{ edge_internal_ip.stdout }}',
       expected '{{ hostvars[edge_host].k3s_node_ip }}'. Cilium's VXLAN is
-      therefore running over the PUBLIC interface unencrypted. k3s baked this
-      in at registration -- it cannot be fixed by a converge. Uninstall k3s on
-      that node, confirm node-ip in /etc/rancher/k3s/config.yaml, and rejoin.
-      The node stays cordoned.
+      therefore running over the PUBLIC interface unencrypted. k3s baked this in
+      at registration -- it cannot be fixed by a converge. Uninstall k3s on that
+      node, confirm node-ip in /etc/rancher/k3s/config.yaml, and rejoin. The
+      node stays cordoned.
+    success_msg: "{{ edge_node }} is known by its tunnel address"
   vars:
     edge_host: "{{ groups['k3s_edge'] | first }}"
 
-- name: "{{ edge_node }} | launch the tunnel proof pod, pinned and tolerating the taint"
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      cat <<'EOF' | kubectl apply -f - >/dev/null
-      apiVersion: v1
-      kind: Pod
-      metadata:
-        name: edge-proof-{{ edge_node }}
-        namespace: default
-      spec:
-        # Pinned: bypasses the scheduler, so it runs while the node is cordoned.
-        nodeName: {{ edge_node }}
-        # The taint is applied AT REGISTRATION, so even a pinned pod needs this.
-        tolerations:
-          - operator: Exists
-        restartPolicy: Never
-        # ⚠️ NOT hostNetwork, deliberately. A host-network pod would bypass the
-        # overlay entirely and prove nothing about VXLAN-over-WireGuard, which
-        # is the whole question. It also has to satisfy PodSecurity `restricted`
-        # in `default` -- see tasks/storage-proof.yml, where a pod with no
-        # securityContext silently blocked every join from 2026-08-31.
-        securityContext:
-          runAsNonRoot: true
-          runAsUser: 65532
-          runAsGroup: 65532
-          seccompProfile: { type: RuntimeDefault }
-        containers:
-          - name: proof
-            image: busybox:1.36
-            command: ["sh", "-c", "sleep 300"]
+- name: "{{ edge_node }} | pick a home node to prove the tunnel against"
+  ansible.builtin.set_fact:
+    proof_home_node: >-
+      {{ (groups['k3s_nodes'] | difference(groups['k3s_edge']) | sort | first) }}
+    proof_home_k8s: >-
+      {{ hostvars[(groups['k3s_nodes'] | difference(groups['k3s_edge']) | sort | first)].k8s_node_name }}
+
+- name: "{{ edge_node }} | tunnel data-path proof"
+  block:
+    # A bulk source on a HOME node. 256 KiB of zeroes over plain TCP: no auth,
+    # no capabilities, no application to be broken by. `nc -l` re-serves in a
+    # loop so a retry does not race the first connection.
+    - name: "{{ edge_node }} | start the payload server on {{ proof_home_k8s }}"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          cat <<'EOF' | kubectl apply -f - >/dev/null
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: edge-proof-server
+            namespace: default
+          spec:
+            nodeName: {{ proof_home_k8s }}
+            restartPolicy: Never
             securityContext:
-              allowPrivilegeEscalation: false
-              readOnlyRootFilesystem: true
-              capabilities: { drop: ["ALL"] }
-            resources:
-              requests: { cpu: 10m, memory: 16Mi }
-              limits:   { memory: 64Mi }
-      EOF
-      kubectl wait --for=condition=Ready pod/edge-proof-{{ edge_node }} \
-        -n default --timeout=120s >/dev/null
-      kubectl get pod edge-proof-{{ edge_node }} -n default -o jsonpath='{.status.podIP}'
-    executable: /bin/bash
-  register: edge_pod_ip
-  changed_when: true
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              seccompProfile: { type: RuntimeDefault }
+            containers:
+              - name: srv
+                image: busybox:1.36
+                command: ["sh","-c","while true; do dd if=/dev/zero bs=1024 count=256 2>/dev/null | nc -l -p 9999; done"]
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities: { drop: ["ALL"] }
+                resources:
+                  requests: { cpu: 10m, memory: 16Mi }
+                  limits:   { memory: 64Mi }
+          EOF
+          kubectl wait --for=condition=Ready pod/edge-proof-server -n default --timeout=120s >/dev/null
+          kubectl get pod edge-proof-server -n default -o jsonpath='{.status.podIP}'
+        executable: /bin/bash
+      register: proof_srv_ip
+      changed_when: true
 
-- name: "{{ edge_node }} | assert Cilium IPAM reached this node"
-  ansible.builtin.assert:
-    that: edge_pod_ip.stdout is match('^' ~ (cilium_pod_cidr_prefix | default('10.245.')) | replace('.', '\\.'))
-    fail_msg: >-
-      The proof pod got IP '{{ edge_pod_ip.stdout }}', which is not on the
-      Cilium pod CIDR ({{ cilium_pod_cidr_prefix | default('10.245.') }}x).
-      The node is Ready with a pod network that is not Cilium's -- the same
-      shape as k8s-lab4, one layer down.
+    # The client, pinned to the edge node. `nodeName` bypasses the scheduler AND
+    # the cordon, which is what lets this run before the uncordon rather than
+    # after it. The toleration is required because the taint is applied at
+    # REGISTRATION, so even a pinned pod is repelled without it.
+    #
+    # NOT hostNetwork, deliberately: a host-network pod would bypass the overlay
+    # entirely and prove nothing about VXLAN-over-WireGuard, which is the whole
+    # question.
+    - name: "{{ edge_node }} | start the probe pod on the edge node"
+      ansible.builtin.shell:
+        cmd: |
+          set -o pipefail
+          cat <<'EOF' | kubectl apply -f - >/dev/null
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            name: edge-proof-client
+            namespace: default
+          spec:
+            nodeName: {{ edge_node }}
+            tolerations:
+              - operator: Exists
+            restartPolicy: Never
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 65532
+              runAsGroup: 65532
+              seccompProfile: { type: RuntimeDefault }
+            containers:
+              - name: probe
+                image: busybox:1.36
+                command: ["sh","-c","sleep 600"]
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities: { drop: ["ALL"] }
+                resources:
+                  requests: { cpu: 10m, memory: 16Mi }
+                  limits:   { memory: 64Mi }
+          EOF
+          kubectl wait --for=condition=Ready pod/edge-proof-client -n default --timeout=120s >/dev/null
+          kubectl get pod edge-proof-client -n default -o jsonpath='{.status.podIP}'
+        executable: /bin/bash
+      register: proof_cli_ip
+      changed_when: true
 
-- name: "{{ edge_node }} | DNS and a LARGE payload across the tunnel"
-  ansible.builtin.shell:
-    cmd: |
-      set -o pipefail
-      P=edge-proof-{{ edge_node }}
-      # 1. cluster DNS resolves through the overlay
-      kubectl exec -n default "$P" -- nslookup kubernetes.default.svc.cluster.local \
-        >/dev/null 2>&1 && echo "dns=ok" || echo "dns=FAIL"
-      # 2. THE MTU PROOF. Pull >64 KiB through the tunnel from a Service that
-      #    lives on a HOME node, and compare the byte count. A small request
-      #    that succeeds proves nothing -- the failure mode is a HANG on the
-      #    large response, so this is bounded by a timeout and the timeout IS
-      #    the failure signal.
-      BYTES=$(kubectl exec -n default "$P" -- \
-        timeout 25 wget -q -O - http://kubernetes.default.svc.cluster.local/openapi/v2 2>/dev/null \
-        | wc -c)
-      echo "bytes=$BYTES"
-    executable: /bin/bash
-  register: edge_traffic
-  changed_when: false
+    - name: "{{ edge_node }} | assert Cilium IPAM reached this node"
+      ansible.builtin.assert:
+        that: proof_cli_ip.stdout is match('^' ~ (cilium_pod_cidr_prefix | default('10.245.')) | regex_escape)
+        fail_msg: >-
+          The probe pod got IP '{{ proof_cli_ip.stdout }}', which is not on the
+          Cilium pod CIDR ({{ cilium_pod_cidr_prefix | default('10.245.') }}x).
+          The node is Ready with a pod network that is not Cilium's -- the k8s-lab4
+          shape, one layer down.
+        success_msg: "probe pod on the Cilium CIDR at {{ proof_cli_ip.stdout }}"
 
-- name: "{{ edge_node }} | assert the tunnel carries full-size traffic"
-  ansible.builtin.assert:
-    that:
-      - edge_traffic.stdout is search('dns=ok')
-      - (edge_traffic.stdout | regex_search('bytes=(\\d+)', '\\1') | first | int) > 65536
-    fail_msg: >-
-      Tunnel data-path proof FAILED: {{ edge_traffic.stdout }}.
-      dns=FAIL means the overlay does not carry traffic at all. A small or zero
-      byte count means the large response HUNG -- which is the VXLAN-inside-
-      WireGuard MTU fault, not an application fault. Inner PMTUD does not work
-      here, so nothing will report it: check wg_mtu (1420) and the pod MTU
-      (~1370) on {{ edge_node }} before touching anything else.
-    success_msg: >-
-      {{ edge_node }}: pod network on Cilium, cluster DNS resolving, and
-      {{ edge_traffic.stdout | regex_search('bytes=(\\d+)', '\\1') | first }}
-      bytes pulled across the tunnel in one response.
+    - name: "{{ edge_node }} | cluster DNS resolves through the overlay"
+      ansible.builtin.shell: >-
+        kubectl exec edge-proof-client -n default --
+        nslookup kubernetes.default.svc.cluster.local 10.43.0.10
+      register: proof_dns
+      changed_when: false
+      failed_when: "'Address' not in proof_dns.stdout"
 
-- name: "{{ edge_node }} | clean up the proof pod"
-  ansible.builtin.command: >-
-    kubectl delete pod edge-proof-{{ edge_node }} -n default --ignore-not-found --wait=false
-  changed_when: true
+    # 🔴 THE CHECK THAT MATTERS. 256 KiB in one stream, pod to pod, across
+    # VXLAN inside WireGuard. A small request proves nothing here: the documented
+    # failure mode of a wrong MTU on this path is that LARGE transfers hang,
+    # because inner PMTUD does not work through VXLAN. The timeout IS the
+    # failure signal, so `nc -w` bounds it.
+    - name: "{{ edge_node }} | pull 256 KiB across the tunnel"
+      ansible.builtin.shell: >-
+        kubectl exec edge-proof-client -n default --
+        sh -c 'nc -w 25 {{ proof_srv_ip.stdout }} 9999 | wc -c'
+      register: proof_bytes
+      changed_when: false
 
-# Only reached if every assertion above passed; any_errors_fatal stops the play
+    - name: "{{ edge_node }} | assert the tunnel carried every byte"
+      ansible.builtin.assert:
+        that: (proof_bytes.stdout | trim | int) == 262144
+        fail_msg: >-
+          Expected 262144 bytes across the tunnel, got
+          '{{ proof_bytes.stdout | trim }}'. Zero means the overlay does not
+          carry pod traffic at all. A SHORT count is the VXLAN-inside-WireGuard
+          MTU fault: the transfer stalled and `nc -w` cut it off. Inner PMTUD
+          does not work here, so nothing will report it -- compare the pod MTU
+          on {{ edge_node }} against wg0's ({{ hostvars[groups['k3s_edge'] | first].wg_mtu | default(1420) }}).
+        success_msg: >-
+          {{ edge_node }}: 262144 bytes pulled from {{ proof_home_k8s }} in one
+          stream -- pod network, DNS and full-size transfer all proven.
+
+  always:
+    - name: "{{ edge_node }} | remove the proof pods"
+      ansible.builtin.shell: >-
+        kubectl delete pod edge-proof-client edge-proof-server
+        -n default --ignore-not-found --wait=false
+      changed_when: true
+
+# Only reached if every assertion passed; any_errors_fatal stops the play
 # otherwise and the node stays cordoned, which is the safe default.
 - name: "{{ edge_node }} | uncordon, tunnel data path PROVEN"
   ansible.builtin.command: "kubectl uncordon {{ edge_node }}"
@@ -166,5 +213,5 @@
 - name: "{{ edge_node }} | done"
   ansible.builtin.debug:
     msg: >-
-      {{ edge_node }} joined, tunnel-proven and uncordoned. It carries NO
-      storage driver by design -- that is asserted, not tolerated.
+      {{ edge_node }} joined, tunnel-proven and uncordoned. It carries NO storage
+      driver by design -- that is asserted, not tolerated.
