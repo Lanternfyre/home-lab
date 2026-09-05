@@ -67,7 +67,14 @@
 # found in $PATH"). Verified 2026-09-05.
 # and then check the policy actually took:
 #   kubectl -n gateway-envoy get envoypatchpolicy tunnel-root-path \
-#     -o jsonpath='{.status.conditions[?(@.type=="Programmed")]}'
+#     -o jsonpath='{.status.ancestors[*].conditions[?(@.type=="Programmed")]}'
+#
+# ⚠️ `.status.ancestors[*].conditions`, NOT `.status.conditions`. This is a
+# POLICY object: its status is reported per ANCESTOR (the Gateway it attaches
+# to), which is how Gateway API policy attachment works. Querying
+# `.status.conditions` returns EMPTY STRING and exits 0 -- indistinguishable
+# from "the patch failed", and it sent this repo's own author looking for a
+# broken policy that was in fact Programmed=True. Verified 2026-09-05.
 apiVersion: gateway.envoyproxy.io/v1alpha1
 kind: EnvoyPatchPolicy
 metadata:
