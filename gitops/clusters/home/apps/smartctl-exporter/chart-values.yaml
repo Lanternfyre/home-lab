@@ -23,8 +23,13 @@
 #   k8s-lab5  sda      WDC WD3200AAKX-0   sata   298.1G   (the only spindle)
 #             nvme0n1  BC501A SK hynix    nvme   119.2G
 #   k8s-lab6  sda                         sata   238.5G   (joined 2026-08-19)
+#   k8s-lab7  nvme0n1  KIOXIA KBG40ZNS256G nvme   238.5G   (joined 2026-09-02)
 #
-# Seven devices across six nodes. The alerts do NOT hardcode that number --
+# Eight devices across seven nodes. k8s-lab7 is the first node with NO SATA
+# disk at all -- its only local drive is the NVMe -- which is exactly the case
+# the "no device_include" decision below was made for: a filter of "sda plus
+# nvme" would have worked here by luck, one of "only sda" would have left this
+# node's single disk unwatched. The alerts do NOT hardcode that number --
 # SmartDeviceStoppedReporting self-baselines on what each node reported over
 # the last 6h -- so a new node simply goes quiet there until it has history.
 # Expect SmartExporterFoundNoDevices (smartctl_devices == 0, for: 30m) to fire

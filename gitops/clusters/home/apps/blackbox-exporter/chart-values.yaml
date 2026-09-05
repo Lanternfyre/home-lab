@@ -101,15 +101,29 @@ serviceMonitor:
     - name: k8s-node-6
       url: 192.168.33.20
       module: icmp
+    - name: k8s-node-7
+      url: 192.168.33.24
+      module: icmp
 
     # --- Powerline link (paired TP-Link adapters) ---
     # Zero services on either adapter but they still ARP-reply; drops in
     # RTT to these vs the MikroTik indicate powerline degradation.
+    #
+    # ⚠️ 2026-09-02: 192.168.33.24 USED TO BE `powerline-far`, and it is now
+    # k8s-lab7 (it answers SSH and reports that hostname). The probe was
+    # therefore not measuring the powerline link any more -- it was measuring
+    # whatever holds the address, which is the failure mode where a green
+    # probe means nothing. Moved up into the node block rather than deleted,
+    # because the address is still worth probing; it is just a different
+    # thing now.
+    #
+    # `powerline-near` at .23 is left in place but is currently DOWN --
+    # "no route to host" from the workstation on the same day. Either the pair
+    # was retired when the node took .24, or the near adapter is dead. Decide
+    # deliberately: if the pair is gone, delete this entry, do not let a
+    # permanently-failing probe become background noise.
     - name: powerline-near
       url: 192.168.33.23
-      module: icmp
-    - name: powerline-far
-      url: 192.168.33.24
       module: icmp
 
     # Pi-hole ICMP probe intentionally omitted: 192.168.32.53 is a

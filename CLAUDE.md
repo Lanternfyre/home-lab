@@ -1,8 +1,14 @@
 # home-lab
 
-GitOps repo for a 6-node k3s cluster (ArgoCD app-of-apps) plus the Ansible that
-manages the nodes. Target topology is 3 control-plane/etcd servers
-(k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3, k8s-5).
+GitOps repo for a 7-node k3s cluster (ArgoCD app-of-apps) plus the Ansible that
+manages the nodes. Topology is 3 control-plane/etcd servers
+(k8s-1, k8s-2, k8s-3 -- the three identical 4-CPU/16GB boxes) + 4 agents
+(k8s-4, k8s-5, k8s-6, k8s-7 -- the big ones, which is where CI belongs).
+
+⚠️ This used to read "3 servers (k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3,
+k8s-5)". That was the 2026-08-19 target, REVISED on 2026-08-22 after the k8s-5
+incident and reached the same day. Verify with `kubectl get nodes` rather than
+trusting either line.
 
 ## Read these first
 
