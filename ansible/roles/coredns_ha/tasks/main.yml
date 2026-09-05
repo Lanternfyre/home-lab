@@ -146,11 +146,35 @@
   when: not ansible_check_mode
 
 # The point of all of the above.
+#
+# ⚠️ The probe pod MUST carry a full restricted-compliant securityContext.
+# `default` went PodSecurity `restricted` on 2026-08-31 and this pod had none,
+# so from that day the API server refused to create it and this task failed on
+# every converge:
+#
+#   Error from server (Forbidden): pods "coredns-ha-probe-..." is forbidden:
+#     violates PodSecurity "restricted:v1.35": allowPrivilegeEscalation != false,
+#     unrestricted capabilities, runAsNonRoot != true, seccompProfile
+#
+# The pod is made COMPLIANT rather than moved to a permissive namespace: a probe
+# that needs an exemption proves less than the thing it stands in for. An
+# `nslookup` needs none of what restricted withholds.
+#
+# The name is computed once because `--overrides` merges containers BY NAME, and
+# `kubectl run` names the container after the pod -- so a second
+# `{{ 999999 | random }}` would produce a container the override never matches,
+# and the securityContext would silently not apply.
+- name: "verify | name the DNS probe once"
+  ansible.builtin.set_fact:
+    cdns_probe_name: "coredns-ha-probe-{{ 999999 | random }}"
+  when: not ansible_check_mode
+
 - name: "verify | cluster DNS actually resolves"
   ansible.builtin.shell: >-
-    /usr/local/bin/k3s kubectl run coredns-ha-probe-{{ 999999 | random }}
-    --rm -i --restart=Never --image=busybox:1.37 --command --
-    nslookup kubernetes.default.svc.cluster.local
+    /usr/local/bin/k3s kubectl run {{ cdns_probe_name }}
+    --rm -i --restart=Never --image=busybox:1.37
+    --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":65532,"runAsGroup":65532,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"{{ cdns_probe_name }}","image":"busybox:1.37","stdin":true,"command":["nslookup","kubernetes.default.svc.cluster.local"],"securityContext":{"allowPrivilegeEscalation":false,"readOnlyRootFilesystem":true,"capabilities":{"drop":["ALL"]}}}]}}'
+    --command -- nslookup kubernetes.default.svc.cluster.local
   register: cdns_probe
   changed_when: false
   check_mode: false
