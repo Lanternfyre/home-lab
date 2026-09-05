@@ -1,0 +1,80 @@
+---
+# edge-1 — the public edge node. Contabo VPS, 167.86.81.59.
+#
+# The first machine in this fleet that is NOT trusted infrastructure: it sits
+# on the public internet, and everything about its configuration follows from
+# that. Read EDGE-NODE.md before changing anything here.
+
+# ⚠️ THE PUBLIC ADDRESS, DELIBERATELY.
+# Every other host_vars file carries a LAN address because Ansible must not
+# depend on DNS. This one carries the public address for a different reason:
+# SSH has to keep working when the WireGuard tunnel is DOWN. Managing the
+# tunnel over the tunnel is a trap -- one bad `wg syncconf` and the node is
+# unreachable with no way back in.
+ansible_host: 167.86.81.59
+
+# Documentation only, like every other node's. Nothing consumes it.
+node_nic: eth0
+
+# ── Measured pre-join state, 2026-09-05 ─────────────────────────────────────
+# Captured over SSH before anything was run against the machine, in the same
+# spirit as k8s-7.home.yml. This is what the baseline exists to fix, and what
+# it must NOT touch.
+#
+#   hostname            k8s-edge1  (static; set by the operator BEFORE the join,
+#                                   because the kubelet registers under the OS
+#                                   hostname and changing it later is a rejoin)
+#   OS                  Ubuntu 24.04.4 LTS, kernel 6.8.0-138-generic
+#                       -- same as all seven home nodes, so node_baseline's
+#                          apt/systemd-resolved assumptions hold unchanged
+#   CPU / RAM / disk    6 vCPU / 11 GiB / 193 GB on /dev/sda1 (2% used)
+#   NIC                 eth0, 167.86.81.59/24, default via 167.86.81.1
+#   k3s                 ABSENT -- no binary, both units inactive
+#
+#   🔴 inotify          max_user_instances = 128  (kernel default)
+#                       max_user_watches   = 93016
+#                       The fleet standard is 1048576. k3s needs it, and this
+#                       is the ONE part of the storage-less baseline that
+#                       genuinely applies here.
+#
+#   🟡 storage stack    ALREADY INSTALLED by the provider image:
+#                         open-iscsi      2.1.9-3ubuntu5.4
+#                         multipath-tools 0.9.4-5ubuntu8.2
+#                       multipathd is ACTIVE and ENABLED; iscsid is inactive
+#                       and disabled.
+#                       `node_storage_enabled: false` means Ansible never
+#                       CONFIGURES any of it -- /etc/multipath.conf stays stock
+#                       and no LUN is ever staged. It does not uninstall them.
+#                       Worth revisiting: multipathd on an internet-facing box
+#                       with no LUNs is pointless, though it listens on no
+#                       socket. Left alone rather than removed as a side effect
+#                       of a converge.
+#
+#   wireguard           kernel module PRESENT
+#                       (/lib/modules/6.8.0-138-generic/.../wireguard.ko.zst)
+#                       wireguard-tools ABSENT -- the role installs it.
+#
+#   🔴 firewall         NOTHING. `nft list ruleset` is EMPTY, and while ufw and
+#                       iptables are installed, neither has rules. Today only
+#                       sshd listens on a public address:
+#                         tcp 0.0.0.0:22          sshd
+#                         tcp/udp 127.0.0.53:53   systemd-resolved (localhost)
+#                       That is fine RIGHT NOW and stops being fine the instant
+#                       k3s installs: kubelet :10250, Cilium health :4240 and
+#                       VXLAN :8473/udp all bind 0.0.0.0, and `node-ip` does
+#                       not change that -- it changes what k3s ADVERTISES, not
+#                       what it BINDS. roles/edge_firewall must run BEFORE the
+#                       join, not after.
+#
+#   sudo                tarjei is in group `sudo` and sudo REQUIRES A PASSWORD,
+#                       same as every home node. So every changing playbook
+#                       needs --ask-become-pass, and the password must match
+#                       the home nodes' because the WireGuard play spans all
+#                       eight hosts in ONE invocation (a --limit run renders a
+#                       peer list with holes, and a missing peer is a SILENT
+#                       WireGuard drop).
+#
+# ── The public endpoint peers dial ──────────────────────────────────────────
+# Home nodes initiate outbound to this, so no inbound port is opened on the
+# home router and the MikroTik needs no configuration at all.
+wg_public_endpoint: "167.86.81.59:51820"

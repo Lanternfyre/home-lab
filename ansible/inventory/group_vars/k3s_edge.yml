@@ -1,0 +1,75 @@
+---
+# Everything that is true of ANY edge node, so a second one needs only a
+# host_vars file. See EDGE-NODE.md for the design and the twenty findings.
+#
+# This group is a CHILD of k3s_agents, so `k3s_role: agent` and
+# `k3s_unit: k3s-agent` are inherited, not restated. Child-group vars beat
+# parent-group vars, which is what lets everything below override all.yml.
+
+# ── 🔴 THE NODE NAME, AND WHY IT IS OVERRIDDEN HERE ─────────────────────────
+# group_vars/all.yml derives it as
+#   inventory_hostname.split('.')[0] | replace('k8s-', 'k8s-lab')
+# which turns `edge-1.edge` into `edge-1`. The kubelet, however, registers
+# under the OS hostname -- `k8s-edge1`.
+#
+# The consequence is not a cosmetic mismatch. 40-add-node.yml's "wait for the
+# node to register" task polls for `k8s_node_name`, so it would retry 30x10s
+# and fail FIVE MINUTES AFTER k3s is already installed and running, leaving the
+# node joined, Ready and UNCORDONED -- exactly the k8s-lab4 condition that task
+# was written to prevent.
+#
+# `edge-1.edge` -> `edge1` -> `k8s-edge1`. Derived rather than hardcoded so a
+# second edge node needs no new line here.
+k8s_node_name: "k8s-{{ inventory_hostname.split('.')[0] | replace('-', '') }}"
+
+# ── 🔴 NO STORAGE, EVER ─────────────────────────────────────────────────────
+# Gates roles/node_baseline/tasks/storage.yml and the storage assertions in
+# node_verify. This node has no NAS, cannot reach one, and the QNAP CSI driver
+# carries credentials that have no business on an internet-facing machine.
+#
+# ⚠️ This does NOT uninstall anything. The Contabo image already ships
+# open-iscsi and multipath-tools with multipathd enabled and running (measured
+# 2026-09-05, see host_vars/edge-1.edge.yml). Ansible simply never configures
+# them, so /etc/multipath.conf stays the stock 41-byte file and no LUN is ever
+# staged. Removing the packages is a separate decision, not a converge.
+node_storage_enabled: false
+
+# ── The WireGuard underlay ──────────────────────────────────────────────────
+# The VPS is the hub: every home node peers with it directly, so there is no
+# single home-side terminator to fail. .1 is the hub; home nodes take
+# 10.250.0.1{N} from group_vars/all.yml.
+wg_address: "10.250.0.1"
+
+# ── 🔴 node-ip MUST be the tunnel address ───────────────────────────────────
+# k3s otherwise picks the default-route interface -- the PUBLIC NIC -- and
+# Cilium's VXLAN (UDP 8473) then rides the open internet unencrypted.
+#
+# ⚠️ k3s bakes this in AT REGISTRATION. Getting it wrong is not a reconfigure,
+# it is an uninstall and rejoin. node_verify asserts the resulting InternalIP
+# and refuses to uncordon if it is wrong.
+k3s_node_ip: "{{ wg_address }}"
+
+# ── Taint and label, applied AT REGISTRATION ────────────────────────────────
+# Rendered into config.yaml rather than applied afterwards with kubectl, so
+# there is never a window in which the node is Ready and schedulable. A
+# post-hoc `kubectl taint` cannot give that guarantee.
+#
+# The taint repels ordinary workloads; the label is what the edge Gateway's
+# EnvoyProxy nodeSelector matches. BOTH are required and both strings are
+# load-bearing -- a missing label is a Gateway that never programs, and a
+# missing taint is a public VPS running your database.
+k3s_node_taints:
+  - "infrastructure.techyon.dev/edge=true:NoSchedule"
+k3s_node_labels:
+  - "infrastructure.techyon.dev/location=edge"
+
+# ── Bootstrap target ────────────────────────────────────────────────────────
+# NOT the kube-vip VIP (192.168.32.2). That address floats between the three
+# servers and WireGuard's AllowedIPs cannot express a floating address, so it
+# is not routed over the tunnel at all.
+#
+# k8s-1's LAN address, reachable through k8s-1's own peer. This pins only the
+# BOOTSTRAP: after joining, the k3s agent load balancer on 127.0.0.1:6444
+# discovers all three servers from the cluster and fails over among them, and
+# all three are peers. Losing k8s-1 later is survivable.
+k3s_server_peer: "192.168.33.3"

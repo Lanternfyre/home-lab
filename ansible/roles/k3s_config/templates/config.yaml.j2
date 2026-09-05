@@ -77,4 +77,46 @@ disable-network-policy: {{ k3s_disable_network_policy | default(true) | lower }}
 # `tls-san` is likewise server-only: the serving certs are issued by the
 # control plane and propagated through the datastore.
 server: "https://{{ k3s_server_peer | default(k3s_api_vip) }}:6443"
+{% if k3s_node_ip is defined %}
+
+# 🔴 THE ADDRESS THIS NODE IS KNOWN BY, AND IT IS NOT THE ONE k3s WOULD PICK.
+#
+# Left unset, k3s takes the address of the default-route interface. On the edge
+# node that is the PUBLIC NIC, and Cilium's VXLAN (UDP 8473) would then ride the
+# open internet unencrypted between this node and every node at home.
+#
+# ⚠️ k3s BAKES THIS IN AT REGISTRATION. Getting it wrong is not a reconfigure --
+# it is an uninstall and a rejoin. node_verify asserts the resulting InternalIP
+# and refuses to uncordon the node if it disagrees.
+#
+# ⚠️ It changes what k3s ADVERTISES, not what it BINDS. kubelet :10250, Cilium
+# health :4240 and VXLAN :8473 still listen on 0.0.0.0. The firewall
+# (roles/edge_firewall) is what closes them, and it must be in place BEFORE k3s
+# is installed.
+#
+# Defined ONLY in group_vars/k3s_edge.yml, so this block renders on no other
+# node and the seven home agents' config.yaml is byte-identical to before.
+node-ip: "{{ k3s_node_ip }}"
+{% endif %}
+{% if k3s_node_taints | default([]) | length > 0 %}
+
+# Applied AT REGISTRATION rather than with `kubectl taint` afterwards, so there
+# is never a window in which this node is Ready and schedulable. A post-hoc
+# taint cannot give that guarantee -- the scheduler only has to win the race
+# once.
+node-taint:
+{% for taint in k3s_node_taints %}
+  - "{{ taint }}"
+{% endfor %}
+{% endif %}
+{% if k3s_node_labels | default([]) | length > 0 %}
+
+# The edge Gateway's EnvoyProxy nodeSelector matches this. A missing label is
+# not a loud failure: it is a Gateway that never programs, with a healthy node
+# and a Pending pod.
+node-label:
+{% for label in k3s_node_labels %}
+  - "{{ label }}"
+{% endfor %}
+{% endif %}
 {% endif %}

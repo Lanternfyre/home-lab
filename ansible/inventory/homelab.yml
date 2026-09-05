@@ -119,3 +119,28 @@ all:
             k8s-5.home:
             k8s-6.home:
             k8s-7.home:
+
+          children:
+
+            # The public edge node(s). A CHILD of k3s_agents, so it inherits
+            # `k3s_role: agent` from group_vars/k3s_agents.yml and stays inside
+            # `groups['k3s_nodes']` -- both of which are load-bearing:
+            #
+            #   * 35-cilium-migrate.yml asserts the cilium DaemonSet's desired
+            #     count == `groups['k3s_nodes'] | length`, and Cilium DOES run
+            #     on the edge node. A sibling group makes that assert
+            #     off-by-one on a playbook that drains nodes.
+            #   * 25-kube-vip-daemonset.yml pings every `groups['k3s_nodes']`
+            #     member; the edge is reachable over the tunnel.
+            #
+            # What makes it different is NOT its group membership but
+            # `node_storage_enabled: false` in group_vars/k3s_edge.yml. The
+            # exception is a stated variable, not a hole in the topology --
+            # see EDGE-NODE.md.
+            #
+            # ⚠️ `.edge`, not `.home`. This file's contract is that `.home`
+            # names are LAN names served by Pi-hole; this box is on the public
+            # internet and reachable only over WireGuard once joined.
+            k3s_edge:
+              hosts:
+                edge-1.edge:
