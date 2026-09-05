@@ -302,6 +302,20 @@ Build order, each step gated:
    [`CLUSTER-TOKEN.md`](CLUSTER-TOKEN.md), which already suggests it.
 3. **WireGuard, both ends, before k3s.** Ansible role rendering one peer per
    node from inventory.
+
+   🔴 **Every home node needs `AllowedIPs = 10.250.0.1/32` for its VPS peer,
+   and every node needs it.** A node that lacks it reaches the VPS through its
+   default route instead, arriving with a `192.168.33.x` source that belongs to
+   a *different* peer — and WireGuard drops a packet whose source does not match
+   the peer it decrypted under. **Silently.** No log, no counter, no error: the
+   node simply never joins, or joins and then goes NotReady.
+
+   ⚠️ And `10.251.0.0/24` — the client range — must **never** appear in any
+   node's `AllowedIPs`, precisely because clients are SNAT'd at the VPS. Nodes
+   never see a `10.251.x` source, so adding it is a no-op that reads like a
+   fix. Leave it out and say why, or someone will add it while debugging
+   something else.
+
    *Gate:* every home node ↔ edge ping across `wg0`, and an MTU proof with a
    large payload. VXLAN (50 bytes) inside WireGuard (1420) leaves ~1370 against
    1450 elsewhere, and inner PMTUD does not work — this fails as "large
