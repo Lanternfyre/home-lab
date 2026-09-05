@@ -25,6 +25,30 @@ metadata:
   name: edge
   namespace: gateway-edge
 spec:
+  # 🔴 TWO hostNetwork ENVOYS CANNOT SHARE base-id 0.
+  #
+  # Envoy binds an ABSTRACT unix domain socket for hot restart, named after its
+  # base-id. Abstract sockets are scoped to the NETWORK NAMESPACE -- and
+  # `cilium-envoy` also runs hostNetwork on every node, including this one. Both
+  # default to base-id 0, so the second one to start loses:
+  #
+  #   unable to bind domain socket with base_id=0, id=0, errno=98
+  #
+  # errno 98 is EADDRINUSE. The pod then CrashLoopBackOffs while the Gateway
+  # reports `Programmed: False` with reason `NoResources: Envoy replicas
+  # unavailable` -- which reads like a scheduling problem, not a name clash.
+  #
+  # This is a direct consequence of choosing hostNetwork, and it bites ONLY
+  # here: the three LAN Envoys are ordinary pods with their own network
+  # namespaces, so their base-ids never meet cilium-envoy's.
+  #
+  # `extraArgs` is the supported way to append to the generated command line --
+  # the args list otherwise carries the entire bootstrap config inline, so a
+  # strategic-merge patch on it would have to restate all of it.
+  extraArgs:
+    - --base-id
+    - "1"
+
   provider:
     type: Kubernetes
     kubernetes:
