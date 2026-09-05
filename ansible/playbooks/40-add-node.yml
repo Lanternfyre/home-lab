@@ -50,11 +50,37 @@
       loop_control:
         label: "{{ item.key }} >= {{ item.value }}"
 
+    # ⚠️ The kubelet registers under the OS HOSTNAME, and k3s bakes the node
+    # name in at registration -- so a mismatch here is a rejoin, not a rename.
+    # Ansible ASSERTS it rather than setting it: changing a machine's hostname
+    # mid-play is the kind of side effect that should be a deliberate human
+    # act, and on the edge node it must have happened before the firewall and
+    # the tunnel were built against that name.
+    - name: "guard | the OS hostname already matches the expected node name"
+      ansible.builtin.assert:
+        that: ansible_hostname == k8s_node_name
+        fail_msg: >-
+          This host's hostname is '{{ ansible_hostname }}' but the inventory
+          expects the Kubernetes node to be '{{ k8s_node_name }}'. The kubelet
+          registers under the OS hostname, so joining now creates a node under
+          the WRONG NAME -- and every later task that polls for
+          '{{ k8s_node_name }}' (the register-wait below included) would spin
+          and then fail AFTER k3s is installed and running, leaving this node
+          joined, Ready and UNCORDONED. Fix it first:
+          sudo hostnamectl set-hostname {{ k8s_node_name }} && sudo reboot
+        success_msg: "hostname is {{ k8s_node_name }}, as the inventory expects"
+      when: not (node_storage_enabled | bool)
+
+    # Storage preflight. Skipped where the node has no storage by design --
+    # these three would otherwise fail an edge node BEFORE install, which is at
+    # least the safe direction, but fails it for the wrong reason.
     - name: Assert multipath.conf sets find_multipaths
+      when: node_storage_enabled | bool
       ansible.builtin.shell: "grep -qE 'find_multipaths\\s+{{ node_multipath_find_multipaths }}' /etc/multipath.conf"
       changed_when: false
 
     - name: Assert storage services are running
+      when: node_storage_enabled | bool
       ansible.builtin.command: "systemctl is-active {{ item }}"
       register: svc
       changed_when: false
@@ -235,7 +261,12 @@
     # this -- groups[target] only works when target happens to name a group.
     - name: Record this node for the storage-proof play
       ansible.builtin.set_fact:
-        joined_nodes: "{{ (hostvars['localhost'].joined_nodes | default([])) + [k8s_node_name] }}"
+        joined_nodes: >-
+          {{ (hostvars['localhost'].joined_nodes | default([]))
+             + ([k8s_node_name] if node_storage_enabled | bool else []) }}
+        joined_edge_nodes: >-
+          {{ (hostvars['localhost'].joined_edge_nodes | default([]))
+             + ([] if node_storage_enabled | bool else [k8s_node_name]) }}
       delegate_to: localhost
       delegate_facts: true
 
@@ -256,9 +287,21 @@
   become: false
   any_errors_fatal: true
   tasks:
-    - name: Prove and uncordon each node that just joined
+    # TWO loops, and the second is an EXPLICIT exception rather than a
+    # bypass. CLAUDE.md's invariant is "do not uncordon a node until a storage
+    # proof passes on it". An edge node can never satisfy that -- it has no CSI
+    # driver by design -- so it gets a different proof, of the thing that IS its
+    # job, and the exception is written down where the gate can see it. See
+    # tasks/prove-and-uncordon-edge.yml and EDGE-NODE.md.
+    - name: "gate | storage nodes: prove storage, then uncordon"
       ansible.builtin.include_tasks: tasks/prove-and-uncordon.yml
       loop: "{{ joined_nodes | default([]) }}"
       loop_control:
         loop_var: joined_node
       when: not ansible_check_mode
+
+    - name: "gate | edge nodes: prove the tunnel data path, then uncordon"
+      ansible.builtin.include_tasks: tasks/prove-and-uncordon-edge.yml
+      loop: "{{ joined_edge_nodes | default([]) }}"
+      loop_control:
+        loop_var: edge_node

@@ -431,6 +431,13 @@
         # THE storage gate. k8s-lab4 sat Ready, untainted and schedulable with
         # ZERO CSI drivers, and nothing in `kubectl get nodes` revealed it.
         # Any PVC-bearing pod landing there hangs in ContainerCreating forever.
+        #
+        # ⚠️ SKIPPED on a node with no storage, and that skip is load-bearing.
+        # `retries: 30, delay: 10` means an edge node would burn FIVE MINUTES
+        # here and then fail a ROLLING UPGRADE IN FLIGHT -- with that node
+        # already drained and cordoned, mid-serial, and the operator holding a
+        # half-upgraded cluster. node_verify at the end of this playbook makes
+        # the same distinction, and asserts the INVERSE there.
         - name: "{{ node_name }} | csinode is non-empty"
           ansible.builtin.command: >-
             /usr/local/bin/k3s kubectl get csinode {{ node_name }}
@@ -441,7 +448,9 @@
           until: (g_csi.stdout | trim | length) > 0
           retries: 30
           delay: 10
-          when: not ansible_check_mode
+          when:
+            - not ansible_check_mode
+            - node_storage_enabled | bool
 
         - name: "{{ node_name }} | nothing fell into ImagePullBackOff"
           ansible.builtin.shell: >-
@@ -651,4 +660,9 @@
     # paths, and the ones that talk to the NAS, iscsid and multipathd.
     - name: Storage proof
       ansible.builtin.include_tasks: tasks/storage-proof.yml
-      when: not ansible_check_mode
+      when:
+        - not ansible_check_mode
+        # An edge node has no CSI driver by design, so this proof can only
+        # fail there. Its replacement is the tunnel-and-CNI proof in
+        # tasks/prove-and-uncordon-edge.yml -- see EDGE-NODE.md.
+        - node_storage_enabled | bool

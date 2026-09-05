@@ -1,0 +1,170 @@
+---
+# Prove ONE freshly joined EDGE node, then return it to service.
+#
+# ══ THIS IS AN EXPLICIT EXCEPTION TO A STANDING INVARIANT ══════════════════
+#
+# CLAUDE.md says, without qualification:
+#
+#   "Do not uncordon a node until a storage proof passes on it. `Ready` is not
+#    sufficient -- k8s-lab4 sat Ready and schedulable with zero CSI drivers."
+#
+# An edge node can NEVER satisfy that. It deliberately has no CSI driver, no
+# iSCSI and no route to the NAS: the QNAP driver carries credentials that have
+# no business on a machine with a public IP. Running tasks/storage-proof.yml
+# here would fail forever, and 46-prove-node-storage.yml refuses the name
+# outright (`^k8s-lab[0-9]+$`).
+#
+# So the exception is written down HERE, next to the gate, rather than left as
+# a silent skip. What replaces the storage proof is a proof of the thing this
+# node actually does: carry packets between the internet-facing Envoy and pods
+# at home, across WireGuard, AT FULL SIZE.
+#
+# ── Why each check, and what its absence would hide ─────────────────────────
+#   1. pod CIDR      -- Cilium's IPAM reached this node. Without it the node is
+#                       Ready with no working pod network, which is exactly the
+#                       k8s-lab4 shape in a different layer.
+#   2. cluster DNS   -- the overlay carries real traffic, not just ARP.
+#   3. LARGE PAYLOAD -- the one that matters. VXLAN (50 bytes) inside WireGuard
+#                       (1420) leaves ~1370 here against 1450 everywhere else,
+#                       and inner PMTUD does NOT work. A ping proves nothing:
+#                       this fails as "large responses hang", which reads as an
+#                       application bug and gets debugged in the wrong place for
+#                       a day.
+#   4. InternalIP    -- if it is not the tunnel address, VXLAN is on the PUBLIC
+#                       NIC in the clear. k3s bakes it in at registration, so
+#                       this is uninstall-and-rejoin, not a converge. The node
+#                       must stay cordoned.
+#
+# Runs on localhost with the workstation's kubectl, like its storage sibling.
+# `nodeName` pins the pod, bypassing the scheduler AND the cordon -- which is
+# what lets the proof run before the uncordon rather than after it.
+
+- name: "{{ edge_node }} | the node must be known by its tunnel address"
+  ansible.builtin.command: >-
+    kubectl get node {{ edge_node }}
+    -o jsonpath={.status.addresses[?(@.type=="InternalIP")].address}
+  register: edge_internal_ip
+  changed_when: false
+
+- name: "{{ edge_node }} | assert InternalIP, or stay cordoned"
+  ansible.builtin.assert:
+    that: edge_internal_ip.stdout | trim == hostvars[edge_host].k3s_node_ip
+    fail_msg: >-
+      {{ edge_node }} registered InternalIP '{{ edge_internal_ip.stdout }}',
+      expected '{{ hostvars[edge_host].k3s_node_ip }}'. Cilium's VXLAN is
+      therefore running over the PUBLIC interface unencrypted. k3s baked this
+      in at registration -- it cannot be fixed by a converge. Uninstall k3s on
+      that node, confirm node-ip in /etc/rancher/k3s/config.yaml, and rejoin.
+      The node stays cordoned.
+  vars:
+    edge_host: "{{ groups['k3s_edge'] | first }}"
+
+- name: "{{ edge_node }} | launch the tunnel proof pod, pinned and tolerating the taint"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      cat <<'EOF' | kubectl apply -f - >/dev/null
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        name: edge-proof-{{ edge_node }}
+        namespace: default
+      spec:
+        # Pinned: bypasses the scheduler, so it runs while the node is cordoned.
+        nodeName: {{ edge_node }}
+        # The taint is applied AT REGISTRATION, so even a pinned pod needs this.
+        tolerations:
+          - operator: Exists
+        restartPolicy: Never
+        # ⚠️ NOT hostNetwork, deliberately. A host-network pod would bypass the
+        # overlay entirely and prove nothing about VXLAN-over-WireGuard, which
+        # is the whole question. It also has to satisfy PodSecurity `restricted`
+        # in `default` -- see tasks/storage-proof.yml, where a pod with no
+        # securityContext silently blocked every join from 2026-08-31.
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          seccompProfile: { type: RuntimeDefault }
+        containers:
+          - name: proof
+            image: busybox:1.36
+            command: ["sh", "-c", "sleep 300"]
+            securityContext:
+              allowPrivilegeEscalation: false
+              readOnlyRootFilesystem: true
+              capabilities: { drop: ["ALL"] }
+            resources:
+              requests: { cpu: 10m, memory: 16Mi }
+              limits:   { memory: 64Mi }
+      EOF
+      kubectl wait --for=condition=Ready pod/edge-proof-{{ edge_node }} \
+        -n default --timeout=120s >/dev/null
+      kubectl get pod edge-proof-{{ edge_node }} -n default -o jsonpath='{.status.podIP}'
+    executable: /bin/bash
+  register: edge_pod_ip
+  changed_when: true
+
+- name: "{{ edge_node }} | assert Cilium IPAM reached this node"
+  ansible.builtin.assert:
+    that: edge_pod_ip.stdout is match('^' ~ (cilium_pod_cidr_prefix | default('10.245.')) | replace('.', '\\.'))
+    fail_msg: >-
+      The proof pod got IP '{{ edge_pod_ip.stdout }}', which is not on the
+      Cilium pod CIDR ({{ cilium_pod_cidr_prefix | default('10.245.') }}x).
+      The node is Ready with a pod network that is not Cilium's -- the same
+      shape as k8s-lab4, one layer down.
+
+- name: "{{ edge_node }} | DNS and a LARGE payload across the tunnel"
+  ansible.builtin.shell:
+    cmd: |
+      set -o pipefail
+      P=edge-proof-{{ edge_node }}
+      # 1. cluster DNS resolves through the overlay
+      kubectl exec -n default "$P" -- nslookup kubernetes.default.svc.cluster.local \
+        >/dev/null 2>&1 && echo "dns=ok" || echo "dns=FAIL"
+      # 2. THE MTU PROOF. Pull >64 KiB through the tunnel from a Service that
+      #    lives on a HOME node, and compare the byte count. A small request
+      #    that succeeds proves nothing -- the failure mode is a HANG on the
+      #    large response, so this is bounded by a timeout and the timeout IS
+      #    the failure signal.
+      BYTES=$(kubectl exec -n default "$P" -- \
+        timeout 25 wget -q -O - http://kubernetes.default.svc.cluster.local/openapi/v2 2>/dev/null \
+        | wc -c)
+      echo "bytes=$BYTES"
+    executable: /bin/bash
+  register: edge_traffic
+  changed_when: false
+
+- name: "{{ edge_node }} | assert the tunnel carries full-size traffic"
+  ansible.builtin.assert:
+    that:
+      - edge_traffic.stdout is search('dns=ok')
+      - (edge_traffic.stdout | regex_search('bytes=(\\d+)', '\\1') | first | int) > 65536
+    fail_msg: >-
+      Tunnel data-path proof FAILED: {{ edge_traffic.stdout }}.
+      dns=FAIL means the overlay does not carry traffic at all. A small or zero
+      byte count means the large response HUNG -- which is the VXLAN-inside-
+      WireGuard MTU fault, not an application fault. Inner PMTUD does not work
+      here, so nothing will report it: check wg_mtu (1420) and the pod MTU
+      (~1370) on {{ edge_node }} before touching anything else.
+    success_msg: >-
+      {{ edge_node }}: pod network on Cilium, cluster DNS resolving, and
+      {{ edge_traffic.stdout | regex_search('bytes=(\\d+)', '\\1') | first }}
+      bytes pulled across the tunnel in one response.
+
+- name: "{{ edge_node }} | clean up the proof pod"
+  ansible.builtin.command: >-
+    kubectl delete pod edge-proof-{{ edge_node }} -n default --ignore-not-found --wait=false
+  changed_when: true
+
+# Only reached if every assertion above passed; any_errors_fatal stops the play
+# otherwise and the node stays cordoned, which is the safe default.
+- name: "{{ edge_node }} | uncordon, tunnel data path PROVEN"
+  ansible.builtin.command: "kubectl uncordon {{ edge_node }}"
+  changed_when: true
+
+- name: "{{ edge_node }} | done"
+  ansible.builtin.debug:
+    msg: >-
+      {{ edge_node }} joined, tunnel-proven and uncordoned. It carries NO
+      storage driver by design -- that is asserted, not tolerated.
