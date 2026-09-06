@@ -62,6 +62,40 @@ spec:
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
 
+    # 🔴 THE ROUTING PEER'S OWN CONTROL PLANE -- AND IT LEAVES THE CLUSTER
+    # TO REACH SERVICES RUNNING NEXT TO IT.
+    #
+    # The peer is a NetBird CLIENT. It is co-resident with management, signal
+    # and relay, but it does not talk to them as neighbours: it dials the
+    # PUBLIC endpoint like any other peer, out through the home uplink to
+    # edge-1 and back in through the Gateway. Without this rule it fails with
+    #
+    #   dial tcp 167.86.81.59:443: i/o timeout
+    #
+    # which reads like a broken edge node and is really this policy.
+    #
+    # ⚠️ THE IN-NAMESPACE RULE ABOVE DOES NOT COVER IT, and that is the trap.
+    # `toEndpoints: netbird` allows the pod to reach the management SERVICE,
+    # so it looks like the peer is already served. It is not: the peer resolves
+    # `vpn.techyon.dev`, which is the edge VPS's public address, and that is
+    # `world` -- a different destination entirely from the pod next door.
+    #
+    # ⚠️ ONE NAME, THREE SERVICES. Management gRPC, signal gRPC and the relay
+    # WebSocket are all multiplexed onto this single :443 endpoint (NetBird
+    # >= 0.29), so this one rule is the whole control plane. Do not "tidy" it
+    # by narrowing to management -- signal and relay ride the same tuple.
+    #
+    # ⚠️ TCP ONLY, and that is a CONSEQUENCE OF THE STUN DECISION, not an
+    # oversight. With `Stuns`/`Turns` empty the peer never forms a direct
+    # WireGuard path, so it needs no UDP egress; everything relays over :443.
+    # The day coturn is deployed and direct peer-to-peer starts working, this
+    # rule must gain UDP or connections will silently fall back to relay
+    # forever while looking healthy. See chart-values.yaml.
+    - toFQDNs:
+        - matchName: "vpn.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+
     # ⚠️ NO `toEntities: [world]` ANYWHERE, deliberately. The audit script fails
     # a published namespace that grants it, and a control plane strangers can
     # reach must not be able to phone anywhere it likes. If a future NetBird
