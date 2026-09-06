@@ -65,32 +65,26 @@ data:
           # Envoy behind it.
           originServerName: authentik.techyon.dev
 
-      # ── The two-port TCP demo ─────────────────────────────────────────────
-      # An Open-Tibia-shaped protocol: LOGIN on one port, GAME on another, each
-      # its own hostname so a failure is visibly on one of them.
+      # ── The two-port TCP demo: RETIRED 2026-09-06 ─────────────────────────
       #
-      # ⚠️ THESE BYPASS ENVOY COMPLETELY. `tcp://` points at the Service, not at
-      # a Gateway, so there is no HTTPRoute, no SecurityPolicy and NO AUTHENTIK
-      # GATE -- OIDC is a browser redirect flow and cannot run over a raw TCP
-      # stream. Cloudflare Access in front of the hostname is the only gate
-      # available here, and it is not configured. Throwaway services only.
+      # This carried `ot-login.techyon.dev` and `ot-game.techyon.dev` as
+      # `tcp://` entries pointing straight at the ot-demo Services. They were
+      # DECORATIVE and known to be: a `tcp://` public hostname needs
+      # `cloudflared access tcp` on the CLIENT, which a game client will not
+      # run. EDGE-NODE.md kept them deliberately as the control against which
+      # the replacement would be proven.
       #
-      # ⚠️ NOT reachable by a plain client. A public hostname serves HTTP(S)
-      # only; raw TCP needs `cloudflared access tcp` on the CLIENT machine, or
-      # WARP with private network routes. See MANUAL-STEPS.md for the exact
-      # commands and for the Open Tibia handoff problem, which is the thing
-      # that will actually bite: an OT login server hands the client an address
-      # for the game server, and through a tunnel that address has to be the
-      # client's own local proxy, not a public one.
+      # The replacement is proven. A real client connected to
+      # edge-1.techyon.dev:7171 through the `homelab-edge` Gateway with no
+      # client-side tooling, so the control has served its purpose and these
+      # would now be two public hostnames that answer nothing.
       #
-      # ⚠️ DNS for these is NOT created by external-dns. It watches Gateway API
-      # routes, and these have none -- so here, and ONLY here, `cloudflared
-      # tunnel route dns` is the right tool. On the HTTP side it is exactly the
-      # wrong tool, because it creates a record external-dns cannot reconcile.
-      - hostname: ot-login.techyon.dev
-        service: tcp://ot-login.ot-demo.svc.cluster.local:7171
-      - hostname: ot-game.techyon.dev
-        service: tcp://ot-game.ot-demo.svc.cluster.local:7172
+      # ⚠️ THE DNS RECORDS DO NOT GO AWAY WITH THIS COMMIT. They were created by
+      # `cloudflared tunnel route dns`, not by external-dns -- these entries had
+      # no Gateway API route for external-dns to watch. Nothing in this repo can
+      # delete them. `ot-login.techyon.dev` and `ot-game.techyon.dev` will keep
+      # resolving to the tunnel and returning nothing until someone removes them
+      # BY HAND in Cloudflare. See MANUAL-STEPS.md.
 
       # Required, and required LAST: cloudflared refuses to start without a
       # catch-all. 404 rather than a redirect, so an unmapped hostname that

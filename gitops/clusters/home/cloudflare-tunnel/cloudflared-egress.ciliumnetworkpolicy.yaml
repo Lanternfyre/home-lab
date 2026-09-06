@@ -82,21 +82,12 @@ spec:
         - ports:
             - { port: "10443", protocol: TCP }
 
-    # The TCP demo, which is the one thing that legitimately does NOT go
-    # through Envoy -- `tcp://` ingress rules point straight at the Service,
-    # because there is no HTTP for a Gateway to route.
-    #
-    # Note these ARE the Service ports, unlike the 10443 above: ot-demo's pods
-    # listen on the same numbers their Services publish, so translation is a
-    # no-op. The difference is worth stating rather than leaving as an apparent
-    # inconsistency between two adjacent rules.
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: ot-demo
-      toPorts:
-        - ports:
-            - { port: "7171", protocol: TCP }
-            - { port: "7172", protocol: TCP }
+    # ⚠️ THE ot-demo EGRESS RULE WAS REMOVED 2026-09-06, with the `tcp://`
+    # entries it existed for. cloudflared no longer reaches ot-demo at all --
+    # that traffic arrives through the `homelab-edge` Gateway on the edge node
+    # now, which is a different data path entirely and needs nothing from this
+    # namespace. Re-adding it would re-open an egress hole for a route that no
+    # longer exists.
 
   ingress:
     # The kubelet probe path. `world` is correct here and must not be

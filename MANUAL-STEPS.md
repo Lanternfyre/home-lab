@@ -928,61 +928,65 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   you 2026-08-31, re-confirmed 2026-09-06 — an accepted risk, not an oversight.
   See the warning under the summary table in `MODERNIZATION.md`.
 
-## Reaching the two-port TCP demo (ot-demo)
+## 🔴 DELETE TWO CLOUDFLARE DNS RECORDS BY HAND (2026-09-06)
 
-`ot-login.techyon.dev:7171` and `ot-game.techyon.dev:7172` are published through
-the Cloudflare Tunnel as `tcp://` ingress rules. Two things about them are not
-like the HTTP side, and both are easy to get wrong.
+`ot-login.techyon.dev` and `ot-game.techyon.dev` still resolve to the Cloudflare
+Tunnel and now answer **nothing**. The `tcp://` ingress entries behind them were
+removed once the edge Gateway was proven; the records were not, and cannot be.
 
-### 1. DNS is created BY HAND here, and only here
+**Nothing in this repo can delete them.** They were created with
+`cloudflared tunnel route dns`, not by external-dns — those entries had no
+Gateway API route for external-dns to watch, which is exactly why creating them
+by hand was correct at the time. The same fact makes removing them by hand the
+only option now.
 
-external-dns watches Gateway API routes. A `tcp://` ingress rule has none — the
-traffic never touches Envoy — so nothing generates these records:
+Delete both records in the Cloudflare dashboard for `techyon.dev`.
 
-```
-cloudflared tunnel route dns homelab ot-login.techyon.dev
-cloudflared tunnel route dns homelab ot-game.techyon.dev
-```
+⚠️ This is the standing tail on every un-publish in this estate: external-dns is
+`policy: upsert-only` and never deletes, and hand-made records are outside it
+entirely. `oauth.lab.techyon.dev` is the older instance of the same problem —
+it still points at `192.168.32.13`, an address since reallocated to
+ingress-nginx.
 
-⚠️ On the HTTP side this same command is exactly the WRONG tool: it creates a
-record external-dns does not own and can never reconcile (`owner id does not
-match`). The rule is: HTTPRoute → external-dns owns it; `tcp://` → you own it.
+---
 
-### 2. A plain client CANNOT connect
+## Reaching ot-demo (the two-port TCP demo)
 
-A Cloudflare public hostname serves HTTP(S). Raw TCP needs a local proxy on the
-client machine, one per port:
+`ot-login:7171`, `ot-game:7172` and the UDP echo on `7173` are published to the
+internet through the **`homelab-edge` Gateway on the edge node**, at
+`edge-1.techyon.dev`. A plain client connects directly — no tooling, no tunnel,
+no `cloudflared access tcp`:
 
-```
-cloudflared access tcp --hostname ot-login.techyon.dev --url localhost:7171
-cloudflared access tcp --hostname ot-game.techyon.dev  --url localhost:7172
-```
-
-Then point the client at `127.0.0.1:7171`. Verify with:
-
-```
-printf '' | nc 127.0.0.1 7171     # expect: OT-LOGIN-SERVER port=7171
-printf '' | nc 127.0.0.1 7172     # expect: OT-GAME-SERVER  port=7172
+```bash
+nc edge-1.techyon.dev 7171
 ```
 
-The alternative is the WARP client with private network routes, which needs no
-per-port command but does need WARP installed and enrolled.
+### What this section used to say, and why it changed
 
-### 🔴 The Open Tibia handoff, which is the thing that will actually bite
+Until 2026-09-06 these were `tcp://` entries on the Cloudflare Tunnel, and the
+section explained at length that a plain client **could not** connect: a public
+Cloudflare hostname serves HTTP(S) only, so raw TCP required
+`cloudflared access tcp` on the client machine or WARP with private network
+routes. That was true, it was the whole reason the edge node exists, and those
+entries were kept deliberately as the control to prove the replacement against.
 
-An OT login server answers with the ADDRESS AND PORT of the game server, and
-the client then opens a second connection to whatever it was told. Behind a
-tunnel that address must be the client's OWN LOCAL PROXY — `127.0.0.1:7172` —
-because there is no public IP the client can reach directly.
+The replacement is proven, so the tunnel entries are gone and the constraint
+with them. What remains true:
 
-So a real deployment needs the login server's advertised game-server address to
-be configurable per client, which most OT server configs assume is a single
-public IP. Plan for it before building on this.
+🔴 **The Open Tibia handoff is still the thing that will bite.** An OT login
+server hands the client an address and port for the game server, and the client
+connects to whatever it is told. That address must be the PUBLIC name and the
+EDGE listener port — `edge-1.techyon.dev:7172`, not a cluster Service name and
+not `127.0.0.1`. The manifests cannot fix this: it is configured inside the
+application, and getting it wrong produces a login that succeeds followed by a
+world connection that hangs.
 
-### 🔴 There is NO authentik gate on these ports
+⚠️ **There is no authentik gate on these ports, by design.** OIDC is a browser
+redirect flow and cannot run over a raw TCP stream. What bounds a published
+service here is what it IS (`edge-published-pod-constraints`) and what it can
+REACH (its egress policy) — never who may talk to it. See `HARDENING.md`.
 
-OIDC is a browser redirect flow and cannot run over a raw TCP stream, so the
-SecurityPolicy that protects every HTTP hostname does not apply here. The only
-gate available is a Cloudflare Access application in front of the hostname,
-and none is configured. That is why the demo runs throwaway `socat` echoes with
-zero egress rather than anything real.
+⚠️ **N game worlds means roughly 2N listeners** unless they share a login
+server, and every listener needs four edits: a Gateway listener, a route, the
+namespace label, and an `edge_fw_service_*` entry.
+`scripts/audit-edge-exposure.py` checks that those four agree.
