@@ -96,6 +96,51 @@ spec:
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
 
+    # ── WHAT VPN CLIENTS MAY ACTUALLY REACH ────────────────────────────────
+    #
+    # 🔴 THE OTHER HALF OF `netbird-vpn-access`. WITHOUT THIS, THAT POLICY
+    # DOES NOTHING AND THE VPN REACHES NOTHING.
+    #
+    # netbird-vpn-access grants those namespaces INGRESS from the routing
+    # peer. Cilium's default-deny is per DIRECTION and per ENDPOINT, so the
+    # destination letting the peer in is only half a path -- this namespace is
+    # default-deny EGRESS, so the peer could never leave to use it. The pair
+    # was written apart and only the ingress half landed; a VPN client saw
+    # timeouts that look exactly like a routing problem.
+    #
+    # ⚠️ KEEP THIS LIST AND `netbird-vpn-access` IN STEP. They are one control
+    # expressed in two objects, and either alone is silently inert.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+        - matchLabels:
+            io.kubernetes.pod.namespace: argocd
+        - matchLabels:
+            io.kubernetes.pod.namespace: home-utils
+        - matchLabels:
+            io.kubernetes.pod.namespace: immich
+        - matchLabels:
+            io.kubernetes.pod.namespace: silo
+
+    # ── The LAN gateways, so `*.lab.techyon.dev` works unchanged over the VPN ─
+    #
+    # Every `*.lab.techyon.dev` name resolves -- in PUBLIC DNS -- to
+    # 192.168.32.19, so a VPN client needs no DNS configuration at all: route
+    # the address and every existing URL works exactly as it does on the LAN.
+    #
+    # ⚠️ TWO /32s, NOT `192.168.32.0/23`. The wide form would hand every VPN
+    # client the whole home LAN -- printers, NAS, everything -- to reach web
+    # UIs that all live on two addresses. This is the difference between a VPN
+    # into the CLUSTER and a VPN into the HOUSE.
+    #
+    # ⚠️ This grants REACHABILITY, not authentication. .19 is the gated
+    # Gateway and still demands authentik on every route behind it.
+    - toCIDRSet:
+        - cidr: 192.168.32.18/32   # homelab  Gateway
+        - cidr: 192.168.32.19/32   # gated    Gateway -- *.lab.techyon.dev
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+
     # ⚠️ NO `toEntities: [world]` ANYWHERE, deliberately. The audit script fails
     # a published namespace that grants it, and a control plane strangers can
     # reach must not be able to phone anywhere it likes. If a future NetBird
