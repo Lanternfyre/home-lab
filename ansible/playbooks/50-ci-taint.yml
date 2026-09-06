@@ -4,11 +4,18 @@
 #
 #   # dedicate two nodes to CI (nothing else schedules there):
 #   ansible-playbook playbooks/50-ci-taint.yml --ask-become-pass \
-#     -e ci_taint_state=present -e ci_nodes=k8s-2.home,k8s-3.home
+#     -e ci_taint_state=present -e ci_nodes=k8s-4.home,k8s-7.home
 #
 #   # release them back to the general pool:
 #   ansible-playbook playbooks/50-ci-taint.yml --ask-become-pass \
-#     -e ci_taint_state=absent -e ci_nodes=k8s-2.home,k8s-3.home
+#     -e ci_taint_state=absent -e ci_nodes=k8s-4.home,k8s-7.home
+#
+# ⚠️ The example above named k8s-2/k8s-3 until 2026-09-06. Those are ETCD
+# SERVERS (`k3s_servers` in the inventory), so copy-pasting it dedicated two
+# control-plane nodes to CI -- and since 2026-09-06 the runner scale sets carry
+# a `control-plane DoesNotExist` nodeAffinity, so it would ALSO have left every
+# runner Pending: tainted for CI, then forbidden from the CI nodes. Name
+# AGENTS here, and re-read the note below before choosing which.
 #
 # ── Why this exists (and why the DEFAULT is no taints at all) ────────────────
 # The ARC v4 decision (2026-08-21) is that CI runner pods schedule CLUSTER-WIDE:
@@ -26,7 +33,11 @@
 #   template.spec.nodeSelector: {node-role.home-lab/ci: "true"}
 #   template.spec.tolerations:  [{key: dedicated, value: ci, effect: NoSchedule}]
 #
-# and let ArgoCD sync it. On gha-runner-scale-set <= 0.14.x that values flip is
+# and let ArgoCD sync it. If the node set you dedicate ever includes a
+# SERVER, the paired change also has to REMOVE the nodeAffinity guard added on
+# 2026-09-06 (`node-role.kubernetes.io/control-plane: DoesNotExist`) -- the
+# guard and this switch contradict each other on a server, and the symptom is
+# runners Pending with no event that names either one. On gha-runner-scale-set <= 0.14.x that values flip is
 # safe under flags.updateStrategy: "eventual" (drains in-flight jobs before the
 # listener is recreated); the flag is removed on ARC master (PR #4516), so
 # re-check the release notes before the first use after a chart bump.
