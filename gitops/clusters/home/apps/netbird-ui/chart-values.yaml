@@ -1,0 +1,73 @@
+# The SAME chart as apps/netbird, with only the dashboard enabled.
+#
+# Two releases of one chart rather than one release, because the two halves have
+# genuinely different exposure:
+#
+#   apps/netbird      management + signal + relay + routing peer, in an
+#                     `edge-publish` namespace, reachable from the internet
+#                     because VPN CLIENTS must reach them
+#   apps/netbird-ui   the dashboard, on the LAN's authentik-gated Gateway,
+#                     because only an operator's browser needs it
+#
+# That split is what lets the published half satisfy
+# `edge-published-pod-constraints` in full while the dashboard runs the
+# root-requiring image upstream ships.
+global:
+  namespace: netbird-ui
+
+management: { enabled: false }
+signal:     { enabled: false }
+relay:      { enabled: false }
+routingPeer: { enabled: false }
+
+dashboard:
+  enabled: true
+  image:
+    tag: "v2.13.1@sha256:88b5fb704a8c9dc3fe0bbdbcb19840d5fbcc6e8c79dd36ad322ba13baca9d233"
+
+  # 🔴 THE HARDENING IS DELIBERATELY RELAXED HERE, AND ONLY HERE.
+  #
+  # Measured from the image, not assumed: supervisord.conf declares `user=root`
+  # for [supervisord] and for every program, and nginx binds :80. Under
+  # runAsNonRoot supervisord aborts with "Can't drop privilege as nonroot user";
+  # under a non-root UID nginx cannot bind :80 without NET_BIND_SERVICE.
+  #
+  # This is upstream's image being root-shaped, not a preference. The honest
+  # response is to put it somewhere its exposure justifies -- which is what this
+  # whole namespace is -- rather than to weaken the contract in the namespace
+  # that faces the internet.
+  #
+  # What is still enforced: PSA `baseline` on the namespace forbids privileged,
+  # host namespaces and hostPath, and these two lines keep the rest.
+  podSecurityContext: {}
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+      # nginx binds :80 and the image gives us no way to move it.
+      add: ["NET_BIND_SERVICE"]
+
+  # Still required even here: a mutable tag on any workload is how what runs
+  # changes without a commit.
+  resources:
+    requests: { cpu: 25m, memory: 64Mi }
+    limits: { memory: 256Mi }
+
+  envRaw:
+    - name: NETBIRD_MGMT_API_ENDPOINT
+      value: "https://vpn.techyon.dev"
+    - name: NETBIRD_MGMT_GRPC_API_ENDPOINT
+      value: "https://vpn.techyon.dev"
+    # ⚠️ The PUBLIC authentik name, not the `.lab` one, even though this page is
+    # served on the LAN. The browser redirects to authentik and the token it
+    # receives is presented to the MANAGEMENT API, which validates against the
+    # public issuer. Two hostnames mint two different issuers -- EDGE-NODE.md
+    # finding 12 -- and the API is the side that must match.
+    - name: AUTH_AUTHORITY
+      value: "https://authentik.techyon.dev/application/o/netbird/"
+    - name: AUTH_CLIENT_ID
+      value: "netbird"
+    - name: AUTH_SUPPORTED_SCOPES
+      value: "openid profile email offline_access"
+    - name: USE_AUTH0
+      value: "false"

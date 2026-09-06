@@ -1,0 +1,38 @@
+# The dashboard, on the LAN's authentik-gated Gateway.
+#
+# 🔴 THE TWO NAMES ARE THE WHOLE POINT, AND THE SPLIT IS DELIBERATE:
+#
+#   vpn.techyon.dev       PUBLIC   management + signal + relay. Machine-facing.
+#                                  VPN clients must reach it from anywhere.
+#   vpn.lab.techyon.dev   LAN      the dashboard. Human-facing, and it resolves
+#                                  to a MetalLB address on 192.168.32.0/23 that
+#                                  no route from the internet reaches.
+#
+# The UI never needed to be public. Only the endpoints a NetBird CLIENT talks to
+# do, and a browser is not one of them.
+#
+# `homelab-gated` carries the authentik SecurityPolicy, so reaching this page at
+# all requires a sign-in that the dashboard's own OIDC flow then repeats against
+# the management API. Two gates for one UI is not redundant: the first keeps
+# strangers off the page, the second is what the API actually trusts.
+#
+# ⚠️ Reachable from the LAN and, once connected, OVER THE VPN ITSELF -- the
+# routing peer's allow-list in netbird-vpn-access does not currently include
+# this namespace, so add it there if you want to administer NetBird while away.
+# Doing that from the VPN you are administering is a real bootstrap trap: break
+# the config and you lose the path you would fix it from. The LAN is the way in.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbird-ui
+  namespace: netbird-ui
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+  hostnames:
+    - vpn.lab.techyon.dev
+  rules:
+    - backendRefs:
+        - name: netbird-ui-dashboard
+          port: 80

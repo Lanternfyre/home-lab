@@ -953,7 +953,7 @@ for the same reason.
 
 ### Pass 2 — after it is running
 
-Once `vpn.techyon.dev` serves the dashboard, sign in through authentik, create a
+Once **`vpn.lab.techyon.dev`** serves the dashboard (LAN only — see below), sign in through authentik, create a
 **reusable** setup key, and add it to the same item as **`setup-key`**.
 
 The routing peer picks it up on the next ExternalSecret refresh and enrols
@@ -965,6 +965,24 @@ otherwise look healthy.
 ⚠️ `kubectl get externalsecret -n netbird` tells you which pass you are in:
 `netbird-secrets` resolving and `netbird-setup-key` not is exactly the expected
 state between passes.
+
+### Two hostnames, and only one of them is public
+
+| name | reachable from | serves |
+|---|---|---|
+| `vpn.techyon.dev` | the internet | management + signal + relay — what a VPN CLIENT talks to |
+| `vpn.lab.techyon.dev` | the LAN, and the VPN once connected | the dashboard |
+
+The UI never needed to be public. It is a static page in your browser; only the
+machine-facing endpoints must be reachable from anywhere. `vpn.lab.techyon.dev`
+resolves to a MetalLB address on `192.168.32.0/23` that no route from the
+internet reaches, and it sits behind the authentik gate on `homelab-gated`.
+
+⚠️ Bootstrap order follows from that: create the setup key **from the LAN**. If
+you ever want to administer NetBird remotely, add `netbird-ui` to the routing
+peer's allow-list in `netbird-vpn-access` — but note you would then be
+administering the VPN over the VPN, and a bad change costs you the path you
+would fix it from.
 
 ### 🔴 What this deployment does NOT have: STUN/TURN
 

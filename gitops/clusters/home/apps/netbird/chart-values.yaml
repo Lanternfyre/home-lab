@@ -161,23 +161,19 @@ relay:
   envFromSecret:
     NB_AUTH_SECRET: netbird-secrets/relay-password
 
+# 🔴 THE DASHBOARD IS NOT DEPLOYED HERE. See apps/netbird-ui/.
+#
+# It cannot satisfy `edge-published-pod-constraints`: measured from the image,
+# supervisord declares `user=root` for every program and nginx binds :80, so
+# runAsNonRoot makes supervisord abort with "Can't drop privilege as nonroot
+# user" and an unprivileged bind of :80 would need NET_BIND_SERVICE.
+#
+# It also does not belong here. The dashboard is a static SPA in an operator's
+# browser; only management, signal and relay must be reachable by VPN CLIENTS.
+# Publishing a UI to the internet because it shipped in the same chart is how a
+# public surface grows for no reason.
 dashboard:
-  image:
-    tag: "v2.13.1@sha256:88b5fb704a8c9dc3fe0bbdbcb19840d5fbcc6e8c79dd36ad322ba13baca9d233"
-  envRaw:
-    - name: NETBIRD_MGMT_API_ENDPOINT
-      value: "https://vpn.techyon.dev"
-    - name: NETBIRD_MGMT_GRPC_API_ENDPOINT
-      value: "https://vpn.techyon.dev"
-    - name: AUTH_AUTHORITY
-      value: "https://authentik.techyon.dev/application/o/netbird/"
-    - name: AUTH_CLIENT_ID
-      value: "netbird"
-    - name: AUTH_SUPPORTED_SCOPES
-      value: "openid profile email offline_access"
-    - name: USE_AUTH0
-      value: "false"
-
+  enabled: false
 
 # ── The in-cluster routing peer ─────────────────────────────────────────────
 #
