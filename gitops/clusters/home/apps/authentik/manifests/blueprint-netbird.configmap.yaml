@@ -65,10 +65,25 @@ data:
           sub_mode: user_email
           include_claims_in_id_token: true
           redirect_uris:
+            # 🔴 THE DASHBOARD IS ON THE LAN NAME, NOT THE PUBLIC ONE.
+            #
+            # These said `vpn.techyon.dev` from when the dashboard was still
+            # going to be published to the internet. It was then moved to the
+            # LAN's gated Gateway and these were never updated, so the browser
+            # sent redirect_uri=https://vpn.lab.techyon.dev/callback --
+            # unregistered, `matching_mode: strict`, refused. The dashboard
+            # renders that refusal as "There was an error logging you in.
+            # Error: Unauthenticated", which names neither the URI nor the host
+            # and sends you looking at tokens instead.
+            #
+            # ⚠️ The PUBLIC name is deliberately NOT here. Nothing is served at
+            # vpn.techyon.dev/callback -- that host carries the machine-facing
+            # API only, and its `/` catch-all was removed. A redirect URI for a
+            # page that does not exist is a redirect target for no benefit.
             - matching_mode: strict
-              url: https://vpn.techyon.dev/callback
+              url: https://vpn.lab.techyon.dev/callback
             - matching_mode: strict
-              url: https://vpn.techyon.dev/silent-callback
+              url: https://vpn.lab.techyon.dev/silent-callback
             # The desktop/CLI client's local callback.
             - matching_mode: regex
               url: http://localhost:[0-9]+/callback
