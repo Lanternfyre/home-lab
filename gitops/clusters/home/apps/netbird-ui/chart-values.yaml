@@ -30,22 +30,45 @@ dashboard:
   # Measured from the image, not assumed: supervisord.conf declares `user=root`
   # for [supervisord] and for every program, and nginx binds :80. Under
   # runAsNonRoot supervisord aborts with "Can't drop privilege as nonroot user";
-  # under a non-root UID nginx cannot bind :80 without NET_BIND_SERVICE.
+  # under a non-root UID nginx cannot bind :80 without NET_BIND_SERVICE; and
+  # `init_react_envs.sh` writes the rendered config into the served root, so the
+  # filesystem cannot be read-only either.
   #
-  # This is upstream's image being root-shaped, not a preference. The honest
-  # response is to put it somewhere its exposure justifies -- which is what this
-  # whole namespace is -- rather than to weaken the contract in the namespace
-  # that faces the internet.
+  # This is upstream's image being root-shaped. The honest response is to put it
+  # where its exposure justifies -- this namespace is LAN-only and PSA
+  # `baseline` -- not to weaken the contract in the namespace facing the
+  # internet.
   #
-  # What is still enforced: PSA `baseline` on the namespace forbids privileged,
-  # host namespaces and hostPath, and these two lines keep the rest.
-  podSecurityContext: {}
+  # 🔴 EVERY KEY BELOW IS `null`, AND THAT IS THE ONLY THING THAT WORKS.
+  #
+  # This block was first written as `podSecurityContext: {}` and the pod kept
+  # crashlooping with the same error, because HELM MERGES MAPS: an empty map is
+  # a NO-OP against a chart default, not a reset. Rendering it showed the chart
+  # values surviving untouched --
+  #
+  #   pod: {runAsNonRoot: true, runAsUser: 65532, runAsGroup: 65532, ...}
+  #   ctr: {readOnlyRootFilesystem: true, capabilities: {drop: [ALL]}, ...}
+  #
+  # -- which reads exactly like the override was ignored, because it was. Only
+  # an explicit `null` per key removes an inherited value.
+  #
+  # What is still enforced, and it is not nothing: PSA `baseline` on the
+  # namespace forbids privileged containers, host namespaces and hostPath, and
+  # the seccomp profile is kept below because it costs this image nothing.
+  podSecurityContext:
+    runAsNonRoot: null
+    runAsUser: null
+    runAsGroup: null
+    seccompProfile:
+      type: RuntimeDefault
   securityContext:
-    allowPrivilegeEscalation: false
-    capabilities:
-      drop: ["ALL"]
-      # nginx binds :80 and the image gives us no way to move it.
-      add: ["NET_BIND_SERVICE"]
+    runAsNonRoot: null
+    readOnlyRootFilesystem: null
+    allowPrivilegeEscalation: null
+    # nginx forks workers and setuids to its own user, which needs the default
+    # capability set. `drop: [ALL]` prevents that -- the master starts and the
+    # workers never appear.
+    capabilities: null
 
   # Still required even here: a mutable tag on any workload is how what runs
   # changes without a commit.
@@ -69,5 +92,30 @@ dashboard:
       value: "netbird"
     - name: AUTH_SUPPORTED_SCOPES
       value: "openid profile email offline_access"
+    # 🔴 REQUIRED, and its absence is a startup abort, not a warning:
+    #   "AUTH_AUDIENCE or AUTH0_AUDIENCE environment variable must be set"
+    # For a public PKCE client the audience IS the client id.
+    - name: AUTH_AUDIENCE
+      value: "netbird"
     - name: USE_AUTH0
       value: "false"
+
+  # 🔴 THE CHART'S SCRATCH VOLUMES ARE REMOVED HERE, and removing them is the
+  # fix rather than an optimisation.
+  #
+  # They exist because the chart defaults to a read-only root filesystem. This
+  # release does not have one, so they are unnecessary -- and the `/var/run` one
+  # is actively harmful: on this image `/var/run` is a SYMLINK to `/run`, so
+  # mounting an emptyDir over it replaces the directory nginx keeps its own
+  # state in. nginx then dies with
+  #
+  #   open() "/run/nginx/nginx.pid" failed (2: No such file or directory)
+  #
+  # which looks like a permissions problem and is actually a mount erasing a
+  # directory that shipped in the image.
+  #
+  # ⚠️ Lists REPLACE on merge in Helm, unlike maps. That is why `[]` works here
+  # while `{}` did nothing for securityContext above -- the same values file
+  # needs both idioms, for the same reason, in opposite directions.
+  volumes: []
+  volumeMounts: []
