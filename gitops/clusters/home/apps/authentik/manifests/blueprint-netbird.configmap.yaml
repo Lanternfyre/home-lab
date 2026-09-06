@@ -84,35 +84,49 @@ data:
               url: https://vpn.lab.techyon.dev/callback
             - matching_mode: strict
               url: https://vpn.lab.techyon.dev/silent-callback
-            # ── The desktop/CLI client's local callback ────────────────────
+            # ── The desktop/CLI client's local callback ────────────────
             #
-            # 🔴 `\\d+`, NOT `[0-9]+`. THE BRACKETS BREAK CORS FOR THE WHOLE
-            # PROVIDER, AND THE SYMPTOM POINTS NOWHERE NEAR THIS LINE.
+            # 🔴 THESE MUST MATCH `PKCEAuthorizationFlow.RedirectURLs` IN
+            # apps/netbird/chart-values.yaml BYTE FOR BYTE. THERE IS NO PATH.
             #
-            # authentik's `cors_allow` (providers/oauth2/utils.py:52) runs
-            # `urlparse()` over EVERY redirect URI on the provider to decide
-            # which origins may call the OIDC endpoints -- regex entries
-            # included, unparsed. Python's urlparse sees netloc
-            # `localhost:[0-9]+`, treats the `[` as the start of a bracketed
-            # IPv6 literal and raises:
+            # Read from the client, not guessed -- netbird
+            # client/internal/auth/pkce_flow.go:49-67 walks `RedirectURLs`,
+            # takes the first whose port is free, and assigns it to
+            # `oauth2.Config.RedirectURL` UNCHANGED. So the client sends
+            # `http://localhost:53000` exactly, with no `/callback` suffix.
+            # An entry carrying a path matches nothing and `netbird up` dies on
+            # the same "Redirect URI Error" page the dashboard gave.
             #
-            #   ValueError: '0-9' does not appear to be an IPv4 or IPv6 address
+            # ⚠️ WHY STRICT AND NOT REGEX, having just written one.
             #
-            # That escapes before any header is written, so the endpoint
-            # returns 200 with NO Origin header and 500 WITH one. The browser
-            # reports only "No 'Access-Control-Allow-Origin' header is present",
-            # which reads like an authentik CORS setting and is really a
-            # traceback in a regex that belongs to the CLI, not the dashboard.
+            # authentik's `cors_allow` (providers/oauth2/utils.py:52)
+            # `urlparse()`s EVERY redirect URI on the provider -- regex entries
+            # included, unparsed -- to decide which origins may call the OIDC
+            # endpoints. A `[` in the netloc is read as the start of a
+            # bracketed IPv6 literal and raises, on authentik's Python 3.14.7:
             #
-            # ⚠️ The asymmetry IS the diagnostic. Any OIDC endpoint that
+            #   ValueError: Invalid IPv6 URL
+            #
+            # It escapes before any header is written, so the endpoint returns
+            # 200 with NO Origin header and 500 WITH one. The browser reports
+            # only "No 'Access-Control-Allow-Origin' header is present", which
+            # reads like an authentik CORS setting and is really a traceback in
+            # a regex belonging to the CLI. One regex written for the desktop
+            # client took out the DASHBOARD's browser login, and every other
+            # OIDC endpoint on the provider with it.
+            #
+            # ⚠️ THE ASYMMETRY IS THE DIAGNOSTIC. Any OIDC endpoint that
             # answers cleanly by curl and fails from a browser: re-request it
-            # with `-H "Origin: <the SPA's origin>"` before suspecting CORS
-            # configuration.
+            # with `-H "Origin: <the SPA's origin>"` BEFORE suspecting CORS
+            # configuration. A 500 there is a crash, not a policy.
             #
-            # `\\d+` is the same match with no bracket, so urlparse yields
-            # netloc `localhost:\d+` and never reaches the IPv6 check.
-            - matching_mode: regex
-              url: http://localhost:\d+/callback
+            # Enumerating the ports strictly keeps the provider regex-free, so
+            # this cannot recur. Two ports because ONE means `netbird up` fails
+            # with "no available port found" if something else holds 53000.
+            - matching_mode: strict
+              url: http://localhost:53000
+            - matching_mode: strict
+              url: http://localhost:54000
           property_mappings:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
