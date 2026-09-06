@@ -1,0 +1,138 @@
+# H-programme item 5 -- detection. See HARDENING.md and CLUSTER-JOIN-HARDENING.md.
+#
+# Everything protecting cluster membership is PREVENTION with nothing behind it:
+# the join token was rotated and split, agents cannot join as servers, the edge
+# node's tunnel is guarded. But **a node joining this cluster is completely
+# silent.** Nothing anywhere fires on the node count changing, and the fleet is
+# small enough that "a node appeared" is never routine.
+#
+# Prevention with no detection is a posture, not a control. These are the
+# detection.
+#
+# ⚠️ THESE ALERTS ARE DELIBERATELY HARD-CODED to the current fleet, and that is
+# the point rather than a shortcut. Adding a node is a rare, deliberate act that
+# already touches the inventory, Pi-hole, blackbox-exporter and a join playbook;
+# making it also touch this file means the expected fleet is written down in a
+# reviewable place instead of living in someone's head. If one of these fires
+# because YOU added a node, the fix is this file -- in the same PR as the join.
+#
+# House rule (see ci-guards and the smartctl alerts): every expression validated
+# against live Prometheus before commit, STRAIGHT AND INVERTED. Done 2026-09-06
+# against the running instance:
+#
+#   count(kube_node_info) != 8                        0 firing
+#   count(kube_node_info) == 8                        1 series      (inverted)
+#   kube_node_info{node!~"k8s-lab[1-7]|k8s-edge1"}    0 firing
+#   kube_node_info{node=~"k8s-lab[1-7]|k8s-edge1"}    8 series      (inverted)
+#   absent(kube_node_info)                            0 firing
+#   absent(kube_node_info_typo_does_not_exist)        1 series      (inverted)
+#   kube_node_info{internal_ip!~"<the 8>"}            0 firing
+#   kube_node_info{internal_ip=~"<the 8>"}            8 series      (inverted)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cluster-membership
+  namespace: monitoring
+  labels:
+    # Mandatory -- the Prometheus CR's ruleSelector matches this label; without
+    # it this file is decoration (see the smartctl rules file).
+    release: prometheus-operator
+spec:
+  groups:
+    - name: cluster-membership
+      rules:
+        # --- the flagship: the fleet is not the size it should be ----------
+        # Fires on a node APPEARING and on one DISAPPEARING. The second half
+        # matters more than it looks: a node going NotReady is covered
+        # elsewhere, but a Node OBJECT being deleted is not -- it just stops
+        # existing, and every alert keyed on that node stops evaluating with it.
+        #
+        # `for: 5m` because a drain, cordon or reboot does NOT change this
+        # count -- the Node object survives all three -- so the only things that
+        # move it are a real join, a real deletion, and a kube-state-metrics
+        # scrape gap. Five minutes rides out the last one without letting a
+        # hostile join sit unreported for long.
+        - alert: ClusterNodeCountUnexpected
+          expr: count(kube_node_info) != 8
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Cluster has {{ $value }} nodes, expected 8"
+            description: >-
+              The number of Node objects changed and stayed changed for 5m.
+              Expected 8: k8s-lab1..3 (servers), k8s-lab4..7 (agents),
+              k8s-edge1 (public VPS agent). If you did not just add or remove a
+              node, treat this as a possible unauthorised join -- the join token
+              was public until 2026-09-06 and remains in git history. Check
+              `kubectl get nodes` against ansible/inventory/homelab.yml, and see
+              CLUSTER-JOIN-HARDENING.md. If you DID change the fleet, update
+              this rule in the same PR.
+
+        # --- a node whose NAME is not one of ours ---------------------------
+        # Weaker than the IP check below, because a joining node chooses its own
+        # hostname and the Kubernetes node name follows it -- so anyone joining
+        # deliberately can evade this by picking a plausible name. It is here
+        # for the honest-mistake case (a machine joined with its stock hostname)
+        # and because it costs nothing.
+        - alert: ClusterUnexpectedNodeName
+          expr: kube_node_info{node!~"k8s-lab[1-7]|k8s-edge1"}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node {{ $labels.node }} is not a known node name"
+            description: >-
+              A node named {{ $labels.node }} ({{ $labels.internal_ip }}) is a
+              cluster member and is not in the expected set k8s-lab1..7 /
+              k8s-edge1. Either the fleet changed without this rule changing, or
+              something joined that should not have.
+
+        # --- 🔴 the one that actually catches a hostile join ----------------
+        # A joiner controls its own hostname; it does NOT control which address
+        # it can reach the apiserver from. The home nodes sit on measured static
+        # addresses and the edge node reaches 6443 only through its WireGuard
+        # /32, so ANY other internal_ip means a machine on the LAN (or through
+        # the tunnel) joined -- which is exactly the shape the published-token
+        # exposure would have taken.
+        #
+        # ⚠️ These eight addresses are duplicated from
+        # ansible/inventory/host_vars/*.yml. Nothing enforces that they agree;
+        # if a node is ever re-addressed, this alert is what will tell you --
+        # loudly, and at 3am. That is a deliberate trade, not an oversight.
+        - alert: ClusterUnexpectedNodeAddress
+          expr: >-
+            kube_node_info{internal_ip!~"192\\.168\\.33\\.(2|3|7|20|21|22|24)|10\\.250\\.0\\.1"}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Node {{ $labels.node }} joined from unexpected address {{ $labels.internal_ip }}"
+            description: >-
+              {{ $labels.node }} is a cluster member with internal IP
+              {{ $labels.internal_ip }}, which is not one of the eight known
+              node addresses. A joining machine chooses its own hostname but not
+              its routable address, so this is the strongest signal available
+              that something joined which should not have. Compare against
+              ansible/inventory/host_vars/ and CLUSTER-JOIN-HARDENING.md.
+
+        # --- the canary-of-the-canary ---------------------------------------
+        # Without this, every alert above fails OPEN. `count(...) != 8` over an
+        # empty vector returns nothing, and a label matcher over no series
+        # matches nothing -- so if kube-state-metrics stops being scraped, all
+        # three go quiet and quiet reads exactly like healthy. This is the
+        # counterpart that makes the gap visible, in the same shape as
+        # ci-guards' EtcdServerMetricsAbsent.
+        - alert: ClusterNodeInventoryAbsent
+          expr: absent(kube_node_info)
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: "kube_node_info has no series -- membership alerts are blind"
+            description: >-
+              kube-state-metrics has produced no kube_node_info series for 15m,
+              so ClusterNodeCountUnexpected, ClusterUnexpectedNodeName and
+              ClusterUnexpectedNodeAddress cannot fire regardless of what
+              happens to cluster membership. Fix the scrape before trusting
+              their silence.
