@@ -1,0 +1,53 @@
+# Stage 4d -- what VPN CLIENTS may reach, expressed as the routing peer's reach.
+#
+# This is the other half of `edge-node-containment`. That policy denies the edge
+# NODE; this one grants the routing PEER, and the two can coexist precisely
+# because the peer is a pod with its own identity rather than traffic SNAT'd to
+# the edge node's address.
+#
+# 🔴 START DELIBERATELY NARROW. A VPN is not a reason to hand every namespace to
+# every enrolled laptop. The list below is what an operator plausibly needs to
+# reach from outside; widen it by adding namespaces here, one at a time, with a
+# reason -- not by replacing it with `{}`.
+#
+# ⚠️ `enableDefaultDeny` IS FALSE ON BOTH DIRECTIONS AND THAT IS MANDATORY.
+# Cilium's CRD: "if a policy only has Ingress or IngressDeny rules, then the
+# default for ingress is true", and "default deny will be enabled if ANY policy
+# requests it". This is a CLUSTERWIDE policy carrying an ingress rule, so
+# without these two lines it would put every namespace it selects into
+# default-deny ingress and no other policy could undo it -- the same
+# cluster-wide outage `edge-node-containment` documents at length.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: netbird-vpn-access
+spec:
+  description: >-
+    Allow the in-cluster NetBird routing peer to reach the namespaces VPN
+    clients are meant to use. Adds no default-deny of its own.
+
+  endpointSelector:
+    matchExpressions:
+      # Only real pod endpoints -- `NotIn` also matches endpoints LACKING the
+      # key, which would drag in the host and cilium-health endpoints. Same trap
+      # documented in edge-node-containment.
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: Exists
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: In
+        values:
+          - monitoring     # Grafana, Prometheus
+          - argocd
+          - home-utils     # mealie
+          - immich
+          - silo
+
+  enableDefaultDeny:
+    ingress: false
+    egress: false
+
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: netbird
+            app: netbird-routing-peer
