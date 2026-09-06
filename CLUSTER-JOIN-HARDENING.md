@@ -22,7 +22,18 @@ being a background concern.
 
 Investigating that turned up something larger than the edge node.
 
-## 🔴 The join token is published
+## ✅ The join token was published — rotated 2026-09-06
+
+**RESOLVED.** `k3sblog` is dead: `server-bootstrap` returns `401` for it on all
+three servers, verified rather than assumed. An agent token was split out in the
+same window, so an agent credential can no longer join a server. The procedure
+and the failure it caused are in
+[CLUSTER-TOKEN.md](CLUSTER-TOKEN.md#what-2026-09-06-taught-us); the playbook is
+`ansible/playbooks/71-rotate-cluster-token.yml`.
+
+The finding as originally written follows, because the history matters.
+
+### 🔴 The join token is published (as found)
 
 ```
 gitops/argo-install.md:33    --token k3sblog       ← PUBLIC repository
@@ -222,7 +233,7 @@ uses: the L7 DNS rule first, then `toEndpoints` with a namespace label.
 | # | what | risk |
 |---|---|---|
 | 1 | this document + the two doc corrections | none |
-| 2 | **one window:** rotate the token AND split out an agent-token | highest |
+| 2 | ✅ **DONE 2026-09-06** — rotate the token AND split out an agent-token | highest |
 | 3 | tunnel guard — surgical nftables on home nodes | first rules on home nodes |
 | 4 | the contract — Kyverno policy + audit script | admission |
 | 5 | detection — alert on node-count change | none |

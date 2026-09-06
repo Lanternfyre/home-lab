@@ -1,0 +1,379 @@
+---
+# Rotate the cluster join token AND the agent token, in the one order that works.
+#
+#   ansible-playbook playbooks/71-rotate-cluster-token.yml --ask-become-pass
+#
+# Secrets are PROMPTED, never passed with -e: `-e k3s_token_value=...` puts the
+# live join credential in shell history, in the process table, and in any
+# terminal scrollback that gets pasted somewhere. Record all three in 1Password
+# BEFORE running this.
+#
+# ══ WHY THIS PLAYBOOK EXISTS ═══════════════════════════════════════════════
+#
+# `k3s token rotate` changes TWO things at DIFFERENT times, and the gap between
+# them is a window in which the cluster disagrees with itself:
+#
+#   the datastore bootstrap data   re-encrypted with the new token IMMEDIATELY
+#   cred/passwd (what :6443 auths) changes only when each server RESTARTS
+#
+# A server already running never notices -- it read bootstrap once at startup
+# and never looks again. But any server that restarts inside that window reads
+# its token file, authenticates fine against the OLD passwd, then fails:
+#
+#   "failed to save bootstrap data: bootstrap data already found and
+#    encrypted with different token"
+#
+# 🔴 THIS COST k8s-3 A FULL DAY ON 2026-09-06. The operator ran
+# 20-config-converge.yml with the new token BEFORE rotating. That play writes
+# the token file and restarts k3s IN THE SAME PER-NODE LOOP, so k8s-3 restarted
+# into a cluster whose datastore had not been rotated yet. Recovery needed a
+# wipe of /var/lib/rancher/k3s/server, an etcd member removal, a node-object
+# delete, and finally rotating the datastore BACK to the old token.
+#
+# So the order below is not a preference. Writing the token files and restarting
+# must be SEPARATE PHASES with the rotation in between, across the whole fleet:
+#
+#   1. prove the old token is live and the new one is not      (gate)
+#   2. snapshot etcd
+#   3. write new token files to EVERY node -- no restarts
+#   4. rotate the datastore, once
+#   5. restart every server, serial:1, Ready + quorum gated
+#   6. prove the new token is live and the old one is not      (gate)
+#
+# ══ THE GATE THAT WAS MISSING ══════════════════════════════════════════════
+#
+# CLUSTER-TOKEN.md treated `k3s token rotate` printing "Token rotated" as
+# confirmation. It is not -- it confirms the DATASTORE changed, and says
+# nothing about what the servers authenticate with. The honest check is the
+# bootstrap endpoint itself, which is the exact request a joining node makes:
+#
+#   curl -sk -u "server:<password>" https://127.0.0.1:6443/v1-k3s/server-bootstrap
+#     200  this password is live
+#     401  it is not
+#
+# Run before AND after. Before: old must be 200, new must be 401 (or the "new"
+# token is not new). After: the reverse, on EVERY server -- a server that missed
+# its restart still answers to the old token and is the next k8s-3.
+#
+# ⚠️ Agents and the edge node are NOT restarted here, deliberately. A registered
+# node holds client CERTIFICATES, not the token; it only needs the token to
+# re-register. Their files are updated so a future rejoin works, and nothing is
+# bounced for a credential they are not currently using.
+#
+# ⚠️ Servers adopt `agent-token-file` on this restart. Confirm all three agent
+# token files match afterwards -- agents joining a server that disagrees fail.
+
+- name: Preflight, capture the credentials, and prove the starting state
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars_prompt:
+    - name: rotate_old_token
+      prompt: "CURRENT server token (full K10... or bare password)"
+      private: true
+    - name: rotate_new_server_token
+      prompt: "NEW server token   (openssl rand -hex 24) -- saved in 1Password already?"
+      private: true
+    - name: rotate_new_agent_token
+      prompt: "NEW agent token    (openssl rand -hex 24) -- saved in 1Password already?"
+      private: true
+
+  tasks:
+    # A K10 token is K10<ca-hash>::<user>:<password>; only the password is the
+    # credential. Both forms are accepted so the operator can paste whichever
+    # they have without a transcription step -- the 2026-09-06 recovery lost
+    # time to exactly that kind of retyping.
+    - name: "preflight | reduce each token to its password"
+      no_log: true
+      run_once: true
+      ansible.builtin.set_fact:
+        rot_old_pass: "{{ rotate_old_token | trim | regex_replace('^.*::', '') | regex_replace('^.*:', '') }}"
+        rot_new_server: "{{ rotate_new_server_token | trim }}"
+        rot_new_agent: "{{ rotate_new_agent_token | trim }}"
+      delegate_to: localhost
+      delegate_facts: true
+
+    - name: "preflight | the new tokens must be new, distinct, and not trivial"
+      run_once: true
+      ansible.builtin.assert:
+        that:
+          - hostvars['localhost'].rot_new_server != hostvars['localhost'].rot_old_pass
+          - hostvars['localhost'].rot_new_agent != hostvars['localhost'].rot_old_pass
+          - hostvars['localhost'].rot_new_server != hostvars['localhost'].rot_new_agent
+          - hostvars['localhost'].rot_new_server | length >= 32
+          - hostvars['localhost'].rot_new_agent | length >= 32
+        fail_msg: >-
+          The tokens must differ from each other and from the current one, and
+          be at least 32 characters. The token being SHORT and GUESSABLE
+          ('k3sblog' -- 7 characters, a dictionary word plus a suffix) is the
+          reason this rotation exists. `openssl rand -hex 24` produces 48.
+          ⚠️ NOT `k3s token generate` -- that emits a BOOTSTRAP token
+          (xxxxxx.xxxxxxxxxxxxxxxx), which k3s then rejects with
+          "failed to normalize server token".
+        success_msg: "both new tokens are distinct and long enough"
+
+    # ── GATE 1 ────────────────────────────────────────────────────────────
+    - name: "gate | the OLD token must authenticate on every server"
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - -u
+          - "server:{{ hostvars['localhost'].rot_old_pass }}"
+          - "https://127.0.0.1:6443/v1-k3s/server-bootstrap"
+      register: gate_old
+      changed_when: false
+      failed_when: gate_old.stdout != "200"
+
+    - name: "gate | the NEW token must NOT authenticate yet"
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - -u
+          - "server:{{ hostvars['localhost'].rot_new_server }}"
+          - "https://127.0.0.1:6443/v1-k3s/server-bootstrap"
+      register: gate_new
+      changed_when: false
+      failed_when: gate_new.stdout == "200"
+
+    - name: "gate | starting state proven"
+      run_once: true
+      ansible.builtin.debug:
+        msg: >-
+          Old token authenticates on all {{ groups['k3s_servers'] | length }}
+          servers; the new one does not. Safe to rotate.
+
+    # ── THE ONLY ROLLBACK ─────────────────────────────────────────────────
+    # H0 (etcd backup automation) is not built, so this snapshot is it.
+    # ⚠️ It is encrypted with the OLD token -- restoring it later REQUIRES that
+    # value, which is why the runbook says to archive rather than replace the
+    # 1Password entry.
+    - name: "snapshot | pre-rotation etcd snapshot"
+      become: true
+      run_once: true
+      delegate_to: "{{ k3s_control_plane_host }}"
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - etcd-snapshot
+          - save
+          - --name
+          - "pre-token-rotation"
+      register: snap
+      changed_when: true
+
+    - name: "snapshot | say where it went"
+      run_once: true
+      ansible.builtin.debug:
+        msg: "{{ snap.stdout_lines | select('search', 'aved') | list }}"
+
+
+# ══ PHASE 3: write, restart NOTHING ════════════════════════════════════════
+# Servers get the server token plus the agent token; agents and the edge get
+# the AGENT token as their own join credential -- that split is the point of
+# having two tokens at all, and it is what stops a compromised agent joining as
+# a server (CLUSTER-JOIN-HARDENING.md finding 5).
+- name: Write the new credentials to every node, restarting nothing
+  hosts: k3s_nodes
+  gather_facts: false
+  any_errors_fatal: true
+
+  vars:
+    k3s_token_value: >-
+      {{ hostvars['localhost'].rot_new_server
+         if inventory_hostname in groups['k3s_servers']
+         else hostvars['localhost'].rot_new_agent }}
+    k3s_agent_token_value: "{{ hostvars['localhost'].rot_new_agent }}"
+
+  roles:
+    - role: k3s_config      # writes config.yaml and the token files; never restarts
+
+
+# ══ PHASE 4: rotate the datastore, once ════════════════════════════════════
+# 🔴 FROM HERE UNTIL PHASE 5 COMPLETES, THE CLUSTER IS INCONSISTENT: the
+# datastore is on the new token and no server has adopted it. Do not let this
+# run be interrupted, and do not restart anything by hand in this window.
+- name: Rotate the datastore bootstrap encryption
+  hosts: "{{ groups['k3s_servers'] | first }}"
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    # ⚠️ --token is the CURRENT token, because `rotate` AUTHENTICATES with it.
+    # Passing the new one returns "FATA Error: not authorized" -- which reads
+    # like a wrong password and is really "you gave me the token I am rotating
+    # TO, not the one I am rotating FROM".
+    - name: "rotate | re-encrypt bootstrap data with the new server token"
+      become: true
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - token
+          - rotate
+          - --token
+          - "{{ hostvars['localhost'].rot_old_pass }}"
+          - --new-token
+          - "{{ hostvars['localhost'].rot_new_server }}"
+      register: rot
+      changed_when: true
+
+    - name: "rotate | datastore re-encrypted -- every server must now restart"
+      ansible.builtin.debug:
+        msg: >-
+          Datastore bootstrap is on the NEW token. Until every server restarts,
+          :6443 still authenticates with the OLD one. Phase 5 closes that gap.
+
+
+# ══ PHASE 5: restart the servers, one at a time ════════════════════════════
+# Gates lifted verbatim from 20-config-converge.yml, including k8s-1 LAST --
+# it is the delegate target for the health checks, so restarting it first would
+# mean asking the node under test whether the cluster is healthy.
+- name: Restart every server so it adopts the new token
+  hosts: k3s_servers
+  serial: 1
+  order: reverse_inventory
+  any_errors_fatal: true
+  gather_facts: false
+
+  tasks:
+    - name: "restart | bounce k3s"
+      become: true
+      ansible.builtin.systemd:
+        name: "{{ k3s_unit }}"
+        state: restarted
+
+    - name: "restart | wait for this node to report Ready again"
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get node {{ k8s_node_name }}
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: node_ready
+      until: node_ready.stdout == "True"
+      retries: 30
+      delay: 10
+      changed_when: false
+      become: true
+      delegate_to: "{{ k3s_control_plane_host }}"
+
+    # ⚠️ Loops k3s_servers, not k3s_nodes: agents run no etcd and nothing
+    # listens on :2381 there.
+    - name: "restart | verify etcd quorum across every server"
+      ansible.builtin.shell: |
+        curl -s --max-time 5 http://127.0.0.1:2381/metrics \
+          | grep -E '^etcd_server_has_leader|^etcd_server_health_failures'
+      register: etcd_health
+      changed_when: false
+      become: true
+      delegate_to: "{{ item }}"
+      loop: "{{ groups['k3s_servers'] }}"
+      failed_when: >-
+        ('etcd_server_has_leader 1' not in etcd_health.stdout)
+        or ('etcd_server_health_failures 0' not in etcd_health.stdout)
+
+    - name: "restart | settle before the next server"
+      ansible.builtin.wait_for: { timeout: 20 }
+
+
+# ══ PHASE 6: prove it ══════════════════════════════════════════════════════
+- name: Prove the rotation took on every server
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+
+  tasks:
+    - name: "verify | the NEW token must authenticate"
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - -u
+          - "server:{{ hostvars['localhost'].rot_new_server }}"
+          - "https://127.0.0.1:6443/v1-k3s/server-bootstrap"
+      register: post_new
+      changed_when: false
+      failed_when: post_new.stdout != "200"
+
+    # 🔴 THE CHECK THAT CATCHES A HALF-DONE ROTATION. A server that did not
+    # restart still answers to the old token -- and looks perfectly healthy,
+    # because a running server never re-reads its credential. That node is the
+    # next k8s-3, and nothing else in this play would notice it.
+    - name: "verify | the OLD token must be DEAD"
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - -u
+          - "server:{{ hostvars['localhost'].rot_old_pass }}"
+          - "https://127.0.0.1:6443/v1-k3s/server-bootstrap"
+      register: post_old
+      changed_when: false
+      failed_when: post_old.stdout == "200"
+
+    - name: "verify | the agent token must NOT open a server join"
+      no_log: true
+      ansible.builtin.command:
+        argv:
+          - curl
+          - -sk
+          - -o
+          - /dev/null
+          - -w
+          - "%{http_code}"
+          - -u
+          - "server:{{ hostvars['localhost'].rot_new_agent }}"
+          - "https://127.0.0.1:6443/v1-k3s/server-bootstrap"
+      register: post_agent
+      changed_when: false
+      failed_when: post_agent.stdout == "200"
+
+    - name: "verify | every node is still Ready"
+      run_once: true
+      become: true
+      delegate_to: "{{ k3s_control_plane_host }}"
+      ansible.builtin.shell: >-
+        /usr/local/bin/k3s kubectl get nodes
+        -o jsonpath='{range .items[*]}{.metadata.name}={.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}'
+      register: all_nodes
+      changed_when: false
+      failed_when: >-
+        (all_nodes.stdout_lines | reject('search', '=True$') | list | length) > 0
+        or (all_nodes.stdout_lines | length) != (groups['k3s_nodes'] | length)
+
+    - name: "verify | rotated"
+      run_once: true
+      ansible.builtin.debug:
+        msg: >-
+          Rotation complete. New server token live on all
+          {{ groups['k3s_servers'] | length }} servers, old token dead, agent
+          token rejected for server joins,
+          {{ all_nodes.stdout_lines | length }} nodes Ready.
+
+          ⚠️ STILL MANUAL: the join test. `40-add-node.yml` with the AGENT
+          token must succeed as an agent and FAIL as a server -- that is the
+          only proof the SPLIT works, as opposed to the rotation. Gates here
+          cannot see it.
+
+          ⚠️ Archive the old token in 1Password rather than deleting it: the
+          pre-rotation etcd snapshot cannot be restored without it.

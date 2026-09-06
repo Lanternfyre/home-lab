@@ -1,6 +1,13 @@
 
 # Kubernetes Home Lab
 
+> ⚠️ **`$K3S_TOKEN` is a placeholder — never paste a real token here.**
+> This file is in a PUBLIC repository. It carried `--token k3sblog` verbatim
+> from January until 2026-09-06, which made the live join credential — and in
+> k3s that joins a *server*, i.e. etcd — readable by anyone. That token has
+> been rotated and is dead. Take the current value from 1Password and export
+> it in your shell; see [CLUSTER-TOKEN.md](../CLUSTER-TOKEN.md).
+
 > ### ⚠️ REBUILDING A NODE? Do NOT use `--cluster-init` below.
 >
 > `--cluster-init` is correct exactly **once**, on a genuinely new cluster, and
@@ -30,7 +37,7 @@
 ## Install first node:
 
 ```shell
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.32.10+k3s1 sh -s - --cluster-init --token k3sblog --tls-san 192.168.32.2
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.32.10+k3s1 sh -s - --cluster-init --token "$K3S_TOKEN" --tls-san 192.168.32.2
 ```
 Install Kube VIP so that it is floating between nodes in cluster to provide API HA
 We only need it for control plane, Services will be handled by MetalLB
@@ -107,7 +114,7 @@ sudo touch /var/lib/rancher/k3s/server/manifests/kube-vip.yaml
 ## Join another node to the cluster:
 
 ```shell
-curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.32.10+k3s1 sh -s - server --server https://192.168.32.2:6443 --token k3sblog
+curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=v1.32.10+k3s1 sh -s - server --server https://192.168.32.2:6443 --token "$K3S_TOKEN"
 ```
 
 ## Install ArgoCD
