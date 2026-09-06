@@ -26,6 +26,15 @@ kind: HTTPRoute
 metadata:
   name: netbird-ui
   namespace: netbird-ui
+  annotations:
+    # ⚠️ homepage discovers apps from these annotations, and forgetting them is
+    # SILENT -- the app simply never appears. goldilocks records exactly that
+    # happening during its migration.
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: NetBird
+    gethomepage.dev/description: Self-hosted VPN control plane
+    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/icon: netbird.png
 spec:
   parentRefs:
     - name: homelab-gated

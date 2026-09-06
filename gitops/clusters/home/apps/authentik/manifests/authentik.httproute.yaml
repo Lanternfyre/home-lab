@@ -16,7 +16,13 @@ metadata:
     gethomepage.dev/enabled: "true"
     gethomepage.dev/name: Authentik
     gethomepage.dev/description: Identity provider
-    gethomepage.dev/group: Infra
+    # ⚠️ `Infrastructure`, not `Infra`. homepage groups by the LITERAL string,
+    # so a near-miss silently creates a SECOND section with one entry in it
+    # rather than failing -- which is what this was doing: authentik sat
+    # alone under `Infra` while goldilocks, headlamp and the rest were under
+    # `Infrastructure`. There is no validation to catch it; the only signal
+    # is the rendered page.
+    gethomepage.dev/group: Infrastructure
     gethomepage.dev/icon: authentik.png
 spec:
   parentRefs:
