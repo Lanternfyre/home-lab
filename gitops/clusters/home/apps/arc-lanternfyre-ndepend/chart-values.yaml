@@ -39,6 +39,61 @@ template:
   spec:
     automountServiceAccountToken: false
     priorityClassName: ci-runner
+    # ── CI I/O spreading (2026-09-06, the k8s-lab5 disk-saturation incident) ──
+    # All 5 arc-linux runners landed on k8s-lab5 at once and pinned its root
+    # disk: 100% util, w_await 478 ms, aqu-sq 93, io PSI `full avg10=35`.
+    # Prometheus, the ArgoCD application-controller, Redis, RabbitMQ and a
+    # CoreDNS replica share that node and were all stalling behind CI.
+    #
+    # This is NOT a scheduler bug. k8s-lab5 has 20 CPU allocatable against
+    # lab4=4, lab6=2, lab7=6, so at `cpu: 2` per runner it is the ONLY node
+    # that fits five -- the scheduler packed them there correctly. The trap is
+    # that the node with the most CPU has by far the worst disk: its root LVM
+    # is on a `BC501A NVMe SK hynix 128GB`, a DRAM-less OEM laptop drive that
+    # saturates around 37 MB/s of sustained writes. `_work` is an emptyDir, so
+    # every runner's build traffic lands on exactly that device.
+    #
+    # ⚠️ ephemeral-storage requests/limits do NOT help here. They bound
+    # CAPACITY, not throughput -- the node had 29 GB free while stalling.
+    #
+    # ScheduleAnyway, not DoNotSchedule: lab6 cannot fit even one runner at
+    # `cpu: 2`, so a hard constraint would strand runners Pending and cap CI
+    # concurrency. This is a scoring preference -- PodTopologySpread carries
+    # weight 2 against ImageLocality's 1, so it wins without ever blocking.
+    #
+    # The selector is `part-of: gha-runner-scale-set`, the label ARC stamps on
+    # every runner pod, so the three lanternfyre scale sets spread against each
+    # OTHER too, not just within one set. Runner pods come from ARC's
+    # EphemeralRunner controller rather than a ReplicaSet, so the default
+    # k8s spread rules do not apply and this selector must be explicit --
+    # a selector matching nothing is a constraint with no effect and no error.
+    topologySpreadConstraints:
+      - topologyKey: kubernetes.io/hostname
+        maxSkew: 1
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/part-of: gha-runner-scale-set
+    # ⚠️ LOAD-BEARING, and the reason the spread above is safe to add.
+    # k8s-lab1/2/3 carry NO taints, so "cluster-wide" has always included the
+    # etcd servers -- runners simply never scored there while lab5 won on
+    # capacity. Spreading changes that: without this guard the first thing the
+    # new constraint does is push CI onto an etcd node, where the emptyDir
+    # shares a filesystem with the etcd WAL. Spreading CI I/O and letting it
+    # reach etcd are the same change unless both land together.
+    #
+    # ⚠️ This guard and ansible/playbooks/50-ci-taint.yml contradict each other
+    # if that switch is ever pointed at a SERVER: the node would be tainted FOR
+    # CI and simultaneously forbidden TO CI, and the only symptom is runners
+    # stuck Pending with no event naming either half. Dedicate agents, or drop
+    # this guard in the same change.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
     # v4 posture: cluster-wide, no nodeSelector/tolerations (see
     # ansible/playbooks/50-ci-taint.yml for the reserve dedication switch).
     initContainers:

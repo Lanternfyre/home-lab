@@ -1824,6 +1824,74 @@ The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
 
 ## Hard-won findings — do not re-derive these
 
+**CI saturates k8s-lab5 because the node with the most CPU has the worst disk,
+and the drive throttles at 87 °C.** Diagnosed 2026-09-06 from a
+`NodeDiskIOSaturation` page (dm-0, aqu-sq 73). Three separate facts compound,
+and only the third is non-obvious:
+
+1. **`dm-0` is not a PV.** It is `ubuntu--vg-ubuntu--lv`, the node's ROOT LVM.
+   Reflex on this cluster is to read a `dm-*` device as a QNAP multipath
+   volume; the runner `_work` emptyDir lives under `/var/lib/kubelet`, which is
+   on root. Check `ls -l /dev/mapper/` before assuming iSCSI.
+2. **All 5 `arc-linux` runners on one node was the scheduler being correct.**
+   Allocatable CPU is lab5=**20**, lab7=6, lab4=4, lab6=**2**. At `cpu: 2` per
+   runner, lab5 is the only node in the fleet that fits five. The fleet is not
+   homogeneous, and CLAUDE.md's "k8s-4..7 are the big ones" is false for lab4
+   and lab6 — always read `.status.allocatable`, not the topology prose.
+3. **The root disk is a `BC501A NVMe SK hynix 128GB`** — a DRAM-less OEM
+   laptop drive, 74% full — and it sustains only ~37 MB/s of writes with
+   `w_await` **478 ms** and `aqu-sq` 93, against its own 14-day peak of
+   82.6 MB/s. Node IO PSI `full avg10` hits **35%**: a third of all
+   wall-clock, every process on the node is stalled on this one drive —
+   Prometheus, the ArgoCD application-controller, Redis, RabbitMQ and a
+   CoreDNS replica all live there.
+
+⚠️ **The drive runs at the edge of its own thermal limit, but do NOT record
+"it is throttling" as established.** Measured: composite (`temp1`/`temp2`)
+73–80 °C against the drive's declared WCTEMP **80.85** and CCTEMP **81.85**
+(`node_hwmon_temp_max_celsius` / `_crit_celsius`); vendor sensor `temp3` 84.9
+now, **88.9 peak**, and it declares no thresholds of its own (it reports the
+65261.85 unset sentinel). Idle is 51 °C, so CI adds ~30 °C. That is close
+enough to matter and not proof: a DRAM-less drive at 74% full drops to native
+TLC speed on sustained writes from **SLC-cache exhaustion alone**, which
+produces this exact signature with no heat involved. Both fit the evidence.
+Distinguishing them needs a controlled write test on an idle node, which is
+worth doing before anyone buys a heatsink instead of a drive. The fix below is
+the same either way.
+
+⚠️ **`SmartNvmeTemperatureHigh` did not fire, and it is NOT broken — resist
+the reflex.** It is `> 75` for **30m** on smartctl's composite, and the
+composite oscillates (73 now, 80 max over 24h) because CI load is bursty, so it
+never holds the threshold for a continuous half hour. The rule is behaving as
+written. What is genuinely missing is that the drive's hottest sensor is
+invisible to it: smartctl exports only the composite, while node_exporter's
+hwmon `temp3` on the same drive reads 13 °C higher. Cross-check both before
+concluding a disk is cool:
+
+```bash
+# every sensor on every NVMe, not just the composite one smartctl exports
+kubectl -n monitoring exec prometheus-prometheus-operator-kube-p-prometheus-0 \
+  -c prometheus -- wget -qO- --post-data='query=node_hwmon_temp_celsius{chip=~".*nvme.*"}' \
+  http://localhost:9090/api/v1/query
+```
+
+⚠️ **`ephemeral-storage` requests/limits do not bound throughput.** The
+existing comments in `arc-*/chart-values.yaml` are right that emptyDir shares a
+filesystem with the containerd store and the etcd WAL — but that is a CAPACITY
+argument. lab5 had 29 GB free while stalling. Only spreading the pods, or
+fewer of them, reduces IOPS.
+
+The fix in git is a `topologySpreadConstraints` block on all four scale sets
+(selector `app.kubernetes.io/part-of: gha-runner-scale-set`, so the sets spread
+against each other, not just within themselves) plus a nodeAffinity guard that
+keeps runners off the control-plane nodes. **That guard is not optional
+tidiness:** k8s-lab1/2/3 carry no taints, so "cluster-wide" always included the
+etcd servers — runners simply never scored there while lab5 won on capacity.
+Adding the spread without the guard would have made CI's first new behaviour
+landing on an etcd node. Hardware remains the real ceiling: lab5 wants a
+better boot drive, or CI wants `_work` on something that is not it.
+
+
 **A partition to the QNAP does not degrade volumes, it destroys them — and
 nothing reports it.** On 2026-08-08 00:25 UTC the NAS went away. The chain is
 entirely default behaviour: path fails → **no multipath queueing** → EIO →
