@@ -10,10 +10,40 @@ spec:
     ingress: true
     egress: true
   ingress:
-    # Kubelet probes and the LAN Envoy. `world` must NOT be narrowed here --
-    # mealie-ingress records that exact narrowing crashlooping a healthy app
-    # eight times.
+    # Kubelet probes. `world` must NOT be narrowed here -- mealie-ingress
+    # records that exact narrowing crashlooping a healthy app eight times.
     - fromEntities: [host, remote-node, world]
+
+    # 🔴 THE LAN ENVOY IS A POD, AND THIS RULE IS WHY THE PAGE LOADS.
+    #
+    # The comment above used to claim `fromEntities` covered "the LAN Envoy". It
+    # does not, and the difference is the whole reason this file was wrong:
+    #
+    #   homelab-edge  Envoy runs hostNetwork -> traffic carries the NODE
+    #                 identity, so host/remote-node admits it
+    #   homelab-gated Envoy is an ORDINARY POD -> traffic carries a POD
+    #                 identity, which none of those entities match
+    #
+    # The rule was copied from an `edge-publish` namespace where the first is
+    # true, into one where the second is. Measured result:
+    #
+    #   policy-verdict:none INGRESS DENIED (TCP Flags: SYN)
+    #   Policy denied DROPPED
+    #
+    # and Envoy reported `upstream_reset_before_response_started
+    # {connection_timeout}` after 10s -- which reads as a dead backend, while
+    # the pod was 1/1 Running, the Service had an endpoint and the route
+    # resolved. Every signal except the drop counter said healthy.
+    #
+    # ⚠️ Most gated apps here have no ingress section at all, so Cilium leaves
+    # ingress default-ALLOW and the question never arises. This namespace sets
+    # `enableDefaultDeny.ingress: true`, which is stricter and worth keeping --
+    # but it means the gateway must be named explicitly.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+      toPorts:
+        - ports: [{ port: "80", protocol: TCP }]
   egress:
     - toEndpoints:
         - matchLabels:
