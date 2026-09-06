@@ -1,0 +1,30 @@
+# H1 -- the dashboard is a static file server; it needs almost nothing.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: netbird-ui-containment
+  namespace: netbird-ui
+spec:
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+  ingress:
+    # Kubelet probes and the LAN Envoy. `world` must NOT be narrowed here --
+    # mealie-ingress records that exact narrowing crashlooping a healthy app
+    # eight times.
+    - fromEntities: [host, remote-node, world]
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{ port: "53", protocol: UDP }]
+          rules:
+            dns:
+              - matchPattern: "*"
+    # ⚠️ NOTHING ELSE. The browser talks to authentik and to the management API
+    # directly -- those are requests from the OPERATOR'S machine, not from this
+    # pod. A static file server that needs internet egress is a static file
+    # server doing something it should not.

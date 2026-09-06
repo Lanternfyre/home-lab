@@ -60,9 +60,9 @@ spec:
         - name: netbird-management
           port: 80
 
-    # The SPA. LAST, and a catch-all by design.
-    - matches:
-        - path: { type: PathPrefix, value: / }
-      backendRefs:
-        - name: netbird-dashboard
-          port: 80
+    # ⚠️ NO `/` CATCH-ALL, DELIBERATELY. The dashboard is served on the LAN's
+    # gated Gateway (apps/netbird-ui), so anything not matching a rule above
+    # gets a 404 from Envoy instead of a UI. That is the correct answer for a
+    # public listener: the paths above are the entire machine-facing API
+    # surface, and a catch-all would publish whatever was added to the namespace
+    # next.
