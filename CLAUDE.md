@@ -1,14 +1,25 @@
 # home-lab
 
-GitOps repo for a 7-node k3s cluster (ArgoCD app-of-apps) plus the Ansible that
-manages the nodes. Topology is 3 control-plane/etcd servers
-(k8s-1, k8s-2, k8s-3 -- the three identical 4-CPU/16GB boxes) + 4 agents
-(k8s-4, k8s-5, k8s-6, k8s-7 -- the big ones, which is where CI belongs).
+GitOps repo for an **8-node** k3s cluster (ArgoCD app-of-apps) plus the Ansible
+that manages the nodes:
 
-⚠️ This used to read "3 servers (k8s-1, k8s-4, k8s-6) + 3 agents (k8s-2, k8s-3,
-k8s-5)". That was the 2026-08-19 target, REVISED on 2026-08-22 after the k8s-5
-incident and reached the same day. Verify with `kubectl get nodes` rather than
-trusting either line.
+* **7 at home** -- 3 control-plane/etcd servers (k8s-1, k8s-2, k8s-3, the three
+  identical 4-CPU/16GB boxes) + 4 agents (k8s-4, k8s-5, k8s-6, k8s-7, the big
+  ones, which is where CI belongs).
+* **1 public edge** -- `edge-1.edge`, a VPS joined as an agent over WireGuard.
+  Tainted and labelled so only the edge Envoy lands on it; it is the ONLY node
+  in this fleet that is not trusted infrastructure. See
+  [EDGE-NODE.md](EDGE-NODE.md).
+
+⚠️ **Two naming schemes, same machines.** Inventory hostnames are `k8s-N` and
+`edge-1.edge`; the Kubernetes node names and OS hostnames are `k8s-labN` and
+`k8s-edge1`. `kubectl` shows the second set, Ansible takes the first.
+
+⚠️ The home topology used to read "3 servers (k8s-1, k8s-4, k8s-6) + 3 agents
+(k8s-2, k8s-3, k8s-5)". That was the 2026-08-19 target, REVISED on 2026-08-22
+after the k8s-5 incident and reached the same day; k8s-7 joined 2026-09-05 and
+the edge node 2026-09-06. Verify with `kubectl get nodes` rather than trusting
+any line here.
 
 ## Read these first
 
@@ -19,7 +30,8 @@ trusting either line.
 | [ansible/README.md](ansible/README.md) | Node config as code; why there is no state file |
 | [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md) | The join token: how it is managed, and the rotation runbook |
 | [EDGE-NODE.md](EDGE-NODE.md) | The public edge node: raw TCP/UDP for game servers, and a VPN walled off from the LAN |
-| [CLUSTER-JOIN-HARDENING.md](CLUSTER-JOIN-HARDENING.md) | **The join token is published — read this first.** Threat model, and what "safe to expose" has to mean. This is what `H1`/`H3` refer to |
+| [CLUSTER-JOIN-HARDENING.md](CLUSTER-JOIN-HARDENING.md) | Threat model for a cluster with a public member, and what "safe to expose" has to mean. (The token it was written about was rotated 2026-09-06.) |
+| **[HARDENING.md](HARDENING.md)** | **What `H0`–`H5` mean.** Every CiliumNetworkPolicy header is tagged `H1` and every Kyverno pod-constraint `H3`; this is the file those tags resolve to |
 
 If work was interrupted, `MODERNIZATION.md` → "Immediately next" is the resume
 point. Do not re-derive the "Hard-won findings" section — those cost real effort.

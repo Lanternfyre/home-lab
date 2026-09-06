@@ -85,6 +85,18 @@ with their own verification windows -- folding them in would mean an innocent
 |---|---|
 | `playbooks/30-upgrade.yml` | rolling k3s upgrade (drains + reboots) |
 | `playbooks/40-add-node.yml` | join a new node (installs k3s) |
+| `playbooks/45-change-node-role.yml` | server <-> agent, ONE node per run |
+| `playbooks/46-prove-node-storage.yml` | the storage gate, standalone |
+| `playbooks/60-wireguard.yml` | the edge underlay, both ends |
+| `playbooks/61-edge-firewall.yml` | default-DROP on the edge's public NIC |
+| `playbooks/62-wg-guard.yml` | what the edge may reach on a HOME node |
+| `playbooks/70-rotate-node-password.yml` | node login credential |
+| `playbooks/71-rotate-cluster-token.yml` | the k3s join token |
+
+(`15-argocd.yml`, `16-*`, `20-config-converge.yml`, `25-kube-vip-daemonset.yml`,
+`34-cilium.yml`, `35-cilium-migrate.yml`, `50-ci-taint.yml` and
+`90-preflight.yml` are also outside `site.yml`; this table lists the ones that
+change how a node reaches the network or the cluster.)
 
 ## Setup
 
@@ -104,15 +116,21 @@ on every control-plane node.
 ansible.cfg                     roles_path, no host-key checking (lab2/lab3 fail it)
 inventory/homelab.yml           .home domains, per-node NIC names
 inventory/group_vars/all.yml    k3s_version — the one knob — plus baseline values
-roles/node_baseline/            DNS drop-in, sysctls, multipath.conf, packages
-roles/node_verify/              the assertions that would have caught lab4 and lab5
+roles/                          11 roles. The ones worth knowing:
+  node_baseline/                DNS drop-in, sysctls, multipath.conf, packages
+  node_verify/                  the assertions that would have caught lab4/lab5
+  k3s_config/                   config.yaml + the token files; unit drop-ins
+  cilium/  coredns_ha/  kube_vip/  argocd/  kubectl_oidc/
+  wireguard/                    the edge underlay, rendered from inventory
+  edge_firewall/                default-DROP, EDGE ONLY
+  wg_guard/                     source-scoped filter, HOME NODES ONLY
 playbooks/10-baseline.yml       apply + verify, serial: 1, any_errors_fatal
 playbooks/90-preflight.yml      read-only audit
 ```
 
 ## Deliberate non-choices
 
-* **The `/etc/resolv.conf` symlink is not managed.** All five nodes point at
+* **The `/etc/resolv.conf` symlink is not managed.** The home nodes point at
   `stub-resolv.conf` and lab1/2/3 have been healthy that way for 211 days. The
   runbook's symlink step was never applied on any node; changing it now is an
   unverified behaviour change for no observed benefit.
@@ -138,14 +156,28 @@ playbooks/90-preflight.yml      read-only audit
 
 ## Roles and groups
 
-The inventory has one parent group and two children, and the distinction is
-load-bearing in about 55 places:
+The inventory has one parent group and **three** children -- `k3s_edge` is a
+child of `k3s_agents` -- and the distinction is load-bearing in about 55 places:
 
 | group | means | use it for |
 |---|---|---|
-| `k3s_nodes` | every machine | OS baseline, verification, upgrades, CNI, fleet-wide counts |
+| `k3s_nodes` | every machine, edge included | OS baseline, verification, upgrades, CNI, fleet-wide counts |
 | `k3s_servers` | control-plane + etcd | anything needing a local apiserver, a kubeconfig, etcd on `:2381`, or `/var/lib/rancher/k3s/server/` — including every `delegate_to` |
-| `k3s_agents` | workers | membership only; there is no play that targets agents alone |
+| `k3s_agents` | workers, edge included | membership, plus anything true of every non-server |
+| `k3s_edge` | the public VPS | the one node that is NOT trusted infrastructure: no storage baseline, no CSI, its own firewall |
+
+⚠️ **`k3s_nodes` includes the edge node**, so a play written for "the fleet"
+reaches a public machine. Two plays exist specifically to split them, and the
+pattern to copy is theirs: `61-edge-firewall.yml` targets `k3s_edge`, and
+`62-wg-guard.yml` targets `k3s_nodes:!k3s_edge`. Each of their roles ALSO
+asserts its own scope, so applying the wrong half to the wrong host fails loudly
+instead of firewalling a home node off the cluster.
+
+⚠️ **The edge cannot pass the storage gate and must not be asked to.** It runs
+no CSI driver by design (a Kyverno policy keeps trident off it), so the repo's
+"do not uncordon until a storage proof passes" invariant holds *by explicit
+exception* here — `node_storage_enabled` is the variable that carries it, and
+`30-upgrade.yml` keys its csinode gate on the same var.
 
 Three vars are derived from that, all defined once in `group_vars/`:
 `k3s_role` (`server`/`agent`), `k3s_unit` (`k3s`/`k3s-agent` — an agent has no
@@ -163,7 +195,8 @@ gated on `k3s_role`. Grepping for the group name alone misses these.
 ## History: what this section used to say
 
 It used to list `k3s_config`, `k3s_manifests`, `30-upgrade.yml` and
-`40-add-node.yml` as "not yet written". All of them exist. Its warning was
+`40-add-node.yml` as "not yet written", and said there were two roles and two
+groups. All of them exist; there are 11 roles and three child groups. Its warning was
 discharged: `k3s_config`'s scope does include **systemd drop-ins**, because
 k3s CLI arguments take precedence over `config.yaml` and lab2–lab5 had
 `--server https://192.168.32.2:6443` baked into their unit files. Those units
