@@ -1,0 +1,10 @@
+---
+- name: reload etcd_guard
+  become: true
+  ansible.builtin.command: "nft -f {{ etcd_guard_conf_path }}"
+  changed_when: true
+
+- name: reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true

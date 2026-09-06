@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible -- ansible/roles/etcd_guard. Do not edit on the node.
+#
+# Restricts etcd's client and peer ports to the etcd members themselves.
+#
+# ⚠️⚠️ READ THIS BEFORE CHANGING THE POLICY LINE. ⚠️⚠️
+#
+# `policy accept` is deliberate and load-bearing. The only rules here match the
+# etcd ports, so every other flow -- including the SSH session you are reading
+# this over, and everything Cilium and kube-proxy program -- never matches a
+# rule and is never affected. Changing this to `drop` turns a targeted filter
+# into a firewall on a control-plane node and locks you out of your own cluster.
+#
+# ── Atomic replace, not `flush ruleset` ─────────────────────────────────────
+# `nft -f` ADDS to an existing table, so without the declare-then-delete pair
+# every converge would append a second copy of every rule -- silently, since a
+# duplicated accept changes no behaviour until someone reads the ruleset and
+# cannot tell which copy is live.
+#
+# 🔴 NEVER `flush ruleset` HERE. These are k3s servers running Cilium and
+# kube-proxy; flushing would delete every rule they have programmed and break
+# pod networking on a control-plane node. roles/edge_firewall learned this the
+# expensive way -- it carried `flush ruleset` from when it ran on an empty VPS
+# before the join, and that stopped being true the moment the node joined.
+table inet etcd_guard {}
+delete table inet etcd_guard
+
+table inet etcd_guard {
+  chain input {
+    type filter hook input priority -10; policy accept;
+
+    # Loopback first. The apiserver reaches etcd on 127.0.0.1:2379 -- measured,
+    # not assumed: no established connection to 2379 exists from any LAN
+    # address. Dropping this would take the control plane down on every server
+    # at once, which is the worst possible failure for a rule of this shape.
+    iif lo accept
+
+    # Replies to connections this member opened toward a peer. Without this the
+    # drop below would break outbound peer traffic on reload, and the symptom
+    # would be quorum flapping rather than anything naming this file.
+    ct state established,related accept
+
+{% for h in (groups['k3s_servers'] | sort) %}
+    # {{ h }} -- etcd member
+    ip saddr {{ hostvars[h].ansible_host }} tcp dport { {{ etcd_guard_ports | join(', ') }} } accept
+{% endfor %}
+
+    # 🔴 EVERYTHING ELSE ON THE LAN IS DROPPED. Until this existed, any device
+    # on 192.168.32.0/23 could open the etcd client API and read or write the
+    # entire cluster state -- no token, no certificate check at the TCP layer,
+    # just a reachable port.
+    #
+    # ⚠️ 2381 (metrics) is NOT in this set and stays open. See the defaults file
+    # for why: Prometheus scrapes it from a POD address, so closing it needs the
+    # pod CIDR allowed, and a mistake there kills the etcd disk alerting.
+    tcp dport { {{ etcd_guard_ports | join(', ') }} } counter drop
+  }
+}
