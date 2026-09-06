@@ -23,7 +23,7 @@ routingPeer: { enabled: false }
 dashboard:
   enabled: true
   image:
-    tag: "v2.13.1@sha256:88b5fb704a8c9dc3fe0bbdbcb19840d5fbcc6e8c79dd36ad322ba13baca9d233"
+    tag: "v2.92.0@sha256:fa2d8b02a81761e4d2a22df4041d13316b7635f1e93273eafeb53d4991e55b5a"
 
   # 🔴 THE HARDENING IS DELIBERATELY RELAXED HERE, AND ONLY HERE.
   #
