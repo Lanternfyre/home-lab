@@ -57,6 +57,13 @@
 - name: Prove from the edge node that the dangerous ports are closed
   hosts: k3s_edge
   gather_facts: false
+  # Same reason as 61 and 63: `wait_for` opens a TCP socket and needs no root.
+  # This play SURVIVED without it only because it runs on a NODE, where the
+  # password `--ask-become-pass` collected happens to work -- so it escalated
+  # privileges it never used, on the one host in this repo that is not trusted
+  # infrastructure. The equivalent play in 63 runs on localhost, where that
+  # accident does not hold, and it hung.
+  become: false
   any_errors_fatal: true
   tags: [wg-guard, verify]
 

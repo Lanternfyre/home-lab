@@ -74,6 +74,22 @@
   hosts: localhost
   connection: local
   gather_facts: false
+  # 🔴 MANDATORY, AND ITS ABSENCE HUNG THE PLAY. ansible.cfg sets become
+  # globally, so without this the verify tasks try to sudo ON THE WORKSTATION.
+  # `--ask-become-pass` supplies the NODE password, which is not the
+  # workstation's, so the play sat at a password prompt Ansible could not answer
+  # and timed out:
+  #
+  #   Timed out waiting for become success or become password prompt
+  #   unreachable=1  (localhost)
+  #
+  # It reads like a connectivity fault -- `unreachable` -- on the one host that
+  # cannot be unreachable, which sends you looking at SSH.
+  #
+  # `wait_for` opens a TCP socket. That has never needed root.
+  # 61-edge-firewall.yml carries this line already; this play was written from
+  # its shape and dropped the one thing that was not decorative.
+  become: false
   any_errors_fatal: true
   tags: [etcd-guard, verify]
 
