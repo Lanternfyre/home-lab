@@ -1,0 +1,183 @@
+# H3 -- what a workload must BE before it may be published to the internet.
+#
+# Selects on `homelab.techyon.dev/edge-publish`, the label that lets a namespace
+# attach routes to the `homelab-edge` Gateway. Carrying that label is what makes
+# a namespace internet-facing; this policy is the price of carrying it.
+#
+# ── Why this policy exists at all ───────────────────────────────────────────
+# `ot-demo/servers.yaml` already does every one of these things -- digest-pinned
+# image, non-root, read-only rootfs, dropped capabilities, no SA token, resource
+# limits -- and NOTHING enforced any of it. PSA `restricted` checks none of those
+# four. Across this whole repo only `buildkit-pod-constraints` REQUIRES anything;
+# every other Kyverno rule is a prohibition. Convention held here because one
+# careful person wrote one file. That does not scale to necronia.
+#
+# Verified before writing: all three live ot-demo pods satisfy every rule below,
+# so this codifies the existing standard rather than raising it.
+#
+# ── 🔴 WHAT THIS DOES NOT DO ────────────────────────────────────────────────
+# It does not isolate INGRESS. The edge Envoy runs hostNetwork, so its traffic
+# carries the NODE identity and is admitted by ot-demo's kubelet-probe rule --
+# `fromEntities: [host, remote-node, world]` with no `toPorts` -- not by any
+# explicit rule. At L3/L4 the edge data path and a kubelet probe are
+# indistinguishable, and mealie-ingress records that narrowing that rule
+# crashloops healthy pods.
+#
+# So what bounds a published service is what it IS (this policy) and what it can
+# REACH (its CiliumNetworkPolicy egress, checked by
+# scripts/audit-edge-exposure.py). Anyone reading this expecting ingress
+# isolation is reading it wrong. See CLUSTER-JOIN-HARDENING.md.
+#
+# ── The selector is weaker than this repo's usual, deliberately ─────────────
+# Every other pod-constraints policy keys `namespaceSelector` on
+# `kubernetes.io/metadata.name`, which the API server maintains and which cannot
+# be spoofed by relabelling. This one keys on a custom label, because the set of
+# published namespaces is not knowable in advance -- that is the flexibility the
+# operator asked for.
+#
+# The residual hole is the same one already recorded on
+# bootstrap/namespaces/ot-demo.yaml: anyone who can label a namespace can publish
+# through the edge. That is cluster-admin, which is ArgoCD and this repository.
+# Stated rather than hidden.
+#
+# ── failurePolicy: Fail (the default), deliberately ─────────────────────────
+# Matching gateway-edge-pod-constraints' reasoning: for namespaces whose whole
+# purpose is internet exposure, refusing to create pods while the guard is down
+# is the correct failure direction. The blast radius is one namespace, not the
+# cluster -- unlike loadbalancer-no-nodeports, which matches every Service and is
+# therefore `Ignore`.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: edge-published-pod-constraints
+spec:
+  validationActions: [Deny]
+  autogen:
+    # ⚠️ PER-POLICY OPT-IN. The chart flag only PERMITS generation; without this
+    # the status reads "skip generating ValidatingAdmissionPolicy: not enabled"
+    # and enforcement silently falls back to the Kyverno webhook -- which works,
+    # but dies with Kyverno.
+    validatingAdmissionPolicy:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        homelab.techyon.dev/edge-publish: "true"
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+
+  variables:
+    # initContainers are optional; omitting them would leave the obvious hole.
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+
+  validations:
+    # ── PROHIBITIONS: what a published pod may not touch ────────────────────
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: >-
+        A published workload may not share the host's network, PID or IPC
+        namespaces. It is reachable by strangers; it must not also be able to
+        see the node. (The edge Gateway's own Envoy does use hostNetwork -- it
+        lives in `gateway-edge`, which this policy does not select.)
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        No hostPath volumes in a published namespace. The node's filesystem is
+        not a resource an internet-facing workload may reach.
+
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: "Nothing published to the internet may run privileged."
+
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.capabilities) ||
+          !has(c.securityContext.capabilities.add) ||
+          size(c.securityContext.capabilities.add) == 0)
+      message: >-
+        No container in a published namespace may ADD capabilities. Listeners
+        are deliberately above port 1023 so NET_BIND_SERVICE is never needed --
+        if you are hitting this because of a port below 1024, reconsider the
+        port before this rule.
+
+    # ── REQUIREMENTS: what a published pod must be ──────────────────────────
+    # This half is new to the repo. Only buildkit-pod-constraints requires
+    # anything today; PSA `restricted` checks none of the four below.
+    - expression: >-
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.runAsNonRoot) &&
+         object.spec.securityContext.runAsNonRoot == true) ||
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.runAsNonRoot) &&
+          c.securityContext.runAsNonRoot == true)
+      message: >-
+        A published workload must declare runAsNonRoot, at pod or container
+        level. Root in a container strangers can reach is one escape away from
+        root on a node.
+
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.readOnlyRootFilesystem) &&
+          c.securityContext.readOnlyRootFilesystem == true)
+      message: >-
+        Every container in a published namespace must set
+        readOnlyRootFilesystem. It is what stops a remote-code-execution from
+        becoming a persistent foothold.
+
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)
+      message: "Every published container must set allowPrivilegeEscalation: false."
+
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(d, d == 'ALL'))
+      message: "Every published container must drop ALL capabilities."
+
+    # 🔴 The one PSA cannot express, and the one that matters most on this path.
+    - expression: >-
+        has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false
+      message: >-
+        A published pod must set automountServiceAccountToken: false. Otherwise
+        a workload anyone on the internet can reach carries a live API
+        credential on its filesystem -- and the Node authorizer does not help
+        here, because that is a ServiceAccount token, not a node identity.
+
+    - expression: >-
+        variables.allContainers.all(c, c.image.contains('@sha256:'))
+      message: >-
+        A published workload must pin its image by DIGEST, not by tag. A tag is
+        mutable: whoever controls the registry can change what runs on your
+        internet-facing port without any change landing in this repository.
+
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources) &&
+          has(c.resources.limits) &&
+          'memory' in c.resources.limits)
+      message: >-
+        Every published container must set a memory limit. A public port is a
+        public OOM vector, and an unbounded pod takes the node's other workloads
+        with it.
