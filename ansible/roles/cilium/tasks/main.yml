@@ -289,6 +289,42 @@
     - not ansible_check_mode
     - cil_helm_run is defined and cil_helm_run.changed | default(false)
 
+# ⚠️ AND THE OPERATOR DOES NOT RELOAD EITHER — same lesson, different pod.
+#
+# The task above exists because agents read config at STARTUP. The OPERATOR does
+# too, and was left out, so it kept running with whatever config it started
+# with — in this cluster, since 2026-08-03 and 2026-08-22.
+#
+# Caught live 2026-09-06. `nodeSelectorLabels: true` was applied, the ConfigMap
+# read `enable-node-selector-labels: "true"`, the agents rolled and programmed
+# node-label identities correctly, and a CiliumClusterwideNetworkPolicy using
+# `fromNodes` was STILL marked:
+#
+#   VALID=False  "FromNodes/ToNodes rules can only be applied when the
+#                 enable-node-selector-labels flag is set"
+#
+# because the operator validates policies and still had the old flag. The agents
+# had already programmed the deny into the BPF map, so the policy was genuinely
+# ENFORCED while the cluster reported it invalid — real behaviour nobody can
+# trust, and a status field lying in the safe direction.
+#
+# Safe to restart: two replicas with leader election, and it owns no datapath.
+- name: "install | roll the operator, which also reads config only at startup"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout restart deployment/cilium-operator
+  when:
+    - not ansible_check_mode
+    - cil_helm_run is defined and cil_helm_run.changed | default(false)
+  changed_when: true
+
+- name: "install | wait for the rolled operator"
+  ansible.builtin.command: >-
+    kubectl -n {{ cilium_namespace }} rollout status deployment/cilium-operator --timeout=300s
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - cil_helm_run is defined and cil_helm_run.changed | default(false)
+
 - name: "install | already at the target, nothing to do"
   ansible.builtin.debug:
     msg: >-
@@ -490,6 +526,43 @@
   when:
     - not ansible_check_mode
     - cilium_stage == 'production'
+
+# 🔴 A POLICY THE CLUSTER MARKS INVALID IS A POLICY NOBODY CAN TRUST.
+#
+# Cilium writes a `Valid` condition onto every CNP and CCNP. The failure this
+# catches was live on 2026-09-06: a `fromNodes` policy was rejected with "can
+# only be applied when the enable-node-selector-labels flag is set" because the
+# OPERATOR had not restarted — while the AGENTS had, and had already programmed
+# the deny into the BPF map.
+#
+# So the policy was ENFORCED and reported INVALID at the same time. Only this
+# condition finds that: the ConfigMap, the agent status and the datapath all
+# said everything was fine.
+- name: "verify | no Cilium policy is marked invalid"
+  # jsonpath rather than a JSON filter: one kubectl call over both kinds, one
+  # line per policy, and no quoting layers to get wrong. `|| true` because grep
+  # exits 1 when it finds nothing, which is the GOOD case here.
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    kubectl get ciliumnetworkpolicies.cilium.io,ciliumclusterwidenetworkpolicies.cilium.io
+    -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}={.status.conditions[?(@.type=="Valid")].status}{"\n"}{end}'
+    | grep -v '=True$' | grep -v '^/*=*$' || true
+  args:
+    executable: /bin/bash
+  register: cil_invalid_pols
+  changed_when: false
+  check_mode: false
+
+- name: "verify | assert every Cilium policy validates"
+  ansible.builtin.assert:
+    that: (cil_invalid_pols.stdout | trim | length) == 0
+    fail_msg: >-
+      Cilium reports these policies as NOT Valid, so they may be enforced,
+      partially enforced, or not at all — and nothing else in this run would
+      have noticed: {{ cil_invalid_pols.stdout | trim }}.
+      If this names a fromNodes/toNodes policy the operator is probably stale;
+      it is rolled earlier in this role, so check that step ran.
+    success_msg: "Every CiliumNetworkPolicy and CiliumClusterwideNetworkPolicy validates."
 
 # ⚠️ Whatever policies exist must ADMIT THE NODE, or they kill the pods they
 # select. Learned on 2026-08-03: the argo-cd chart's own NetworkPolicies point
