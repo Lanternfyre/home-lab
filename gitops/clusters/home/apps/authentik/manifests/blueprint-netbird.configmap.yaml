@@ -80,10 +80,35 @@ data:
             # vpn.techyon.dev/callback -- that host carries the machine-facing
             # API only, and its `/` catch-all was removed. A redirect URI for a
             # page that does not exist is a redirect target for no benefit.
+            # 🔴 `/#callback`, WITH THE HASH. `/callback` MATCHES NOTHING.
+            #
+            # The dashboard is a HASH-ROUTED SPA. Taken from the authorize
+            # request authentik rejected, not from the docs:
+            #
+            #   redirect_uri=https%3A%2F%2Fvpn.lab.techyon.dev%2F%23callback
+            #   cause: redirect_uri_no_match          status 400
+            #
+            # `%2F%23` is `/#`. Confirmed independently in the image: the only
+            # callback strings in the served bundle are `#callback` and
+            # `#silent-callback`, and `AUTH_REDIRECT_URI` is UNSET on the pod,
+            # so those defaults are what ships.
+            #
+            # ⚠️ A fragment in a redirect_uri is unusual -- OAuth 2.0 forbids
+            # it (RFC 6749 3.1.2) -- so it looks like a typo and invites
+            # "correction" to `/callback`. It is not a typo: authentik compares
+            # the registered string to what the client sends, and the client
+            # sends the hash. Do not tidy this.
+            #
+            # ⚠️ VERIFY IT SURVIVED THE BLUEPRINT, because a stripped fragment
+            # would silently reproduce this exact 400:
+            #   ak shell -c "from authentik.providers.oauth2.models import \
+            #     OAuth2Provider as P; print([r.url for r in \
+            #     P.objects.get(client_id='netbird').redirect_uris])"
+            # must print the `/#callback` forms.
             - matching_mode: strict
-              url: https://vpn.lab.techyon.dev/callback
+              url: https://vpn.lab.techyon.dev/#callback
             - matching_mode: strict
-              url: https://vpn.lab.techyon.dev/silent-callback
+              url: https://vpn.lab.techyon.dev/#silent-callback
             # ── The desktop/CLI client's local callback ────────────────
             #
             # 🔴 THESE MUST MATCH `PKCEAuthorizationFlow.RedirectURLs` IN
