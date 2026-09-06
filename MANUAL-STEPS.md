@@ -750,6 +750,36 @@ Google matches redirect URIs exactly, including scheme and trailing slash.
 Leave the existing `https://oauth.lab.techyon.dev/oauth2/callback` entry in
 place; oauth2-proxy still needs it. A client may hold several.
 
+### 9c. Redirect URI for authentik's **Google source** — BOTH hostnames
+
+**Done 2026-09-06.** Recorded because the symptom is indistinguishable from an
+authentik misconfiguration and cost a debugging session.
+
+authentik is served on **two** names -- `authentik.techyon.dev` (public) and
+`authentik.lab.techyon.dev` (LAN) -- and its Google source builds the callback
+from the **request host**, exactly as Headlamp does in §9a. Both appear in the
+server's own log depending on which name the flow started from:
+
+```
+"source": "google", "redirect_uri": "https://authentik.lab.techyon.dev/source/oauth/callback/google/"
+"source": "google", "redirect_uri": "https://authentik.techyon.dev/source/oauth/callback/google/"
+```
+
+So the same Google client as §9a needs **both**, trailing slash included:
+
+```
+https://authentik.lab.techyon.dev/source/oauth/callback/google/
+https://authentik.techyon.dev/source/oauth/callback/google/
+```
+
+⚠️ Which one is used depends on the RELYING PARTY, not on where you are. The
+NetBird dashboard is LAN-only, but its `AUTH_AUTHORITY` is the **public**
+authentik -- deliberately, because `netbird up` from a laptop off the LAN must
+reach the same issuer. So a login started on `vpn.lab.techyon.dev` sends you to
+`authentik.techyon.dev`, and it is the PUBLIC Google callback that is exercised.
+Registering only the LAN one leaves a login path that works from some apps and
+not others.
+
 ### 9d. Redirect URI for **kubectl** OIDC — `http://localhost:8000`
 
 Only needed if you use the `homelab-oidc` kubectl context (installed by

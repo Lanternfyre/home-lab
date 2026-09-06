@@ -139,7 +139,7 @@ management:
           "AuthorizationEndpoint": "https://authentik.techyon.dev/application/o/authorize/",
           "Scope": "openid profile email offline_access",
           "UseIDToken": false,
-          "RedirectURLs": ["http://localhost:53000"]
+          "RedirectURLs": ["http://localhost:53000", "http://localhost:54000"]
         }
       },
       "StoreConfig": { "Engine": "sqlite" },
