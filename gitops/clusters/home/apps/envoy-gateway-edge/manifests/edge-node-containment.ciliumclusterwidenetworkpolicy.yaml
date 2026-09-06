@@ -1,0 +1,113 @@
+# H1 -- what the PUBLIC EDGE NODE may reach on the pod network.
+#
+# `roles/wg_guard` closed the host-level half of this: from the tunnel the edge
+# reaches 6443, 4240, 8473/udp and ICMP on a home node, and nothing else. But
+# VXLAN 8473 MUST be open or the edge is a member of nothing, and everything
+# inside that tunnel is invisible to nftables. This is the inside.
+#
+# MEASURED 2026-09-06, with real traffic generated through the public edge --
+# an idle Hubble capture showed nothing at all, which is its own lesson:
+#
+#   10.245.8.125:39114 (remote-node) -> ot-demo/ot-login:7171
+#     policy-verdict:L3-Only INGRESS ALLOWED
+#
+# Two things fell out of that. The edge's traffic carries `remote-node`, the
+# same identity every home node has -- so before `nodeSelectorLabels` there was
+# no way to name it. And it is admitted by the kubelet-probe rule
+# (`fromEntities: [host, remote-node, world]`, no `toPorts`), not by anything
+# deliberate. 10 of 16 CiliumNetworkPolicies have no ingress section at all, and
+# Cilium's default-deny is per DIRECTION, so those namespaces -- authentik,
+# databases, redis, rabbitmq, opensearch, immich -- were reachable from a public
+# VPS on every port.
+#
+# ── 🔴 enableDefaultDeny.ingress: false IS THE MOST IMPORTANT LINE HERE ──────
+#
+# Cilium's own CRD description:
+#
+#   "If not specified, the default is true for each traffic direction that has
+#    rules... if a policy only has Ingress or IngressDeny rules, then the
+#    default for ingress is true"
+#   "If multiple policies apply to an endpoint, that endpoint's default deny
+#    will be enabled if ANY policy requests it."
+#
+# So a CLUSTERWIDE policy carrying only `ingressDeny` would, without this line,
+# put every endpoint it selects into default-deny ingress -- and because "any
+# policy requests it" wins, no other policy could undo it. That is a
+# simultaneous outage of every namespace this selects. The line below is not
+# tidiness; it is the difference between a deny rule and a cluster outage.
+#
+# ── The exemptions are MEASURED, not assumed ────────────────────────────────
+#
+# Derived from the Hubble capture above, taken from the edge node's side. Deny
+# any of these and the failure is silent:
+#
+#   gateway-edge/envoy-gateway :18000  xDS. Envoy's bootstrap cluster is
+#                                      STRICT_DNS on this name; without it the
+#                                      proxy starts, receives no config, serves
+#                                      no listeners -- and reports Running and
+#                                      Ready throughout.
+#   kube-system/coredns        :53     the proxy runs ClusterFirstWithHostNet
+#                                      precisely so it can resolve that name.
+#   reserved:health            :4240   cilium-health. Excluded by the `Exists`
+#                                      expression below, not by name -- see the
+#                                      warning. Denying it drops 8/8 reachable
+#                                      and closes nothing an attacker wants.
+#   edge-publish namespaces           the actual data path. ot-demo today.
+#
+# ⚠️ WHAT THIS DOES NOT DO. It does not stop the edge reaching PUBLISHED
+# services -- that is the same path real players use, and it cannot be
+# distinguished. Stage 4 shrinks the blast radius of a compromised edge from
+# "every namespace" to "the ones it needs"; it does not make a published service
+# safe from the node publishing it. See HARDENING.md.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: edge-node-containment
+spec:
+  description: >-
+    Deny the public edge node ingress to every namespace except the ones it
+    demonstrably needs. Adds no default-deny of its own.
+
+  # 🔴 `Exists` ON THE NAMESPACE KEY IS LOAD-BEARING, AND IT IS SUBTLE.
+  #
+  # Kubernetes label-selector semantics say `NotIn` ALSO matches an object that
+  # does not carry the key at all. Without the `Exists` expression, the two
+  # `NotIn` rules below would select every endpoint with no namespace label --
+  # which is the host endpoint and, critically, the `reserved:health` endpoints
+  # that cilium-health probes on 4240. This policy would then break the very
+  # signal that tells you it broke something.
+  #
+  # `Exists` restricts the selection to real pod endpoints, which is the only
+  # thing this policy has any business denying.
+  endpointSelector:
+    matchExpressions:
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: Exists
+      - key: k8s:io.kubernetes.pod.namespace
+        operator: NotIn
+        values:
+          - kube-system    # CoreDNS :53
+          - gateway-edge   # xDS :18000
+      # ⚠️ `io.cilium.k8s.namespace.labels.` -- NOT `io.kubernetes.pod.namespace.labels.`
+      # Verified against a live endpoint's identity labels. The wrong prefix is
+      # a selector that matches nothing, so the exemption would silently fail
+      # and published namespaces would be denied.
+      - key: k8s:io.cilium.k8s.namespace.labels.homelab.techyon.dev/edge-publish
+        operator: NotIn
+        values: ["true"]
+
+  # See the block comment. Without this, this file is an outage.
+  enableDefaultDeny:
+    ingress: false
+    egress: false
+
+  ingressDeny:
+    # Matches node LABELS, which only became usable as policy identities when
+    # `nodeSelectorLabels: true` landed in gitops/cilium-values-production.yaml.
+    # Before that every node shared `reserved:remote-node` and this rule could
+    # not have been written. Verified after that change: identity 33554433 is
+    # k8s-edge1 carrying node:infrastructure.techyon.dev/location=edge, and no
+    # other node carries it.
+    - fromNodes:
+        - matchLabels:
+            infrastructure.techyon.dev/location: edge
