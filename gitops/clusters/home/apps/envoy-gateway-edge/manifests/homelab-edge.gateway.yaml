@@ -270,13 +270,25 @@ spec:
       tls:
         mode: Terminate
         certificateRefs:
+          # 🔴 SAME NAMESPACE, DELIBERATELY. This first shipped pointing at
+          # `netbird/netbird-public-tls` -- a Secret in a namespace that did not
+          # exist yet -- on the theory that the cert belongs with the service.
+          # The listener went `ResolvedRefs=False (RefNotPermitted)` and
+          # `Programmed=False (Invalid)`, so Envoy never bound it and nothing
+          # answered on :443. The other three listeners were unaffected, so the
+          # Gateway still reported `Programmed=True` at the top level and
+          # nothing looked wrong.
+          #
+          # A cross-namespace certificateRef also needs a ReferenceGrant in the
+          # TARGET namespace, which is a second object in a second Application
+          # with no sync-wave between them -- the same ordering trap the
+          # GatewayClass comment above describes.
+          #
+          # `*.techyon.dev` already exists as a wildcard, so the Gateway can own
+          # its own copy and depend on nothing.
           - kind: Secret
             group: ""
-            name: netbird-public-tls
-            # The cert lives in the namespace that owns the service, not here.
-            # A ReferenceGrant in that namespace permits this -- see
-            # apps/netbird/manifests/.
-            namespace: netbird
+            name: wildcard-techyon-dev-tls
       allowedRoutes:
         kinds:
           - kind: HTTPRoute
@@ -286,3 +298,27 @@ spec:
           selector:
             matchLabels:
               homelab.techyon.dev/edge-publish: "true"
+---
+# The public cert for this Gateway's one terminating listener.
+#
+# Same shape as `wildcard-techyon-dev` in `gateway-envoy` (see
+# apps/envoy-gateway/manifests/homelab-tunnel.gateway.yaml) -- deliberately a
+# SECOND Certificate for the same names rather than a shared Secret, because a
+# Gateway may only reference a Secret in its own namespace without a
+# ReferenceGrant, and cert-manager is perfectly happy to issue twice.
+#
+# ⚠️ DNS-01 through `cloudflare-ca`, so this does NOT require the name to
+# resolve to this node or port 80 to be reachable -- which matters here, because
+# the edge firewall drops everything except the published ports.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-techyon-dev
+  namespace: gateway-edge
+spec:
+  secretName: wildcard-techyon-dev-tls
+  dnsNames:
+    - "*.techyon.dev"
+  issuerRef:
+    kind: ClusterIssuer
+    name: cloudflare-ca

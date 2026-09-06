@@ -40,6 +40,9 @@ SHIFT      each DNAT entry redirects to exactly public_port + 10000, which is
            runtime reconciles the two halves                [repo]
 ORPHAN     every firewall entry has a listener. A rule with no listener is a
            port open to the internet that answers nothing [repo]
+PROGRAM    every declared listener is actually Programmed on the LIVE Gateway.
+           A listener with an unresolvable ref never binds, and the Gateway's
+           top-level Programmed stays True regardless   [live cluster]
 
 Exit codes
 ----------
@@ -170,6 +173,53 @@ def firewall_ports(path: str, yaml) -> tuple[dict[str, set[int]], dict[int, int]
         if isinstance(e, dict) and "public_port" in e and "listener_port" in e
     }
     return out, dnat
+
+
+def check_programmed(r: Report, listeners: list, quiet: bool) -> None:
+    """PROGRAM -- every declared listener is actually Programmed on the live Gateway.
+
+    Added after a real miss. A listener was shipped with a certificateRef to a
+    Secret in a namespace that did not exist; it went
+    `ResolvedRefs=False (RefNotPermitted)` / `Programmed=False (Invalid)`, Envoy
+    never bound the port, and nothing answered on :443 -- while this script
+    reported "contract satisfied", because every other check reads the REPO.
+
+    The Gateway's top-level `Programmed` condition does not help: it stayed True
+    on "1/1 envoy replicas available" while one of its four listeners was
+    invalid. Listener status is per-listener and has to be read as such.
+    """
+    gw = kubectl("get", "gateway", EDGE_GATEWAY, "-n", "gateway-edge")
+    if gw is None:
+        r.warn("PROGRAM", f"could not read Gateway/{EDGE_GATEWAY}; skipping live check")
+        return
+    live = {
+        l.get("name"): {c.get("type"): (c.get("status"), c.get("reason"))
+                        for c in l.get("conditions", []) or []}
+        for l in gw.get("status", {}).get("listeners", []) or []
+    }
+    for name, proto, port in listeners:
+        conds = live.get(name)
+        if conds is None:
+            r.fail(
+                "PROGRAM",
+                f"listener `{name}` ({proto}/{port}) is declared in the manifest but "
+                f"absent from the live Gateway status. It has not been applied, or "
+                f"the controller rejected the Gateway outright.",
+            )
+            continue
+        status, reason = conds.get("Programmed", ("Unknown", "NoCondition"))
+        if status != "True":
+            refs = conds.get("ResolvedRefs", ("?", "?"))
+            r.fail(
+                "PROGRAM",
+                f"listener `{name}` ({proto}/{port}) is Programmed={status} "
+                f"({reason}), ResolvedRefs={refs[0]} ({refs[1]}). Envoy has NOT bound "
+                f"this port -- the firewall rule leads nowhere and the service is "
+                f"unreachable, while the Gateway's top-level status still reads "
+                f"Programmed=True.",
+            )
+        else:
+            r.ok("PROGRAM", f"listener {name} ({proto}/{port}) is programmed", quiet)
 
 
 def check_routes(r: Report, published: set[str], quiet: bool) -> None:
@@ -406,6 +456,7 @@ def main() -> int:
 
     r = Report()
     check_firewall(r, listeners, fw, dnat, args.quiet)
+    check_programmed(r, listeners, args.quiet)
     check_routes(r, set(published), args.quiet)
     if not published:
         r.warn("PSA", f"no namespace carries {PUBLISH_LABEL}=true; nothing to contain")
