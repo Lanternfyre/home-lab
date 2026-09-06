@@ -32,6 +32,49 @@ edge_fw_service_tcp:
 edge_fw_service_udp:
   - { port: 7173, why: "ot-demo UDP echo (proves the UDPRoute path)" }
 
+# ── PRIVILEGED PUBLIC PORTS, AND WHY THEY ARE NOT PLAIN LISTENERS ───────────
+#
+# A service that must answer below port 1024 cannot simply be a listener. Under
+# `hostNetwork` Envoy would bind the port itself, which needs NET_BIND_SERVICE
+# -- and `gateway-edge-pod-constraints` forbids added capabilities
+# UNCONDITIONALLY, its comment saying the edge listeners are deliberately above
+# 1023 so that capability is never needed. Granting it would weaken the one
+# containment policy standing in front of an internet-facing namespace, to
+# change a port number.
+#
+# Instead: Envoy Gateway is told NOT to use the listener port as the container
+# port (`useListenerPortAsContainerPort: false` on the EnvoyProxy CR), which
+# makes it shift PRIVILEGED listener ports by +10000 -- a :443 listener binds
+# :10443 on the host, needing no capability -- and nftables rewrites the public
+# port to the shifted one on the way in.
+#
+# 🔴 EACH ENTRY EMITS TWO RULES AND BOTH ARE REQUIRED:
+#     prerouting  dnat   public_port   -> listener_port
+#     input       accept listener_port    <- NOT public_port
+#
+# DNAT happens at prerouting, BEFORE the input hook, so by the time the filter
+# chain sees the packet its destination port is ALREADY the listener port. An
+# input rule written against the public port never matches, and the connection
+# dies silently after a successful DNAT -- which reads like a broken backend and
+# sends you looking in the cluster.
+#
+# ⚠️ `listener_port` MUST be `public_port + 10000`, because that is Envoy
+# Gateway's own shift and nothing reconciles the two. Any other value means
+# nftables and Envoy disagree about where the traffic goes, silently.
+#
+# ⚠️ Kernel IP forwarding is NOT needed. The DNAT target is a port on THIS host
+# (Envoy runs hostNetwork here), so the packet is delivered locally and never
+# routed. Do not add net.ipv4.ip_forward for this.
+edge_fw_service_tcp_dnat:
+  - public_port: 443
+    listener_port: 10443
+    why: >-
+      NetBird. Since 0.29 its management API/gRPC, signal gRPC and relay
+      WebSocket are multiplexed onto ONE HTTPS endpoint, and it wants :443 --
+      restrictive networks routinely allow 443 and nothing else, which is
+      exactly when someone reaches for a VPN. Cloudflare Tunnel cannot carry it
+      either: gRPC over a public hostname is unsupported.
+
 # The interface facing the internet. Everything on wg0 is trusted; everything
 # arriving here is not.
 edge_fw_public_iface: "{{ node_nic | default('eth0') }}"
