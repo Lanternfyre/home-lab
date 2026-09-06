@@ -32,8 +32,12 @@ SCOPE      that egress names only in-cluster endpoints or FQDNs -- never a bare
            `toEntities: [world]`, which is "may phone anywhere"
                                                           [live cluster]
 FIREWALL   every listener on the `homelab-edge` Gateway has a matching
-           edge_fw_service_tcp/udp entry. A listener with no firewall rule is a
+           edge_fw_service_tcp/udp entry -- or, for a privileged port, an
+           edge_fw_service_tcp_dnat entry. A listener with no firewall rule is a
            service that silently does not work            [repo]
+SHIFT      each DNAT entry redirects to exactly public_port + 10000, which is
+           the offset Envoy Gateway applies to privileged listeners. Nothing at
+           runtime reconciles the two halves                [repo]
 ORPHAN     every firewall entry has a listener. A rule with no listener is a
            port open to the internet that answers nothing [repo]
 
@@ -139,8 +143,16 @@ def gateway_listeners(path: str, yaml) -> list[tuple[str, str, int]] | None:
     return None
 
 
-def firewall_ports(path: str, yaml) -> dict[str, set[int]] | None:
-    """{'TCP': {...}, 'UDP': {...}} from the edge_firewall role defaults."""
+def firewall_ports(path: str, yaml) -> tuple[dict[str, set[int]], dict[int, int]] | None:
+    """({'TCP': {...}, 'UDP': {...}}, {public_port: listener_port}).
+
+    The second element is the privileged-port mapping. A port below 1024 cannot
+    be a plain listener here -- binding it under hostNetwork needs
+    NET_BIND_SERVICE, which `gateway-edge-pod-constraints` forbids outright --
+    so Envoy Gateway shifts it by +10000 and nftables redirects the public port
+    to the shifted one. Both halves live in this one defaults file, which is the
+    only reason they can be checked against each other at all.
+    """
     try:
         with open(path) as fh:
             data = yaml.safe_load(fh) or {}
@@ -152,7 +164,12 @@ def firewall_ports(path: str, yaml) -> dict[str, set[int]] | None:
         out[proto] = {
             int(e["port"]) for e in (data.get(key) or []) if isinstance(e, dict) and "port" in e
         }
-    return out
+    dnat = {
+        int(e["public_port"]): int(e["listener_port"])
+        for e in (data.get("edge_fw_service_tcp_dnat") or [])
+        if isinstance(e, dict) and "public_port" in e and "listener_port" in e
+    }
+    return out, dnat
 
 
 def check_routes(r: Report, published: set[str], quiet: bool) -> None:
@@ -271,14 +288,48 @@ def check_namespace(r: Report, ns: str, ns_obj: dict, quiet: bool) -> None:
         r.ok("SCOPE", f"{ns}: no bare `world` egress", quiet)
 
 
-def check_firewall(r: Report, listeners: list, fw: dict[str, set[int]], quiet: bool) -> None:
-    """FIREWALL and ORPHAN -- listener/rule parity, both read from the repo."""
+def check_firewall(
+    r: Report,
+    listeners: list,
+    fw: dict[str, set[int]],
+    dnat: dict[int, int],
+    quiet: bool,
+) -> None:
+    """FIREWALL, SHIFT and ORPHAN -- listener/rule parity, all read from the repo."""
+    # Gateway API listeners name the port the CLIENT connects to. For a
+    # privileged port that is NOT the port Envoy binds, so a listener is
+    # satisfied by either a direct firewall rule or a DNAT entry.
     for name, proto, port in listeners:
+        if proto == "HTTPS":
+            proto = "TCP"  # same firewall rule either way
         if proto not in fw:
             r.warn("FIREWALL", f"listener {name} has protocol {proto}, which this "
                                f"script does not know how to check")
             continue
-        if port not in fw[proto]:
+        if port in dnat:
+            expected = port + 10000
+            if dnat[port] != expected:
+                r.fail(
+                    "SHIFT",
+                    f"listener `{name}` is {proto}/{port} and its DNAT entry redirects "
+                    f"to {dnat[port]}, but Envoy Gateway shifts privileged listener "
+                    f"ports by exactly +10000, so it will be bound on {expected}. "
+                    f"nftables and Envoy disagree about where this traffic goes, and "
+                    f"nothing at runtime reports it -- the port just stops answering.",
+                )
+            else:
+                r.ok("SHIFT", f"listener {name} {proto}/{port} -> host {dnat[port]}", quiet)
+            continue
+        if port < 1024:
+            r.fail(
+                "FIREWALL",
+                f"listener `{name}` is {proto}/{port}, a privileged port with no "
+                f"edge_fw_service_tcp_dnat entry. Envoy cannot bind it under "
+                f"hostNetwork without NET_BIND_SERVICE, which "
+                f"gateway-edge-pod-constraints forbids. Add the DNAT entry rather "
+                f"than the capability.",
+            )
+        elif port not in fw[proto]:
             r.fail(
                 "FIREWALL",
                 f"listener `{name}` is {proto}/{port} on {EDGE_GATEWAY} but there is "
@@ -288,7 +339,7 @@ def check_firewall(r: Report, listeners: list, fw: dict[str, set[int]], quiet: b
         else:
             r.ok("FIREWALL", f"listener {name} {proto}/{port} has a firewall rule", quiet)
 
-    listener_ports = {(p, port) for _, p, port in listeners}
+    listener_ports = {("TCP" if p == "HTTPS" else p, port) for _, p, port in listeners}
     for proto, ports in fw.items():
         for port in sorted(ports):
             if (proto, port) not in listener_ports:
@@ -300,6 +351,17 @@ def check_firewall(r: Report, listeners: list, fw: dict[str, set[int]], quiet: b
                 )
             else:
                 r.ok("ORPHAN", f"firewall rule {proto}/{port} has a listener", quiet)
+
+    for public_port in sorted(dnat):
+        if ("TCP", public_port) not in listener_ports:
+            r.fail(
+                "ORPHAN",
+                f"edge_fw_service_tcp_dnat redirects public {public_port} -> "
+                f"{dnat[public_port]} but no {EDGE_GATEWAY} listener declares port "
+                f"{public_port}. The redirect lands on a port nothing is bound to.",
+            )
+        else:
+            r.ok("ORPHAN", f"DNAT {public_port} -> {dnat[public_port]} has a listener", quiet)
 
 
 def main() -> int:
@@ -321,9 +383,10 @@ def main() -> int:
         return 2
 
     listeners = gateway_listeners(args.gateway, yaml)
-    fw = firewall_ports(args.firewall, yaml)
-    if listeners is None or fw is None:
+    fwres = firewall_ports(args.firewall, yaml)
+    if listeners is None or fwres is None:
         return 2
+    fw, dnat = fwres
 
     namespaces = kubectl("get", "namespaces")
     if namespaces is None:
@@ -342,7 +405,7 @@ def main() -> int:
     print(f"{DIM}  published namespaces: {', '.join(sorted(published)) or 'none'}{RESET}\n")
 
     r = Report()
-    check_firewall(r, listeners, fw, args.quiet)
+    check_firewall(r, listeners, fw, dnat, args.quiet)
     check_routes(r, set(published), args.quiet)
     if not published:
         r.warn("PSA", f"no namespace carries {PUBLISH_LABEL}=true; nothing to contain")
