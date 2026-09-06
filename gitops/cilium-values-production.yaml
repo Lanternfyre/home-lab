@@ -56,6 +56,48 @@ bpf:
 # then `ansible-playbook playbooks/15-argocd.yml`.
 policyEnforcementMode: "default"
 
+# ── NODE-LABEL IDENTITIES, so policy can name a SPECIFIC node ───────────────
+#
+# Required for `fromNodes` in a CiliumClusterwideNetworkPolicy. Without it, all
+# nodes collapse into the single `remote-node` identity and a policy cannot tell
+# the public edge VPS apart from a home node.
+#
+# Why that matters: k8s-edge1 is a k3s agent on a public VPS, and MEASURED
+# 2026-09-06 it reaches every namespace over VXLAN. Hubble, with real traffic
+# generated through the public edge:
+#
+#   10.245.8.125:39114 (remote-node) -> ot-demo/ot-login:7171
+#     policy-verdict:L3-Only INGRESS ALLOWED
+#
+# `remote-node` is what a compromised edge would carry too, and 10 of 16
+# CiliumNetworkPolicies have no ingress section at all -- Cilium's default-deny
+# is per DIRECTION, so those namespaces are wide open to it.
+#
+# 🔴 THE KEY IS `nodeSelectorLabels`, NOT `enableNodeSelectorLabels`.
+# Verified against `helm show values cilium/cilium --version 1.20.0`:
+#
+#   # -- Enable/Disable use of node label based identity
+#   nodeSelectorLabels: false
+#
+# The wrong key applies cleanly, renders no error, and does nothing -- the
+# ConfigMap keeps `enable-node-selector-labels: "false"` and every fromNodes
+# policy silently matches nothing. That is exactly the "control that looks
+# complete and has a hole nobody can see from the config" shape CLAUDE.md warns
+# about, so CHECK THE CONFIGMAP, not this file, after applying:
+#
+#   kubectl -n kube-system get cm cilium-config \
+#     -o jsonpath='{.data.enable-node-selector-labels}'   # must read "true"
+#
+# ⚠️ `nodeLabels` is left unset deliberately. The chart offers it to include or
+# exclude labels from node identity evaluation; unset means all node labels are
+# available, which is what `infrastructure.techyon.dev/location=edge` needs.
+# Setting it to a list that omits that label would be another silent no-match.
+#
+# ⚠️ THIS IS A DAEMONSET ROLL ON ALL 8 NODES. It changes how identities are
+# computed, so verify identities resolve before writing any policy that depends
+# on them -- an empty match denies nothing and looks identical to a clean run.
+nodeSelectorLabels: true
+
 kubeProxyReplacement: "false"
 
 enableLBIPAM: false
