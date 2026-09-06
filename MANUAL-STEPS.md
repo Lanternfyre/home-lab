@@ -928,42 +928,59 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   you 2026-08-31, re-confirmed 2026-09-06 — an accepted risk, not an oversight.
   See the warning under the summary table in `MODERNIZATION.md`.
 
-## 🟡 NetBird — ONE thing only you can do (2026-09-06)
+## 🟡 NetBird — one 1Password item, filled in two passes (2026-09-06)
 
-### Create a setup key, once, after first sign-in
+Everything else is in git. This cannot be, and the split is not an oversight:
+two of the three values must exist BEFORE the control plane starts, and the
+third can only be minted AFTER it is running.
 
-That is the whole list. It cannot be automated and it cannot be done in advance:
-a setup key is generated *inside* NetBird, so the control plane has to be
-running and you have to have signed in before one exists.
+### Pass 1 — before it can start
 
-1. Open `https://vpn.techyon.dev` and sign in through authentik.
-2. Create a **reusable** setup key.
-3. Put it in 1Password as item `netbird`, field `setup-key`.
+Create 1Password item **`netbird`** with two fields, both generated:
 
-The in-cluster routing peer picks it up within the ExternalSecret refresh
-interval and joins by itself.
+```bash
+openssl rand -base64 32   # -> field: datastore-encryption-key
+openssl rand -base64 32   # -> field: relay-password
+```
 
-⚠️ Until then the routing peer sits **NotReady** — correctly. Its readiness
-probe asserts `Management: Connected`, which is a real statement about whether
-it routes anything, not a liveness formality. A peer that is Running but
-unregistered forwards nothing and would otherwise look perfectly healthy.
+| field | who reads it |
+|---|---|
+| `datastore-encryption-key` | management, to encrypt sensitive fields in its store |
+| `relay-password` | management AND relay — it is the shared secret between them, so one wrong value breaks relaying with an auth error rather than a config error |
 
-### What this used to say, and why it was wrong
+Generate them, do not choose them — same instinct as `CLUSTER-TOKEN.md`, and
+for the same reason.
 
-An earlier draft listed *three* manual steps. Two of them were my error:
+### Pass 2 — after it is running
 
-* **"Create a DNS record for `vpn.techyon.dev`."** Not needed. external-dns
-  watches `gateway-httproute` (see `apps/external-dns-cloudflare/chart-values.yaml`)
-  and the HTTPRoute carries both the `hostname` and `target` annotations, so the
-  record is created from git like every other one. ⚠️ Creating it by hand would
-  actively hurt: external-dns is `policy: upsert-only`, so a hand-made record is
-  one it can never reconcile or remove.
-* **"Put a `client_id` in 1Password."** Not a secret. NetBird's OIDC client is
-  PUBLIC — a browser SPA and a CLI cannot keep a secret, so it uses PKCE and no
-  client secret exists. `client_id` is just a name this cluster chooses (it is
-  `netbird`), and it ships inside the dashboard's JavaScript. It is hardcoded in
-  `apps/authentik/manifests/blueprint-netbird.configmap.yaml`, which is a
-  ConfigMap for exactly that reason — the same reason the brand blueprint is.
+Once `vpn.techyon.dev` serves the dashboard, sign in through authentik, create a
+**reusable** setup key, and add it to the same item as **`setup-key`**.
+
+The routing peer picks it up on the next ExternalSecret refresh and enrols
+itself. Until then it sits **NotReady** — correctly. Its readiness probe asserts
+`Management: Connected`, which is a real statement about whether it routes
+anything; a peer that is Running but unregistered forwards nothing and would
+otherwise look healthy.
+
+⚠️ `kubectl get externalsecret -n netbird` tells you which pass you are in:
+`netbird-secrets` resolving and `netbird-setup-key` not is exactly the expected
+state between passes.
+
+### 🔴 What this deployment does NOT have: STUN/TURN
+
+`Stuns` and `Turns` are empty in `management.json`, deliberately. There is no
+coturn in this cluster, and the alternatives were to publish one — another UDP
+listener, another firewall entry, another chart — or to point at a public STUN
+server, which would mean granting egress to the internet from a namespace whose
+whole contract is that it cannot phone anywhere it likes.
+
+**The relay is published on :443 through our own edge node, so it carries the
+traffic instead.** The cost, stated so nobody has to discover it by measuring:
+peers cannot discover their public address, so direct peer-to-peer mostly will
+not form and **every byte flows through `edge-1`**. Throughput is bounded by
+that VPS. For reaching cluster services from a laptop that is fine; for bulk
+transfer between peers it is not, and the answer then is to deploy coturn and
+fill those two arrays in.
 
 ## 🔴 DELETE TWO CLOUDFLARE DNS RECORDS BY HAND (2026-09-06)
 
