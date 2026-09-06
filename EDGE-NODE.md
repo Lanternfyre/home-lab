@@ -48,8 +48,13 @@ two such entries and they do not work for real clients:
 
 A `tcp://` ingress entry requires the *client* to run `cloudflared access tcp`
 locally. A game client will not do that. Those two entries are therefore
-decorative, and they stay in place deliberately — see "The last gate" — as the
-proof target for the thing that replaces them.
+decorative, and they stayed in place deliberately — see "The last gate" — as
+the proof target for the thing that replaced them.
+
+✅ **RETIRED 2026-09-06**, once a real client connected to
+`edge-1.techyon.dev:7171` through the edge Gateway. ⚠️ Their DNS records were
+made by `cloudflared tunnel route dns` and survive the removal; they must be
+deleted by hand in Cloudflare. See `MANUAL-STEPS.md`.
 
 So: a VPS with a public IP, joined as a k3s **agent**, carrying the Envoy data
 plane for a Gateway whose listeners are real TCP/UDP ports.
@@ -484,7 +489,12 @@ Build order, each step gated:
    `inventory/group_vars/k3s_edge.yml`, asserted by `roles/node_verify`, and
    consumed by the EnvoyProxy CR. (This used to say they "appear nowhere in the
    repo today".)
-6. **The last gate — `ot-demo`, not necronia.** Attach a TCPRoute for
+6. ✅ **The last gate — PASSED 2026-09-06.** A real client connected to
+   `edge-1.techyon.dev:7171` with no `cloudflared access tcp`, and the two
+   `tcp://` tunnel entries have since been removed. The original wording
+   follows.
+
+   **The last gate — `ot-demo`, not necronia.** Attach a TCPRoute for
    `ot-login:7171` and prove a real client connects to `edge-1.techyon.dev:7171`
    without `cloudflared access tcp`. Compare against the existing
    `ot-login.techyon.dev` tunnel entry, which is the control. **Only then**
