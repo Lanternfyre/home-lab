@@ -1,0 +1,19 @@
+---
+# `nft -f` on a file that starts with `delete table ... ; table ...` replaces
+# this table atomically. It does NOT touch other tables, so Cilium's and
+# kube-proxy's rules are untouched, and there is no window in which the node is
+# unguarded or unreachable.
+#
+# ⚠️ NOT `systemctl restart nftables`. That would flush the ENTIRE ruleset and
+# reload it from /etc/nftables.conf -- a file this role does not own and which,
+# on a home node, does not exist. The result would be dropping every rule
+# Cilium had programmed. This role owns one table and reloads exactly that one.
+- name: reload wg_guard
+  become: true
+  ansible.builtin.command: "nft -f {{ wg_guard_conf_path }}"
+  changed_when: true
+
+- name: reload systemd
+  become: true
+  ansible.builtin.systemd:
+    daemon_reload: true

@@ -1,0 +1,79 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible -- ansible/roles/wg_guard. Do not edit on the node.
+#
+# Restricts what the PUBLIC EDGE NODE may reach on this home node, over the
+# WireGuard tunnel. See CLUSTER-JOIN-HARDENING.md.
+#
+# ⚠️⚠️ READ THIS BEFORE CHANGING THE POLICY LINE. ⚠️⚠️
+#
+# `policy accept` is deliberate and load-bearing. Every rule below matches on
+# `ip saddr <tunnel address>`, so LAN traffic -- including the SSH session you
+# are reading this over -- never matches a rule and is never affected. Changing
+# the policy to `drop` turns this from a targeted filter into a firewall on a
+# machine nobody has ever firewalled, and locks you out of your own cluster.
+#
+# ── Why a separate table, and priority -10 ──────────────────────────────────
+# Its own table so it cannot collide with the iptables rules Cilium and
+# kube-proxy program. Priority -10 puts it ahead of the standard filter hook, so
+# the drop below takes effect before anything else looks at the packet.
+#
+# ⚠️ An `accept` here is NOT terminal for other base chains -- nftables
+# evaluates every base chain on the hook in priority order, so permitted traffic
+# still reaches Cilium's rules exactly as before. Only the `drop` is terminal,
+# which is precisely the asymmetry this needs.
+
+# ── ATOMIC REPLACE, AND WHY IT IS THREE LINES ───────────────────────────────
+# `nft -f` ADDS to an existing table rather than replacing it, so without this
+# every converge would append a second copy of every rule -- silently, since a
+# duplicated accept changes no behaviour until the day someone reads the
+# ruleset and cannot tell which copy is live.
+#
+# The empty `table` first is not redundant: `delete table` FAILS on a table that
+# does not exist, which would break the very first run. Declaring it empty makes
+# the delete unconditional.
+#
+# ⚠️ NOT `flush ruleset`. roles/edge_firewall can afford that because it owns the
+# whole ruleset on a machine with nothing else in it. Here, flushing would take
+# out every rule Cilium and kube-proxy have programmed, and the node's pod
+# networking with it.
+table inet wg_guard {}
+delete table inet wg_guard
+
+table inet wg_guard {
+  chain input {
+    type filter hook input priority -10; policy accept;
+
+    # 🔴 FIRST, AND NOT OPTIONAL. Replies to connections THIS node opened toward
+    # the edge -- apiserver to kubelet, Hubble, health probes -- arrive with the
+    # tunnel address as their source and an ephemeral destination port. Without
+    # this line the final drop would break them, and the symptom would be a node
+    # that looks healthy while half its outbound traffic to the edge dies.
+    ct state established,related accept
+
+{% for edge in groups['k3s_edge'] | default([]) | sort %}
+{% set edge_ip = hostvars[edge].wg_address %}
+    # ── {{ edge }} ({{ edge_ip }}) ──
+{% for r in wg_guard_tcp %}
+    # {{ r.why }}
+    ip saddr {{ edge_ip }} tcp dport {{ r.port }} accept
+{% endfor %}
+{% for r in wg_guard_udp %}
+    # {{ r.why }}
+    ip saddr {{ edge_ip }} udp dport {{ r.port }} accept
+{% endfor %}
+{% if wg_guard_allow_icmp %}
+    ip saddr {{ edge_ip }} icmp type echo-request accept
+{% endif %}
+
+    # 🔴 EVERYTHING ELSE FROM THE EDGE IS DROPPED, and these are the ones that
+    # matter:
+    #   2379/tcp   etcd client   -- reachable today, needed by nothing on the edge
+    #   2380/tcp   etcd peer     -- same
+    #   10250/tcp  kubelet API   -- full node API, on every node
+    #
+    # A compromised edge node reaching etcd is the whole cluster. It has no
+    # reason to, and after this it cannot.
+    ip saddr {{ edge_ip }} counter drop
+{% endfor %}
+  }
+}

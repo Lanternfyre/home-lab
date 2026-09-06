@@ -1,0 +1,107 @@
+---
+# Restrict what the public edge node may reach on the home nodes.
+#
+#   ansible-playbook playbooks/62-wg-guard.yml --ask-become-pass
+#
+# ⚠️ ROLL IT ONE NODE AT A TIME THE FIRST TIME:
+#   ansible-playbook playbooks/62-wg-guard.yml --ask-become-pass --limit k8s-1.home
+#
+# This is the first nftables rule ever applied to a home node. `--limit` is safe
+# here — unlike 60-wireguard.yml, nothing is rendered from the fleet's collective
+# state, so a partial run leaves the remaining nodes exactly as they were.
+#
+# ── What this closes ────────────────────────────────────────────────────────
+# Measured from the edge node before this existed:
+#
+#   192.168.33.3:6443   OPEN   needed
+#   192.168.33.3:8473   needed (VXLAN)
+#   192.168.33.3:4240   needed (cilium-health — 8/8 reachable, so it is in use)
+#   192.168.33.3:10250  OPEN   NOT needed — kubelet API
+#   192.168.33.3:2379   OPEN   NOT needed — etcd client
+#   192.168.33.3:2380   OPEN   NOT needed — etcd peer
+#
+# A compromised public VPS reaching etcd is the whole cluster.
+#
+# ── Why this is not a firewall ──────────────────────────────────────────────
+# `policy accept`, and every rule matches on the WireGuard source address. LAN
+# traffic never matches a rule, so this cannot cut a home node off. That is a
+# deliberate trade: it closes the tunnel-side exposure without becoming the
+# first default-drop policy on machines whose only management path is SSH.
+#
+# The LAN-side exposure of etcd (2379/2380 answer any host on 192.168.32.0/23)
+# is NOT addressed here and is recorded in CLUSTER-JOIN-HARDENING.md.
+#
+# ── Not in site.yml ─────────────────────────────────────────────────────────
+# Deliberate operation with its own verification window, like every other
+# playbook that changes how a node reaches the network. The `verify` tasks are
+# safe to re-run at any time:
+#
+#   ansible-playbook playbooks/62-wg-guard.yml --ask-become-pass --tags verify
+
+- name: Guard the tunnel on the home nodes
+  hosts: k3s_nodes:!k3s_edge
+  # serial:1 the first time through matters more than speed: if the ruleset is
+  # wrong, it should cost one node's tunnel path and stop, not seven.
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: true
+  tags: [wg-guard]
+
+  roles:
+    - role: wg_guard
+
+# ── THE PROOF THE NODE ITSELF CANNOT GIVE ───────────────────────────────────
+# A node can read back its own ruleset and be wrong about the effect. The only
+# honest check is to connect FROM the edge and find the ports shut. Same split
+# as 61-edge-firewall.yml, for the same reason.
+- name: Prove from the edge node that the dangerous ports are closed
+  hosts: k3s_edge
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [wg-guard, verify]
+
+  tasks:
+    - name: "verify | etcd and kubelet must NOT answer from the tunnel"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item.0].ansible_host }}"
+        port: "{{ item.1 }}"
+        state: stopped
+        timeout: 6
+      loop: "{{ groups['k3s_nodes'] | difference(groups['k3s_edge']) | product([2379, 2380, 10250]) | list }}"
+      loop_control:
+        label: "{{ hostvars[item.0].ansible_host }}:{{ item.1 }} must be closed"
+
+    - name: "verify | the apiserver must still answer"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 6443
+        state: started
+        timeout: 6
+      loop: "{{ groups['k3s_servers'] }}"
+      loop_control:
+        label: "{{ hostvars[item].ansible_host }}:6443 must stay open"
+
+    # 🔴 THE CHECK THAT CATCHES OVER-TIGHTENING. cilium-health probes home nodes
+    # from here on 4240 and ICMP; dropping those would degrade cluster health
+    # reporting while closing nothing an attacker wants. If this stops reading
+    # 8/8, the ruleset is wrong in the restrictive direction — which is harder to
+    # notice than the permissive one, because nothing breaks loudly.
+    - name: "verify | cilium still sees every node"
+      ansible.builtin.shell: >-
+        kubectl -n kube-system exec ds/cilium --
+        cilium-health status 2>/dev/null | head -1
+      register: v_health
+      changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: "verify | assert cluster health is unchanged"
+      ansible.builtin.assert:
+        that: "v_health.stdout is search(groups['k3s_nodes'] | length | string ~ '/' ~ groups['k3s_nodes'] | length | string ~ ' reachable')"
+        fail_msg: >-
+          cilium-health reports '{{ v_health.stdout }}', expected
+          {{ groups['k3s_nodes'] | length }}/{{ groups['k3s_nodes'] | length }}
+          reachable. The guard is dropping something cilium-health needs —
+          check that 4240/tcp and ICMP echo are still permitted from the tunnel
+          address before assuming a real connectivity fault.
+        success_msg: "cilium-health unchanged: {{ v_health.stdout }}"
