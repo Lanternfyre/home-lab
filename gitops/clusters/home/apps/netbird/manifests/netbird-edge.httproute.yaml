@@ -35,9 +35,17 @@ spec:
     # Management gRPC -- what the CLI client actually talks to after enrolment.
     - matches:
         - path: { type: PathPrefix, value: /management.ManagementService/ }
+      # 🔴 netbird-management, NOT netbird-management-grpc.
+      #
+      # The separate gRPC Service only exists when the chart's
+      # `useBackwardsGrpcService` is true, and it defaults to false -- correctly,
+      # because since 0.29 NetBird multiplexes gRPC and REST onto the SAME port.
+      # This route pointed at a Service the chart never creates, so Envoy had no
+      # endpoint and returned 500. `kubectl get svc` shows only three Services in
+      # this namespace; the fourth was only ever in this file.
       backendRefs:
-        - name: netbird-management-grpc
-          port: 33073
+        - name: netbird-management
+          port: 80
 
     # Signal gRPC -- peer rendezvous.
     - matches:

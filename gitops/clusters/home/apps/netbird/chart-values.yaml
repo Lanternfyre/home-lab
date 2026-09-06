@@ -33,6 +33,20 @@ global:
 management:
   image:
     tag: "0.46.0@sha256:b0adc4ad4ec6e3394c1f3e13680b7a8bbb1eeefddd1733cf658862e39468e062"
+  # 🔴 WITHOUT THIS, EVERY gRPC CALL IS A 500 WHILE REST KEEPS WORKING.
+  #
+  # Measured from the public internet before this landed:
+  #   GET /api                            404   <- the app answered
+  #   GET /management.ManagementService/  500
+  #
+  # NetBird multiplexes gRPC and REST onto ONE port. Envoy Gateway picks the
+  # upstream protocol from the Service's appProtocol, and with none set it dials
+  # HTTP/1.1 -- which a gRPC server cannot answer. A 500 on one path while
+  # another returns a real application 404 is the signature of a protocol
+  # mismatch, and it is easy to read as a broken backend: the pod is Running and
+  # its logs say nothing at all.
+  service:
+    appProtocol: kubernetes.io/h2c
   # ⚠️ 10Mi is the chart default and is not a typo -- management's store is
   # small. It is also, per H0, a datastore with NO BACKUP: losing it means every
   # enrolled device must re-enrol. Recorded, not solved.
@@ -147,8 +161,15 @@ management:
 signal:
   image:
     tag: "0.46.0@sha256:e8f39261115233c05098d0a0ced33d13e77bdefb32f93505d238a7bf979fa80d"
+  # Signal is gRPC and nothing else, so this is unconditional.
+  service:
+    appProtocol: kubernetes.io/h2c
 
 relay:
+  # ⚠️ NO appProtocol HERE, DELIBERATELY. The relay endpoint is a WebSocket over
+  # an HTTP/1.1 Upgrade -- the one protocol on this Gateway that must NOT be
+  # h2c. Declaring it would break the upgrade handshake while looking like the
+  # same hardening applied to its neighbours.
   image:
     tag: "0.46.0@sha256:d32f82514a24b9582fe04d3e6e4cbaa9d5a9efcbf31234fd3ff289971e0bfe0e"
   # 🔴 `exposed address is required` -- the relay refuses to start without it,
