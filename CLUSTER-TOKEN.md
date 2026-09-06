@@ -16,10 +16,53 @@ Established against the live cluster and the k3s docs, not from memory.
 | | |
 |---|---|
 | Current token | 7 characters, a dictionary word plus a suffix |
-| Where it lives | inline in each node's systemd `ExecStart`, via `--token` |
+| Where it lives | ⚠️ **CORRECTED 2026-09-06** — `K3S_TOKEN=` in each AGENT's `/etc/systemd/system/k3s-agent.service.env`. The three SERVERS carry no token at all outside `/var/lib/rancher/k3s/server/token`: their `ExecStart` has no arguments and their `.env` is 0 bytes. See "Where it actually lives" below |
 | Who manages it | **nobody** — it is not in Ansible, not in `config.yaml`, not in any vault |
 | Exposure | committed in plaintext in `gitops/argo-install.md`, in a **public** repo, and present in git history |
 | k3s version | v1.35.6+k3s1 — `k3s token rotate` is available |
+
+### ⚠️ Where it actually lives — this table used to be wrong
+
+The row above said the token was inline in `ExecStart`. It is not, and the
+difference changes what "unit normalisation is a precondition" means.
+
+Measured from the captured unit files, 2026-09-06:
+
+```
+_captured/k8s-1.home/k3s.service          ExecStart=/usr/local/bin/k3s server \   (no args)
+_captured/k8s-1.home/k3s.service.env      0 bytes
+_captured/k8s-4.home/k3s-agent.service.env    K3S_TOKEN=…   96 bytes
+_captured/k8s-5,6,7 …                          K3S_TOKEN=…   96 bytes
+ansible/_captured/edge-1.edge/…service.env     K3S_TOKEN=…   96 bytes
+```
+
+Three consequences:
+
+1. **The precondition still stands, but for the env file.** `K3S_TOKEN` in the
+   unit environment beats `config.yaml` exactly as a CLI flag would, so
+   `token-file:` is inert on an agent until that env file stops carrying one.
+   Normalising `ExecStart` was never the blocker; normalising `.env` is.
+2. **The servers are already clean.** Adding `token-file:` / `agent-token-file:`
+   to the server `config.yaml` is genuinely additive, not a replacement.
+3. 🔴 **`30-upgrade.yml` wipes `K3S_TOKEN` on every upgrade.** It re-runs the
+   installer without the variable, and the installer `rm -f`s the unit and its
+   `.env` before regenerating them from the invoking shell's exported `K3S_*`.
+   Agents survive because they already hold registered node credentials — but it
+   means the env-file path is not durable, and `config.yaml` + `token-file:` is.
+   That is the strongest argument for the target state below.
+
+⚠️ `_captured/` on the workstation therefore holds the plaintext token for every
+agent and for the public VPS. It is gitignored, and it is still a copy on a
+laptop.
+
+### 🔴 The token is `k3sblog`, and it is on GitHub right now
+
+`gitops/argo-install.md` lines 33 and 110 both carry `--token k3sblog`, in a
+**public** repository, in git history. This document has never been executed, so
+that is the live credential. In k3s it joins a **server**.
+
+Everything else in this file is about doing rotation *well*. This line is why it
+is urgent rather than tidy.
 
 **Live topology** (`systemctl is-active`, not the inventory file):
 
