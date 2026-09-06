@@ -1,6 +1,6 @@
 #Notice chart name has to be a part of repoURL for oci
 repoURL: "ghcr.io/lanternfyre/charts"
 chart: "netbird"
-targetRevision: "0.1.3"
+targetRevision: "0.1.4"
 releaseName: "netbird-ui"
 namespace: "netbird-ui"
