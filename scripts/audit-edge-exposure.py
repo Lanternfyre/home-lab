@@ -43,6 +43,9 @@ ORPHAN     every firewall entry has a listener. A rule with no listener is a
 PROGRAM    every declared listener is actually Programmed on the LIVE Gateway.
            A listener with an unresolvable ref never binds, and the Gateway's
            top-level Programmed stays True regardless   [live cluster]
+BACKEND    every route attached to the Gateway resolves its backendRefs. A route
+           can be Accepted and still point at a Service that does not exist --
+           Envoy then answers 500 on that path        [live cluster]
 
 Exit codes
 ----------
@@ -225,7 +228,10 @@ def check_programmed(r: Report, listeners: list, quiet: bool) -> None:
 def check_routes(r: Report, published: set[str], quiet: bool) -> None:
     """LABEL -- a route may only attach from a namespace carrying the label."""
     found_any = False
-    for kind in ("tcproutes", "udproutes", "tlsroutes"):
+    # ⚠️ httproutes and grpcroutes were MISSING from this list, and the edge
+    # Gateway grew an HTTPS listener carrying both. NetBird's route was invisible
+    # to every check below for as long as it existed.
+    for kind in ("tcproutes", "udproutes", "tlsroutes", "httproutes", "grpcroutes"):
         routes = kubectl("get", kind, "-A")
         if routes is None:
             continue  # CRD may not be installed; not a failure on its own
@@ -236,6 +242,32 @@ def check_routes(r: Report, published: set[str], quiet: bool) -> None:
             found_any = True
             ns = rt["metadata"]["namespace"]
             name = rt["metadata"]["name"]
+            # 🔴 A ROUTE CAN BE ACCEPTED AND STILL POINT AT NOTHING.
+            #
+            # Gateway API reports that separately, and this script used to read
+            # only `Accepted`. NetBird's route was Accepted=True while carrying
+            #
+            #   ResolvedRefs=False BackendNotFound: service
+            #   netbird/netbird-management-grpc not found
+            #
+            # -- a Service the chart never creates. Envoy returned 500 on that
+            # path, the audit said the contract was satisfied, and the cluster
+            # had been stating the cause plainly the whole time.
+            resolved = [
+                c for p_ in rt.get("status", {}).get("parents", []) or []
+                for c in p_.get("conditions", []) or []
+                if c.get("type") == "ResolvedRefs"
+            ]
+            for c in resolved:
+                if c.get("status") != "True":
+                    r.fail(
+                        "BACKEND",
+                        f"{kind[:-1]} {ns}/{name} is attached to {EDGE_GATEWAY} but its "
+                        f"backends do not resolve: {c.get('reason')} -- "
+                        f"{c.get('message')}. Envoy has no endpoint for that rule and "
+                        f"will answer 500 on it.",
+                    )
+
             if ns in published:
                 r.ok("LABEL", f"{kind[:-1]} {ns}/{name} -> {EDGE_GATEWAY}", quiet)
                 continue
