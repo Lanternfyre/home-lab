@@ -1,0 +1,21 @@
+# The self-hosted VPN control plane, published to the internet.
+#
+# 🔴 `edge-publish` MEANS `edge-published-pod-constraints` APPLIES TO EVERY POD
+# HERE. Carrying this label is what lets a route attach to the `homelab-edge`
+# Gateway, and the Kyverno policy selects on the same label -- so management,
+# signal, relay, dashboard AND the routing peer must each be digest-pinned,
+# non-root, read-only-rootfs, drop ALL capabilities, set a memory limit and
+# refuse a ServiceAccount token. The chart supplies NONE of that by default;
+# chart-values.yaml supplies all of it by hand.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netbird
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
+    homelab.techyon.dev/edge-publish: "true"

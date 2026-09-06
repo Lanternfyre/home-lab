@@ -1,0 +1,68 @@
+# NetBird's public surface, on the `homelab-edge` Gateway's :443 listener.
+#
+# 🔴 PATH ROUTING IS NOT COSMETIC HERE. Since 0.29 NetBird multiplexes FOUR
+# things onto one HTTPS endpoint: the dashboard SPA, the management REST API,
+# two gRPC services, and the relay's WebSocket. They are separated only by path,
+# which is why TLS has to terminate at Envoy rather than pass through -- and why
+# Cloudflare Tunnel cannot carry this at all (no gRPC on a public hostname).
+#
+# ⚠️ ORDER MATTERS. Gateway API matches the MOST SPECIFIC path, but the `/`
+# catch-all to the dashboard would still swallow anything not listed, so a
+# missing prefix here is a 200-with-the-wrong-app rather than a 404.
+#
+# ⚠️ The gRPC services are matched by their proto package paths. Getting one
+# wrong produces a client that authenticates and then hangs at "connecting",
+# because the gRPC stream lands on the SPA.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: netbird-edge
+  namespace: netbird
+  annotations:
+    # The public IP is the Gateway's, not a Service's -- external-dns falls back
+    # to Status.Addresses (a ClusterIP) without this, and `policy: upsert-only`
+    # means it could never take that record back.
+    external-dns.alpha.kubernetes.io/target: "167.86.81.59"
+    external-dns.alpha.kubernetes.io/hostname: vpn.techyon.dev
+spec:
+  parentRefs:
+    - name: homelab-edge
+      namespace: gateway-edge
+      sectionName: netbird-https
+  hostnames:
+    - vpn.techyon.dev
+  rules:
+    # Management gRPC -- what the CLI client actually talks to after enrolment.
+    - matches:
+        - path: { type: PathPrefix, value: /management.ManagementService/ }
+      backendRefs:
+        - name: netbird-management-grpc
+          port: 33073
+
+    # Signal gRPC -- peer rendezvous.
+    - matches:
+        - path: { type: PathPrefix, value: /signalexchange.SignalExchange/ }
+      backendRefs:
+        - name: netbird-signal
+          port: 80
+
+    # Relay WebSocket -- the fallback path when hole-punching fails.
+    - matches:
+        - path: { type: PathPrefix, value: /relay }
+      backendRefs:
+        - name: netbird-relay
+          port: 33080
+
+    # Management REST API -- the dashboard's backend.
+    - matches:
+        - path: { type: PathPrefix, value: /api }
+      backendRefs:
+        - name: netbird-management
+          port: 80
+
+    # The SPA. LAST, and a catch-all by design.
+    - matches:
+        - path: { type: PathPrefix, value: / }
+      backendRefs:
+        - name: netbird-dashboard
+          port: 80

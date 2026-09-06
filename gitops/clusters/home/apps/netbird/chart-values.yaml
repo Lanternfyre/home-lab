@@ -1,0 +1,89 @@
+# NetBird, on the Lanternfyre fork of the upstream chart.
+#
+# ── Why a fork, and why this file is short ─────────────────────────────────
+#
+# Upstream netbirdio/helms 1.9.0 cannot run in an `edge-publish` namespace: it
+# templates `automountServiceAccountToken` NOWHERE and its `serviceAccount:`
+# values block silently accepts and ignores the field, so all four components
+# were DENIED by `edge-published-pod-constraints`. It also ships no routing
+# peer, which is the component that makes VPN clients carry a POD identity
+# rather than the edge node's.
+#
+# Neither gap is closable from a values file, so the chart was forked into
+# helm-compendium. The fork carries the secure defaults -- non-root, read-only
+# rootfs, dropped capabilities, seccomp, memory limits, no SA token -- so this
+# file states only what is specific to THIS cluster: image digests, the public
+# endpoints, and the peer.
+#
+# 🔴 DIGESTS ARE STILL REQUIRED HERE. The contract demands an image pinned by
+# digest, and a chart cannot supply that for you -- a tag is the chart's job,
+# the digest is the estate's. Resolved from the registry 2026-09-06.
+#
+# ⚠️ appVersion 0.46.0 is materially behind upstream NetBird (0.78.1). Kept at
+# the version the chart's templates were written against. The 0.78.1 digests,
+# so nobody re-derives them when the fork catches up:
+#   management  sha256:e114d2c8e699da19a05678c0600b821c59587541c404ac550cc062b96c3d3f54
+#   signal      sha256:ebc42056ce135b5163554fad47c5b1456673e7132dc4fad9f9cc34d84c70feb4
+#   relay       sha256:d5df6e3fe802734164fbe81d814d4575d7c29b29f9e03c95b49f18c10efd7958
+#   client      sha256:5025865661882adc6ef2ea125de5d2b9f1a298fb67da990ab180ef55dddfeadb
+
+global:
+  namespace: netbird
+
+management:
+  image:
+    tag: "0.46.0@sha256:b0adc4ad4ec6e3394c1f3e13680b7a8bbb1eeefddd1733cf658862e39468e062"
+  # ⚠️ 10Mi is the chart default and is not a typo -- management's store is
+  # small. It is also, per H0, a datastore with NO BACKUP: losing it means every
+  # enrolled device must re-enrol. Recorded, not solved.
+  persistentVolume:
+    enabled: true
+    size: 1Gi
+  envRaw:
+    - name: NETBIRD_MGMT_API_ENDPOINT
+      value: "https://vpn.techyon.dev"
+    - name: NETBIRD_MGMT_DNS_DOMAIN
+      value: "netbird.selfhosted"
+
+
+signal:
+  image:
+    tag: "0.46.0@sha256:e8f39261115233c05098d0a0ced33d13e77bdefb32f93505d238a7bf979fa80d"
+
+relay:
+  image:
+    tag: "0.46.0@sha256:d32f82514a24b9582fe04d3e6e4cbaa9d5a9efcbf31234fd3ff289971e0bfe0e"
+
+dashboard:
+  image:
+    tag: "v2.13.1@sha256:88b5fb704a8c9dc3fe0bbdbcb19840d5fbcc6e8c79dd36ad322ba13baca9d233"
+  envRaw:
+    - name: NETBIRD_MGMT_API_ENDPOINT
+      value: "https://vpn.techyon.dev"
+    - name: NETBIRD_MGMT_GRPC_API_ENDPOINT
+      value: "https://vpn.techyon.dev"
+    - name: AUTH_AUTHORITY
+      value: "https://authentik.techyon.dev/application/o/netbird/"
+    - name: AUTH_CLIENT_ID
+      value: "netbird"
+    - name: AUTH_SUPPORTED_SCOPES
+      value: "openid profile email offline_access"
+    - name: USE_AUTH0
+      value: "false"
+
+
+# ── The in-cluster routing peer ─────────────────────────────────────────────
+#
+# 🔴 THIS IS WHAT MAKES STAGE 4 AND A VPN COEXIST. A peer on the VPS host would
+# SNAT clients to 10.250.0.1 -- the edge node's own address -- so Cilium would
+# stamp them `remote-node`, identical to a compromised edge. As a pod it
+# masquerades to its own pod IP, and netbird-vpn-access names that.
+routingPeer:
+  enabled: true
+  managementURL: "https://vpn.techyon.dev"
+  hostname: "cluster-routing-peer"
+  image:
+    tag: "0.46.0-rootless@sha256:4ee5b2b090a04e6df203b78f9fe29e40db0ab2b275267bde0af7a18ea1286801"
+  setupKeySecret:
+    name: netbird-setup-key
+    key: setup-key

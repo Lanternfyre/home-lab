@@ -24,6 +24,9 @@ blueprints:
   # `.yaml` keys only, worker-mounted only.
   configMaps:
     - authentik-blueprint-brand
+    # NetBird's OIDC client is PUBLIC (PKCE, no secret), so it needs no
+    # vault entry and lives as a plain ConfigMap like the brand one.
+    - authentik-blueprint-netbird
 
   secrets:
     - authentik-blueprints

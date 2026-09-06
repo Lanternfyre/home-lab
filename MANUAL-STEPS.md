@@ -928,6 +928,43 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   you 2026-08-31, re-confirmed 2026-09-06 — an accepted risk, not an oversight.
   See the warning under the summary table in `MODERNIZATION.md`.
 
+## 🟡 NetBird — ONE thing only you can do (2026-09-06)
+
+### Create a setup key, once, after first sign-in
+
+That is the whole list. It cannot be automated and it cannot be done in advance:
+a setup key is generated *inside* NetBird, so the control plane has to be
+running and you have to have signed in before one exists.
+
+1. Open `https://vpn.techyon.dev` and sign in through authentik.
+2. Create a **reusable** setup key.
+3. Put it in 1Password as item `netbird`, field `setup-key`.
+
+The in-cluster routing peer picks it up within the ExternalSecret refresh
+interval and joins by itself.
+
+⚠️ Until then the routing peer sits **NotReady** — correctly. Its readiness
+probe asserts `Management: Connected`, which is a real statement about whether
+it routes anything, not a liveness formality. A peer that is Running but
+unregistered forwards nothing and would otherwise look perfectly healthy.
+
+### What this used to say, and why it was wrong
+
+An earlier draft listed *three* manual steps. Two of them were my error:
+
+* **"Create a DNS record for `vpn.techyon.dev`."** Not needed. external-dns
+  watches `gateway-httproute` (see `apps/external-dns-cloudflare/chart-values.yaml`)
+  and the HTTPRoute carries both the `hostname` and `target` annotations, so the
+  record is created from git like every other one. ⚠️ Creating it by hand would
+  actively hurt: external-dns is `policy: upsert-only`, so a hand-made record is
+  one it can never reconcile or remove.
+* **"Put a `client_id` in 1Password."** Not a secret. NetBird's OIDC client is
+  PUBLIC — a browser SPA and a CLI cannot keep a secret, so it uses PKCE and no
+  client secret exists. `client_id` is just a name this cluster chooses (it is
+  `netbird`), and it ships inside the dashboard's JavaScript. It is hardcoded in
+  `apps/authentik/manifests/blueprint-netbird.configmap.yaml`, which is a
+  ConfigMap for exactly that reason — the same reason the brand blueprint is.
+
 ## 🔴 DELETE TWO CLOUDFLARE DNS RECORDS BY HAND (2026-09-06)
 
 `ot-login.techyon.dev` and `ot-game.techyon.dev` still resolve to the Cloudflare

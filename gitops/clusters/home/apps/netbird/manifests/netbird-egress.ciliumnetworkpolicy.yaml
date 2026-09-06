@@ -1,0 +1,68 @@
+# H1 -- what NetBird may reach.
+#
+# ⚠️ `enableDefaultDeny` IS SET EXPLICITLY, both directions. Cilium's implicit
+# per-direction default-deny would do the same thing here, but invisibly, and
+# `scripts/audit-edge-exposure.py` FAILS a published namespace that relies on
+# the implicit form. A namespace on the internet must state its containment.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: netbird-containment
+  namespace: netbird
+spec:
+  endpointSelector: {}
+
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # The kubelet-probe path. `world` is correct and must NOT be narrowed:
+    # apps/mealie/manifests/mealie-ingress.ciliumnetworkpolicy.yaml records a
+    # `fromEntities: [host, remote-node]` narrowing that crashlooped a healthy
+    # app eight times, and a `fromCIDR` allow-list that failed SILENTLY.
+    #
+    # This is also the rule that admits the edge Envoy, because it runs
+    # hostNetwork and therefore carries the NODE identity. There is no way to
+    # distinguish it from a probe at L3/L4 -- see HARDENING.md.
+    - fromEntities: [host, remote-node, world]
+
+    # The components talk to each other.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: netbird
+
+  egress:
+    # DNS first, and L7-restricted: the pods may ask CoreDNS, and only for the
+    # names below. Same idiom as every other egress policy in this repo.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{ port: "53", protocol: UDP }]
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Each other.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: netbird
+
+    # 🔴 authentik, for OIDC token and JWKS validation, by FQDN.
+    #
+    # ⚠️ The PUBLIC name, not the `.lab` one. Management validates tokens minted
+    # for the issuer the client used, and a client enrolling from the internet
+    # can only have used `authentik.techyon.dev`. Pointing this at the `.lab`
+    # name would fetch a JWKS for a different issuer and every token would fail
+    # with a 403 carrying no useful message -- EDGE-NODE.md finding 12.
+    - toFQDNs:
+        - matchName: "authentik.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+
+    # ⚠️ NO `toEntities: [world]` ANYWHERE, deliberately. The audit script fails
+    # a published namespace that grants it, and a control plane strangers can
+    # reach must not be able to phone anywhere it likes. If a future NetBird
+    # feature needs an external host, name that host here.
