@@ -1,0 +1,15 @@
+---
+# Where each node's join credentials live on disk.
+#
+# Paths only — the VALUES are never defaulted, never committed, and never stored
+# by Ansible. They arrive at run time (`vars_prompt` or `-e`) from the operator's
+# password manager, which is the honest option in a repo with no vault and no
+# `op` CLI. See CLUSTER-TOKEN.md.
+#
+# ⚠️ `k3s_token_value` / `k3s_agent_token_value` are deliberately NOT defined
+# here. Everything that renders or writes them is gated on `is defined`, so a
+# routine `site.yml` converge — which carries no token in scope — renders the
+# same config.yaml it always did and touches no credential file. Proven
+# byte-identical for all three node roles.
+k3s_token_path: /etc/rancher/k3s/token
+k3s_agent_token_path: /etc/rancher/k3s/agent-token

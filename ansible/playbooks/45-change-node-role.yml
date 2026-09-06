@@ -421,12 +421,59 @@
       check_mode: false
       delegate_to: "{{ peer }}"
 
+    # 🔴 ROLE-DEPENDENT SOURCE. This used to read node-token unconditionally, so
+    # an AGENT was handed the SERVER token -- which is exactly how edge-1, a
+    # public VPS, came to hold a credential that can add an etcd member.
+    #
+    # k3s's own words: `--agent-token` is the "shared secret used to join agents
+    # to the cluster, but NOT servers". That asymmetry is the whole point, and it
+    # only exists if agents are given the agent token here.
+    - name: "token | which credential does a {{ k3s_role }} need?"
+      ansible.builtin.set_fact:
+        k3s_join_token_src: >-
+          {{ '/var/lib/rancher/k3s/server/agent-token'
+             if (k3s_role | default('server')) == 'agent'
+             else '/var/lib/rancher/k3s/server/node-token' }}
+      when: k3s_token is not defined
+
+    # ⚠️ ASSERTED, NOT ASSUMED. k3s is documented to keep `agent-token` as a link
+    # to the server token until a distinct one is configured -- but that was not
+    # verifiable from the workstation, and joining with the wrong credential
+    # fails in the worst way: silently, with a node that works and a security
+    # property that does not. If the file is missing, stop here rather than fall
+    # back to the server token.
+    - name: "token | the source credential must exist"
+      ansible.builtin.stat:
+        path: "{{ k3s_join_token_src }}"
+      register: k3s_token_src_stat
+      delegate_to: "{{ peer }}"
+      become: true
+      check_mode: false
+      when: k3s_token is not defined
+
+    - name: "token | refuse to guess which credential to use"
+      ansible.builtin.assert:
+        that: k3s_token_src_stat.stat.exists
+        fail_msg: >-
+          {{ k3s_join_token_src }} does not exist on
+          {{ peer }}. A {{ k3s_role }} joins with that file.
+          Do NOT fall back to node-token for an agent -- that hands a public
+          machine a credential which can join a SERVER, which is etcd, which is
+          everything. Configure agent-token-file on the servers first
+          (roles/k3s_config), or pass an explicit -e k3s_token=...
+          See CLUSTER-JOIN-HARDENING.md.
+        success_msg: "joining with {{ k3s_join_token_src }}"
+      when: k3s_token is not defined
+
     - name: "token | read the join token from a live server"
       ansible.builtin.slurp:
-        src: /var/lib/rancher/k3s/server/node-token
+        src: "{{ k3s_join_token_src }}"
       register: k3s_token_raw
       delegate_to: "{{ peer }}"
       become: true
+      # ⚠️ The base64 content is still the token. Without no_log a -v run or a
+      # task failure prints it; only the set_fact below used to carry this.
+      no_log: true
       check_mode: false
       when: k3s_token is not defined
 
