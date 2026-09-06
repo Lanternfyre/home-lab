@@ -1,0 +1,156 @@
+---
+# Restrict what the public edge node may reach on this HOME node.
+#
+# ⚠️ MIRROR IMAGE OF roles/edge_firewall's GUARD. That role refuses to run on
+# anything that is not an edge node; this one refuses to run on one. They are
+# opposite halves of the same tunnel and must never be swapped: edge_firewall
+# writes a default-DROP policy, which on a home node would cut it out of the
+# cluster it belongs to.
+
+- name: "guard | refuse to run on an edge node"
+  ansible.builtin.assert:
+    that: inventory_hostname not in (groups['k3s_edge'] | default([]))
+    fail_msg: >-
+      {{ inventory_hostname }} is in k3s_edge. This role restricts what the EDGE
+      may reach on a HOME node; applying it to the edge itself would filter the
+      edge's own traffic by its own address, which is meaningless. The edge's
+      firewall is roles/edge_firewall, and the two are not interchangeable.
+
+- name: "guard | there must be an edge node to guard against"
+  ansible.builtin.assert:
+    that: (groups['k3s_edge'] | default([]) | length) > 0
+    fail_msg: >-
+      No hosts in k3s_edge, so there is no tunnel to restrict and this role
+      would render a table with no rules -- which reads like protection and is
+      not. Remove the play from the run instead.
+
+# ───────────────────────────── DETECT ─────────────────────────────
+
+- name: "detect | is the guard table already loaded?"
+  tags: [always]
+  become: true
+  ansible.builtin.command: "nft list table inet wg_guard"
+  register: t_wg_guard
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | report"
+  tags: [always]
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: wg_guard
+      {{ 'loaded (' ~ (t_wg_guard.stdout_lines | length) ~ ' lines)'
+         if t_wg_guard.rc == 0 else 'ABSENT' }},
+      guarding against
+      {{ groups['k3s_edge'] | map('extract', hostvars, 'wg_address') | join(', ') }}
+
+# ───────────────────────────── REMEDIATE ─────────────────────────────
+
+- name: "fix | install nftables"
+  become: true
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "fix | directory for the guard ruleset"
+  become: true
+  ansible.builtin.file:
+    path: "{{ wg_guard_conf_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "fix | write the guard ruleset"
+  become: true
+  ansible.builtin.template:
+    src: wg-guard.conf.j2
+    dest: "{{ wg_guard_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # ⚠️ VALIDATED BEFORE IT IS INSTALLED, exactly as roles/edge_firewall does.
+    # `nft -c -f` parses without loading. A broken ruleset that reached disk and
+    # then got reloaded would be a syntax error at best -- and this file is
+    # loaded at boot by the unit below, so a bad one breaks the node on reboot
+    # rather than now, which is far worse.
+    validate: "nft -c -f %s"
+  notify: reload wg_guard
+
+# The table must survive a reboot. There is no nftables.conf on a home node and
+# this role must not create one -- that file is loaded wholesale and would flush
+# Cilium's rules. A tiny unit that loads ONLY this table is the narrow way to do
+# it.
+- name: "fix | load the guard at boot"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/wg-guard.service
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- roles/wg_guard.
+      #
+      # Loads ONE nftables table. Deliberately not `nftables.service`, which
+      # loads /etc/nftables.conf wholesale -- a file this node does not have and
+      # must not gain, because loading it would flush the rules Cilium programs.
+      [Unit]
+      Description=Restrict what the WireGuard edge node may reach
+      After=network-pre.target
+      Wants=network-pre.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/nft -f {{ wg_guard_conf_path }}
+      ExecStop=/usr/sbin/nft delete table inet wg_guard
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+- name: "fix | enable it"
+  become: true
+  ansible.builtin.systemd:
+    name: wg-guard
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: "flush | apply before verifying"
+  ansible.builtin.meta: flush_handlers
+
+# ───────────────────────────── VERIFY ─────────────────────────────
+# Assert behaviour where possible, and state plainly what this side cannot see.
+
+- name: "verify | the table is live in the kernel"
+  become: true
+  ansible.builtin.command: "nft list table inet wg_guard"
+  register: v_table
+  changed_when: false
+
+- name: "verify | assert the policy is ACCEPT, not drop"
+  ansible.builtin.assert:
+    that: v_table.stdout is search('policy accept')
+    fail_msg: >-
+      wg_guard's input chain is not `policy accept`. That turns a targeted
+      source filter into a firewall on a node that has never had one, and the
+      next thing to fail will be your own SSH session. Fix it before doing
+      anything else.
+    success_msg: "wg_guard loaded, policy accept, {{ v_table.stdout_lines | length }} lines"
+
+- name: "verify | assert the dangerous ports are NOT permitted from the tunnel"
+  ansible.builtin.assert:
+    that:
+      - v_table.stdout is not search('dport 2379')
+      - v_table.stdout is not search('dport 2380')
+      - v_table.stdout is not search('dport 10250')
+    fail_msg: >-
+      The live ruleset permits etcd or the kubelet API from the edge node. Those
+      are the three ports this role exists to close -- a compromised public VPS
+      reaching etcd is the entire cluster.
+    success_msg: "etcd and kubelet are not reachable from the tunnel"
+
+# ⚠️ THE REAL PROOF IS NOT HERE. A node reading back its own ruleset can be
+# right about the text and wrong about the effect. The behavioural check has to
+# run FROM THE EDGE NODE, which is what playbooks/62-wg-guard.yml does in its
+# second play -- the same split roles/edge_firewall uses, for the same reason.

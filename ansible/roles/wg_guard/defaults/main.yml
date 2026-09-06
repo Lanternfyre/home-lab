@@ -1,0 +1,31 @@
+---
+# What the edge node is allowed to reach on a home node, over the tunnel.
+#
+# ⚠️ THIS IS NOT A FIREWALL. It is a source-scoped filter: `policy accept`, and
+# every rule matches on the WireGuard source address. LAN traffic never matches
+# a rule at all, so this cannot lock anyone out of a home node — which is the
+# entire reason it is shaped this way rather than as a real default-drop policy
+# like roles/edge_firewall.
+#
+# The edge node is the one cluster member strangers can attack. Everything it
+# legitimately needs from a home node is below; etcd (2379/2380) and the kubelet
+# API (10250) are deliberately absent, and those are the ports this exists to
+# close. See CLUSTER-JOIN-HARDENING.md.
+
+# Each entry is a decision. Keep the list short and justified.
+wg_guard_tcp:
+  - { port: 6443, why: "apiserver — the edge's kubelet and its agent LB target this" }
+  - { port: 4240, why: "cilium-health. MEASURED: cilium-health reports 8/8 reachable, so the edge probes home nodes. Dropping this degrades cluster health reporting and closes nothing." }
+
+wg_guard_udp:
+  - { port: 8473, why: "Cilium VXLAN. This is the pod network; without it the edge is a member of nothing." }
+
+# ⚠️ ICMP echo is allowed FROM THE TUNNEL, unlike on the edge's own public NIC
+# where it is dropped. cilium-health uses ICMP alongside 4240, and this side of
+# the link is not the untrusted one.
+wg_guard_allow_icmp: true
+
+# Its own file, loaded by its own unit. NOT /etc/nftables.conf: that file is
+# loaded wholesale by nftables.service and would flush the rules Cilium
+# programs. Home nodes do not have one today and must not gain one here.
+wg_guard_conf_path: /etc/nftables.d/wg-guard.conf
