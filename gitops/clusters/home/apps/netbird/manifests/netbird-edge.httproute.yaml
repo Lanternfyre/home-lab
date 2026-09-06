@@ -35,6 +35,29 @@ spec:
     # Management gRPC -- what the CLI client actually talks to after enrolment.
     - matches:
         - path: { type: PathPrefix, value: /management.ManagementService/ }
+      # 🔴 `0s` DISABLES THE TIMEOUT, AND WITHOUT IT THE VPN IS UNUSABLE.
+      #
+      # Envoy's DEFAULT route timeout is 15 seconds. NetBird's Sync is a
+      # long-lived SERVER-STREAMING RPC that must stay open for the life of the
+      # peer, so Envoy was cutting it on a metronome. MEASURED 2026-09-06 from
+      # the in-cluster routing peer:
+      #
+      #   18:43:32 connected to the Management Service stream
+      #   18:43:47 disconnected ... RST_STREAM with error code: INTERNAL_ERROR
+      #   18:43:58 connected
+      #   18:44:13 disconnected ... RST_STREAM INTERNAL_ERROR
+      #
+      # Exactly 15s per cycle. The client RECONNECTS SILENTLY ("will retry
+      # silently"), so the peer shows as connected in `netbird status` and in
+      # the dashboard and nothing looks broken. The damage is that every
+      # stream -- and every route and DNS update carried on it -- dies every
+      # 15 seconds.
+      #
+      # ⚠️ A ZERO-VALUED DURATION MEANS "NO TIMEOUT" in Gateway API, not "time
+      # out immediately". Deleting this does not restore a default; it restores
+      # the 15s cut.
+      timeouts:
+        request: 0s
       # 🔴 netbird-management, NOT netbird-management-grpc.
       #
       # The separate gRPC Service only exists when the chart's
@@ -50,6 +73,10 @@ spec:
     # Signal gRPC -- peer rendezvous.
     - matches:
         - path: { type: PathPrefix, value: /signalexchange.SignalExchange/ }
+      # Signal is a bidirectional stream held open for the life of the peer,
+      # exactly like management above, and takes the same 15s cut.
+      timeouts:
+        request: 0s
       backendRefs:
         - name: netbird-signal
           port: 80
@@ -57,6 +84,11 @@ spec:
     # Relay WebSocket -- the fallback path when hole-punching fails.
     - matches:
         - path: { type: PathPrefix, value: /relay }
+      # The relay is a WebSocket carrying ALL peer traffic -- Stuns/Turns are
+      # empty by decision, so nothing is peer-to-peer. A 15s cut here severs
+      # every connection in the mesh, over and over.
+      timeouts:
+        request: 0s
       backendRefs:
         - name: netbird-relay
           port: 33080
