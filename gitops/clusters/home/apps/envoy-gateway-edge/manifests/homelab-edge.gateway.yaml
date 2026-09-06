@@ -52,12 +52,36 @@ spec:
   provider:
     type: Kubernetes
     kubernetes:
-      # 🔴 Without this, Envoy Gateway shifts privileged listener ports by
-      # +10000 and would bind 10443 on the host for a :443 listener. 7171-7173
-      # are all above 1023 so nothing shifts today -- this is here so that
-      # adding a low port later fails LOUDLY (bind denied, no NET_BIND_SERVICE)
-      # rather than quietly listening on a port nobody is connecting to.
-      useListenerPortAsContainerPort: true
+      # 🔴 FALSE, DELIBERATELY, AND THIS IS NOW LOAD-BEARING.
+      #
+      # This was `true`, with a comment saying it was there so that adding a low
+      # port later would fail LOUDLY rather than quietly listening somewhere
+      # nobody connects to. That warning did its job: a low port was needed
+      # (NetBird wants :443), and the loud failure would have been Envoy
+      # refusing to bind without NET_BIND_SERVICE.
+      #
+      # Granting that capability was the wrong answer.
+      # `gateway-edge-pod-constraints` forbids added capabilities
+      # UNCONDITIONALLY -- it is the containment on an internet-facing
+      # namespace, and weakening it to change a port number is a bad trade.
+      #
+      # So the shift is now used ON PURPOSE. With this false, Envoy Gateway
+      # offsets PRIVILEGED listener ports by +10000: a :443 listener binds
+      # :10443 on the host, which needs no capability at all. nftables on the
+      # edge rewrites public :443 -> :10443 at prerouting
+      # (`edge_fw_service_tcp_dnat` in roles/edge_firewall).
+      #
+      # ⚠️ 7171/7172/7173 are above 1023 and are NOT shifted, so this flip does
+      # not move any existing listener. Verified by reading Envoy Gateway's
+      # behaviour, and it MUST be re-verified against the running proxy after
+      # this lands -- `ss -lntp` on the edge should show :10443, :7171, :7172.
+      #
+      # ⚠️ THE TWO HALVES ARE NOT RECONCILED BY ANYTHING. If Envoy Gateway ever
+      # changes the offset, or a listener port is added without its DNAT entry,
+      # nftables and Envoy disagree about where traffic goes and NOTHING reports
+      # it -- the port simply stops answering. `scripts/audit-edge-exposure.py`
+      # checks the pairing; run it after any listener change.
+      useListenerPortAsContainerPort: false
 
       # Pinned so the Kyverno policy can name it. Left unset, Envoy Gateway
       # generates `envoy-gateway-envoy-<gateway>-<hash>`, and the hash changes
@@ -212,6 +236,51 @@ spec:
       allowedRoutes:
         kinds:
           - kind: UDPRoute
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              homelab.techyon.dev/edge-publish: "true"
+
+    # ── THE ONE PRIVILEGED LISTENER ──────────────────────────────────────────
+    #
+    # 🔴 DECLARED AS 443; BINDS 10443 ON THE HOST. That is not a typo and not
+    # drift. `useListenerPortAsContainerPort: false` above makes Envoy Gateway
+    # offset privileged ports by +10000, and nftables on the edge rewrites
+    # public :443 -> :10443 at prerouting. Gateway API describes the port the
+    # CLIENT connects to; the host bind is an implementation detail of how it is
+    # reached without NET_BIND_SERVICE.
+    #
+    # ⚠️ Its firewall entry is therefore NOT in `edge_fw_service_tcp` with the
+    # others -- it is in `edge_fw_service_tcp_dnat`, which emits both the
+    # redirect and an input accept on 10443 (accepting 443 would never match,
+    # because DNAT has already rewritten the port by the time the filter chain
+    # runs).
+    #
+    # ⚠️ TLS TERMINATES HERE, unlike every other listener on this Gateway. The
+    # others are raw TCP/UDP passed through untouched. This one must terminate,
+    # because NetBird multiplexes an HTTP dashboard, a REST API, TWO gRPC
+    # services and a relay WebSocket onto one endpoint and they can only be
+    # separated by path -- which requires reading the request. Envoy is a
+    # first-class gRPC proxy, so this is the right place for it; Cloudflare
+    # Tunnel is not, because it does not support gRPC on a public hostname.
+    - name: netbird-https
+      protocol: HTTPS
+      port: 443
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            group: ""
+            name: netbird-public-tls
+            # The cert lives in the namespace that owns the service, not here.
+            # A ReferenceGrant in that namespace permits this -- see
+            # apps/netbird/manifests/.
+            namespace: netbird
+      allowedRoutes:
+        kinds:
+          - kind: HTTPRoute
+          - kind: GRPCRoute
         namespaces:
           from: Selector
           selector:

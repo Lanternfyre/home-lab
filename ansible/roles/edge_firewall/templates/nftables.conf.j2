@@ -10,7 +10,34 @@
 # rules. A policy-drop forward chain here would break pod networking in a way
 # that looks like a CNI fault.
 
-flush ruleset
+# ── ATOMIC TABLE REPLACE, NOT `flush ruleset` ───────────────────────────────
+#
+# 🔴 THIS USED TO BE `flush ruleset`, AND THAT IS NOW A NODE OUTAGE.
+#
+# It was correct when written: this role is a PREREQUISITE OF THE JOIN, it ran
+# on a machine where `nft list ruleset` was empty, and it owned everything.
+# `roles/wg_guard` even cites that as the reason it could NOT do the same on a
+# home node -- "flushing would take out every rule Cilium and kube-proxy have
+# programmed".
+#
+# The edge node joined on 2026-09-06. It now runs cilium-agent and kube-proxy,
+# both of which program their own rules, so THIS FILE NO LONGER OWNS THE
+# RULESET. `flush ruleset` on a re-run would delete their rules out from under
+# them and break pod networking on a public node -- and it would present as a
+# CNI fault, not as a firewall change, which is the expensive kind of bug.
+#
+# Replacing only our own tables is exactly what `wg_guard` already does. The
+# empty `table` declarations are NOT redundant: `delete table` FAILS on a table
+# that does not exist, which would break the very first run on a fresh VPS.
+# Declaring them empty first makes each delete unconditional.
+#
+# ⚠️ `edge_nat` is declared and deleted even when there are no DNAT entries, so
+# that REMOVING the last entry actually removes the table rather than leaving
+# the last rendered copy live forever.
+table inet edge_filter {}
+delete table inet edge_filter
+table inet edge_nat {}
+delete table inet edge_nat
 
 table inet edge_filter {
   chain input {
@@ -81,6 +108,18 @@ table inet edge_filter {
     # {{ r.why }}
     iifname "{{ edge_fw_public_iface }}" udp dport {{ r.port }} accept
 {% endfor %}
+{% for r in edge_fw_service_tcp_dnat | default([]) %}
+    # {{ r.why | trim }}
+    #
+    # 🔴 THIS ACCEPTS THE LISTENER PORT, NOT THE PUBLIC ONE. The prerouting
+    # chain below has already rewritten dport {{ r.public_port }} -> {{ r.listener_port }}
+    # by the time this chain runs -- DNAT sits at prerouting, which is ahead of
+    # the input hook. An accept on {{ r.public_port }} would never match, and the
+    # connection would die AFTER a successful DNAT: the packet arrives, gets
+    # rewritten, then hits the policy drop. That reads like a broken backend and
+    # sends you looking in the cluster.
+    iifname "{{ edge_fw_public_iface }}" tcp dport {{ r.listener_port }} accept
+{% endfor %}
 
     # 🔴 EVERYTHING ELSE IS DROPPED, and these are the ones that matter:
     #   10250/tcp     kubelet -- full node API, binds 0.0.0.0
@@ -94,3 +133,35 @@ table inet edge_filter {
     counter comment "dropped-inbound"
   }
 }
+{% if edge_fw_service_tcp_dnat | default([]) %}
+
+# ── PUBLIC PRIVILEGED PORTS -> SHIFTED ENVOY LISTENERS ──────────────────────
+#
+# Why this table exists at all: binding a port below 1024 under `hostNetwork`
+# needs NET_BIND_SERVICE, and `gateway-edge-pod-constraints` forbids added
+# capabilities unconditionally. Rather than weaken the containment policy in
+# front of an internet-facing namespace for the sake of a port number, Envoy
+# Gateway is left to shift privileged listeners by +10000 (its default when
+# `useListenerPortAsContainerPort` is false) and the rewrite happens here.
+#
+# ⚠️ A SEPARATE TABLE FROM edge_filter, deliberately. Both are declared-then-
+# deleted at the top of this file, so they are rebuilt together and cannot drift
+# apart -- but they are different hooks with different priorities, and mixing a
+# nat chain into a filter table is how you get rules that never evaluate.
+#
+# ⚠️ NO postrouting/masquerade chain. The DNAT target is a port on THIS host, so
+# the reply leaves from the same address the client sent to and needs no source
+# rewriting. Adding masquerade here would rewrite the CLIENT's address and hand
+# every connection to Envoy as though it came from the node itself -- which
+# would work, and would silently destroy the client IP in every log and every
+# rate-limit decision.
+table inet edge_nat {
+  chain prerouting {
+    type nat hook prerouting priority dstnat; policy accept;
+{% for r in edge_fw_service_tcp_dnat %}
+    # {{ r.public_port }} -> {{ r.listener_port }} ({{ r.public_port }} + 10000, matching Envoy Gateway's shift)
+    iifname "{{ edge_fw_public_iface }}" tcp dport {{ r.public_port }} redirect to :{{ r.listener_port }}
+{% endfor %}
+  }
+}
+{% endif %}
