@@ -67,6 +67,45 @@
 # k3s.service.env on every run, regenerating the env file from the invoking
 # shell's exported K3S_*/CONTAINERD_*/proxy variables. Its current contents are
 # unknown (root-only), and once lost they are unrecoverable.
+
+# ── JOIN CREDENTIALS ────────────────────────────────────────────────────────
+# Written BEFORE config.yaml, which references them by path. Both tasks are
+# gated on the value being defined, so `site.yml` — which never carries a token
+# — skips them entirely and cannot disturb a working node.
+#
+# ⚠️ `no_log` on both. Without it the token appears in any -v run and in the
+# task result on failure.
+- name: "token | write this node's join credential"
+  become: true
+  no_log: true
+  when: k3s_token_value is defined
+  ansible.builtin.copy:
+    dest: "{{ k3s_token_path }}"
+    content: "{{ k3s_token_value }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+
+# 🔴 SERVERS ONLY, and the guard is the point. `agent-token` is a server-only
+# k3s flag — `k3s agent --help` does not have it — and this template's header
+# records what happens to a worker given a server-only key: it refuses to start.
+#
+# This is the file that makes a compromised agent unable to join a SERVER, which
+# is the single structural improvement CLUSTER-TOKEN.md rates above the rotation
+# itself.
+- name: "token | write the agent join credential (servers only)"
+  become: true
+  no_log: true
+  when:
+    - k3s_agent_token_value is defined
+    - (k3s_role | default('server')) == 'server'
+  ansible.builtin.copy:
+    dest: "{{ k3s_agent_token_path }}"
+    content: "{{ k3s_agent_token_value }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Back up the k3s unit env before any installer run
   ansible.builtin.fetch:
     src: "/etc/systemd/system/{{ k3s_unit }}.service.env"
