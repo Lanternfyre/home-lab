@@ -47,7 +47,13 @@ spec:
     egress: false
 
   ingress:
+    # ⚠️ THESE ARE THE CHART'S LABELS, NOT A HAND-PICKED `app:`. The fork emits
+    # `app.kubernetes.io/name: netbird-routing-peer` from
+    # `netbird.routingPeer.selectorLabels`; a policy matching a label the chart
+    # never sets would select nothing and grant nothing, silently -- and a VPN
+    # that authenticates but reaches nowhere reads like a routing fault.
+    # Verified against the rendered chart output.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: netbird
-            app: netbird-routing-peer
+            app.kubernetes.io/name: netbird-routing-peer

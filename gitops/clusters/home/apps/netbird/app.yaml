@@ -1,5 +1,6 @@
-repoURL: "https://netbirdio.github.io/helms"
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/lanternfyre/charts"
 chart: "netbird"
-targetRevision: "1.9.0"
+targetRevision: "0.1.0"
 releaseName: "netbird"
 namespace: "netbird"

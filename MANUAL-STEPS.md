@@ -928,48 +928,42 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   you 2026-08-31, re-confirmed 2026-09-06 — an accepted risk, not an oversight.
   See the warning under the summary table in `MODERNIZATION.md`.
 
-## 🔴 NetBird — three things only you can do (2026-09-06)
+## 🟡 NetBird — ONE thing only you can do (2026-09-06)
 
-The manifests are in `apps/netbird/`, but NetBird cannot come up without these.
-Do them in this order; each one unblocks the next.
+### Create a setup key, once, after first sign-in
 
-### 1. Two 1Password items
+That is the whole list. It cannot be automated and it cannot be done in advance:
+a setup key is generated *inside* NetBird, so the control plane has to be
+running and you have to have signed in before one exists.
 
-| item | field | who reads it |
-|---|---|---|
-| `oidc-netbird` | `client_id` | the authentik blueprint, which creates the OIDC provider |
-| `netbird` | `setup-key` | the in-cluster routing peer, to enrol itself |
+1. Open `https://vpn.techyon.dev` and sign in through authentik.
+2. Create a **reusable** setup key.
+3. Put it in 1Password as item `netbird`, field `setup-key`.
 
-`client_id` can be any stable string — `netbird` is fine; it is an identifier,
-not a secret, and a public OIDC client has no secret by design.
+The in-cluster routing peer picks it up within the ExternalSecret refresh
+interval and joins by itself.
 
-⚠️ **`setup-key` does not exist yet and cannot.** A setup key is created inside
-NetBird after the control plane is running and you have signed in once. Create
-the 1Password item empty or skip it, do steps 2 and 3, then come back. Until it
-resolves, the routing peer stays **NotReady** — correctly: its readiness probe
-asserts `Management: Connected`, which is a real statement about whether it
-routes anything, not a liveness formality.
+⚠️ Until then the routing peer sits **NotReady** — correctly. Its readiness
+probe asserts `Management: Connected`, which is a real statement about whether
+it routes anything, not a liveness formality. A peer that is Running but
+unregistered forwards nothing and would otherwise look perfectly healthy.
 
-### 2. One DNS record
+### What this used to say, and why it was wrong
 
-`vpn.techyon.dev` → **`167.86.81.59`**, unproxied (grey cloud).
+An earlier draft listed *three* manual steps. Two of them were my error:
 
-⚠️ **Not orange-clouded.** The endpoint carries gRPC and a WebSocket, and
-Cloudflare's proxy does not support gRPC on a public hostname — which is the
-whole reason this path goes through the edge Gateway instead of the tunnel.
-
-⚠️ external-dns *should* create this from the HTTPRoute's annotations. Check
-before creating it by hand; a duplicate record made manually is one external-dns
-can never reconcile, and `policy: upsert-only` means it will never remove it.
-
-### 3. Sign in and create the setup key
-
-Once `vpn.techyon.dev` resolves and the pods are up, open it, sign in through
-authentik, create a **reusable** setup key, and put it in 1Password as
-`netbird` / `setup-key`. The routing peer joins on its own within the refresh
-interval.
-
----
+* **"Create a DNS record for `vpn.techyon.dev`."** Not needed. external-dns
+  watches `gateway-httproute` (see `apps/external-dns-cloudflare/chart-values.yaml`)
+  and the HTTPRoute carries both the `hostname` and `target` annotations, so the
+  record is created from git like every other one. ⚠️ Creating it by hand would
+  actively hurt: external-dns is `policy: upsert-only`, so a hand-made record is
+  one it can never reconcile or remove.
+* **"Put a `client_id` in 1Password."** Not a secret. NetBird's OIDC client is
+  PUBLIC — a browser SPA and a CLI cannot keep a secret, so it uses PKCE and no
+  client secret exists. `client_id` is just a name this cluster chooses (it is
+  `netbird`), and it ships inside the dashboard's JavaScript. It is hardcoded in
+  `apps/authentik/manifests/blueprint-netbird.configmap.yaml`, which is a
+  ConfigMap for exactly that reason — the same reason the brand blueprint is.
 
 ## 🔴 DELETE TWO CLOUDFLARE DNS RECORDS BY HAND (2026-09-06)
 
