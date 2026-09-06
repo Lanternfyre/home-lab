@@ -4,12 +4,13 @@
 the public edge node, and [`CLUSTER-TOKEN.md`](CLUSTER-TOKEN.md), which owns the
 rotation runbook this plan finally executes.
 
-This is also the document that `H1` and `H3` have been pointing at. Every
-CiliumNetworkPolicy header in this repo is tagged `H1` and every Kyverno
-pod-constraint `H3`, and until now **the plan those refer to existed nowhere** —
-`grep -rn "H1\b\|H3\b"` across the other four root docs returns nothing.
+⚠️ **This document used to claim it was what `H1` and `H3` point at.** It is
+not — it never uses those tokens; its findings are numbered 1-6 and its
+programme 1-5. That forward reference is now implemented properly in
+[`HARDENING.md`](HARDENING.md), which defines `H0`-`H5`.
 
-Started 2026-09-06. Nothing here is built yet.
+Started 2026-09-06. **Programme items 1-3 are built and verified; 4 and 5 are
+not.** See the programme table below for per-item status.
 
 ---
 
@@ -166,13 +167,16 @@ That is correct and invisible — precisely the "control that looks complete and
 has a hole nobody can see from the config" shape `CLAUDE.md` warns about. The
 contract mandates the explicit form for published namespaces.
 
-### 5. Both join playbooks hand agents the SERVER token
+### 5. ✅ FIXED — both join playbooks used to hand agents the SERVER token
 
 `40-add-node.yml` and `45-change-node-role.yml` both read
 `/var/lib/rancher/k3s/server/node-token` unconditionally, regardless of the
-node's role. That is exactly why `edge-1` holds a server-capable credential
-today, and it is the line that has to change for an agent token to ever reach an
-agent.
+node's role. That is exactly why `edge-1` held a server-capable credential, and
+it is the line that had to change for an agent token to ever reach an agent.
+
+✅ **Fixed 2026-09-06** in the same window as the rotation. Both playbooks now
+choose `agent-token` or `node-token` by `k3s_role`, with an explicit assert that
+refuses to fall back to the server token. `edge-1` holds the agent token only.
 
 ### 6. A node joining is completely silent
 
@@ -234,9 +238,9 @@ uses: the L7 DNS rule first, then `toEndpoints` with a namespace label.
 |---|---|---|
 | 1 | this document + the two doc corrections | none |
 | 2 | ✅ **DONE 2026-09-06** — rotate the token AND split out an agent-token | highest |
-| 3 | tunnel guard — surgical nftables on home nodes | first rules on home nodes |
-| 4 | the contract — Kyverno policy + audit script | admission |
-| 5 | detection — alert on node-count change | none |
+| 3 | ✅ **DONE 2026-09-06** — tunnel guard, surgical nftables on home nodes. Applied to all 7, and **proven from the edge**: 2379/2380/10250 refuse, 6443 answers, cilium-health 8/8 | first rules on home nodes |
+| 4 | 🔜 the contract — Kyverno policy + audit script | admission |
+| 5 | 🔜 detection — alert on node-count change | none |
 
 ### 2 — rotation and agent-token, one window
 

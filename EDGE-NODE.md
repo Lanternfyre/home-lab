@@ -1,14 +1,32 @@
 # Edge node — public TCP/UDP, and a VPN that is not a hole in the LAN
 
-**Living document.** Companion to [`MODERNIZATION.md`](MODERNIZATION.md). This
-one covers work that does not exist yet: a public VPS joined to the cluster as
-an agent, arbitrary TCP/UDP published through it by manifest, and a client VPN
-that reaches cluster services and deliberately nothing else.
+**Living document.** Companion to [`MODERNIZATION.md`](MODERNIZATION.md). It
+covers a public VPS joined to the cluster as an agent, arbitrary TCP/UDP
+published through it by manifest, and a client VPN that reaches cluster services
+and deliberately nothing else.
 
-Started 2026-09-05. Phase B is **merged and verified live**. Phase C's repo
-work is written -- Ansible roles, the edge Gateway, the routes -- but **nothing
-has been run against any machine and the node has not joined**. Phase D is
-designed only.
+Started 2026-09-05.
+
+| phase | what | status |
+|---|---|---|
+| **A** | authentik ingress network policy | not started |
+| **B** | publish authentik publicly | ✅ **merged and live** — `authentik.techyon.dev` is in the cloudflared config |
+| **C** | edge node: underlay, join, edge Gateway | ✅ **LIVE.** `k8s-edge1` is Ready on `10.250.0.1`; `homelab-edge` is `Programmed`; a real client has connected through 7171 |
+| **D** | NetBird self-hosted | designed only |
+
+⚠️ **This header used to say Phase C's work had "never been run against any
+machine and the node has not joined".** It has been live since 2026-09-06.
+Phase B was stated three different ways in this one file. Several findings
+below were likewise written as open and have since been closed — each is now
+marked. Treat any unmarked "still open" claim here with suspicion and verify it
+against the live cluster.
+
+🔴 **Phase D's SNAT design has since been superseded** — see
+[`HARDENING.md`](HARDENING.md) and "Decisions, and what they cost" below.
+Clients were to be
+SNAT'd to `10.250.0.1`, which is the edge node's own address and therefore
+carries the edge node's Cilium identity. That is incompatible with restricting
+what the edge node may reach, so the routing peer moves in-cluster.
 
 ---
 
@@ -71,13 +89,21 @@ Two flows cross that tunnel and they are **not** the same problem:
 
 | | cluster underlay | client VPN |
 |---|---|---|
-| carries | edge ↔ home node IPs: 6443, VXLAN 8473, kubelet 10250 | laptops → cluster services |
+| carries | edge ↔ home node IPs: 6443, VXLAN 8473, and kubelet 10250 **home→edge only** | laptops → cluster services |
 | needs | symmetric, un-NATed, stable addresses | nothing much; SNAT is fine |
 | built from | plain `wg-quick`, Ansible, always | NetBird (replaceable) |
 
 Keeping them separate is the load-bearing decision in this document. Cluster
 membership must never depend on a VPN control plane that can be down or
 mid-upgrade, and k3s bakes `node-ip` in at registration.
+
+⚠️ **10250 is one-directional, and that matters.** The apiserver reaches the
+edge kubelet; the edge reaches no home kubelet. `roles/wg_guard` drops inbound
+10250 (and etcd 2379/2380) from the tunnel address, while
+`ct state established,related accept` keeps the home-initiated direction
+working. Proven from the edge on 2026-09-06: 2379/2380/10250 refuse on all
+seven home nodes, 6443 still answers on the three servers, `cilium-health`
+stays 8/8.
 
 ---
 
@@ -129,6 +155,8 @@ Each of these was checked on 2026-09-05 and each one changed the design.
    `smartctl-exporter` is in the same position and is meaningless there anyway
    (the VPS has no SATA disk). `kube-vip-ds` is safe: its nodeAffinity requires
    the control-plane label.
+
+   ✅ **RESOLVED by Kyverno, not by a nodeSelector** — see finding 18.
 
 7. 🔴 **`config.yaml.j2` renders no `node-ip`.** Left alone, k3s on the VPS
    picks the default-route interface — the public NIC — and Cilium's VXLAN on
@@ -217,11 +245,17 @@ Each of these was verified the same way, and each one breaks something.
     19001 (stats), 19002 (shutdown-manager) and 19003 (readiness) listen on all
     interfaces — on a public NIC that is the internet. So do kubelet `:10250`,
     Cilium health `:4240` and VXLAN `:8473/udp`: **`node-ip` changes what k3s
-    advertises, not what it binds.** There is no firewall role anywhere in
-    `ansible/`. An nftables role scoped to `k3s_edge` is a **prerequisite of the
-    join**, not a follow-up, and its check must be behavioural — probe those
-    ports from off-tunnel and assert silence, rather than reading back a
-    ruleset.
+    advertises, not what it binds.** An nftables role scoped to `k3s_edge` is a
+    **prerequisite of the join**, not a follow-up, and its check must be
+    behavioural — probe those ports from off-tunnel and assert silence, rather
+    than reading back a ruleset.
+
+    ✅ **RESOLVED.** This said "there is no firewall role anywhere in
+    `ansible/`". There are two now: `roles/edge_firewall`
+    (`playbooks/61-edge-firewall.yml`, default-DROP on the public NIC) and its
+    mirror `roles/wg_guard` (`playbooks/62-wg-guard.yml`, which restricts what
+    the edge may reach on a HOME node). They are opposite halves of the same
+    tunnel and each refuses to run on the other's hosts.
 
 18. 🔴 **`trident-node-linux` is operator-owned, so no chart value reaches it.**
     Its `ownerReferences` name a `TridentOrchestrator` CR, and that CRD is
@@ -233,12 +267,21 @@ Each of these was verified the same way, and each one breaks something.
     joins**: the taint does not stop it, because the DaemonSet tolerates every
     `NoSchedule`.
 
+    ✅ **RESOLVED — the fallback won.** The CR fields were not adopted; the
+    answer is
+    `gitops/clusters/home/apps/kyverno/manifests/no-storage-on-edge.validatingpolicy.yaml`.
+    Verified after the join: the edge node runs Cilium and the edge Envoy and
+    nothing else — no trident, no smartctl-exporter.
+
 19. 🔴 **`30-upgrade.yml` will fail mid-drain once the edge joins.** Inside its
     per-node serial loop over `k3s_nodes` sits a csinode non-empty gate with
     `retries: 30, delay: 10`. On a node with no CSI driver that burns five
     minutes and then fails a **rolling k3s upgrade in flight**, with the edge
     drained and cordoned. Whatever gates `node_verify`'s csinode assert must
     gate this one too, in the same change.
+
+    ✅ **RESOLVED.** Both csinode gates in `30-upgrade.yml` now key on
+    `node_storage_enabled | bool`, the same variable `node_verify` uses.
 
 20. **`sectionName` is effectively mandatory on every edge route.** A TCPRoute
     without it attaches to *every* compatible TCP listener on the Gateway, so
@@ -307,7 +350,8 @@ segment it is not on; kube-vip's nodeAffinity already excludes it.
 | **C** | edge node: underlay, join, edge Gateway | — |
 | **D** | NetBird self-hosted | B, C |
 
-A and C are independent and can run in parallel. B is written already.
+A and C are independent and can run in parallel. ✅ B and C are both merged
+and live; only A and D remain.
 
 ### Phase A — the authentik ingress policy
 
@@ -340,7 +384,11 @@ becomes a rule:
 `canary-containment` was the model for this shape and was retired with the
 canary; `ot-demo.ciliumnetworkpolicy.yaml` carries the same pattern.
 
-### Phase B — publish authentik ✍️ written, on `feat/publish-authentik-open-tunnel`
+### Phase B — publish authentik ✅ MERGED AND LIVE
+
+⚠️ This heading used to read "✍️ written, on
+`feat/publish-authentik-open-tunnel`". That branch is merged;
+`authentik.techyon.dev` is in `cloudflared.configmap.yaml` and answering.
 
 Self-hosted NetBird authenticates clients against authentik over OIDC, and a
 device enrolling from outside must reach the IdP *before* it has a tunnel.
@@ -430,9 +478,12 @@ Build order, each step gated:
    ⚠️ Ports below 1024 need `NET_BIND_SERVICE` under hostNetwork; 7171/7172 do
    not, which is a real reason to keep the edge to high ports.
    ⚠️ `infrastructure.techyon.dev/location=edge` and
-   `infrastructure.techyon.dev/edge=true:NoSchedule` appear nowhere in the repo
-   today. Ansible must emit them byte-for-byte — the taint repels and the label
-   attracts, and either one missing is a Gateway that never programs.
+   `infrastructure.techyon.dev/edge=true:NoSchedule` — the taint repels and the
+   label attracts, and either one missing is a Gateway that never programs.
+   ✅ Both now exist and are live: emitted from
+   `inventory/group_vars/k3s_edge.yml`, asserted by `roles/node_verify`, and
+   consumed by the EnvoyProxy CR. (This used to say they "appear nowhere in the
+   repo today".)
 6. **The last gate — `ot-demo`, not necronia.** Attach a TCPRoute for
    `ot-login:7171` and prove a real client connects to `edge-1.techyon.dev:7171`
    without `cloudflared access tcp`. Compare against the existing

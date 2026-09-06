@@ -7,25 +7,34 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-09-05 (k8s-7 in service — 7 nodes, 3 servers + 4 agents)
+Last updated: 2026-09-06 (edge node live, join token rotated, tunnel guard applied)
 
 ---
 
 ## Where we are
 
-k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), 6 nodes live and a 7th prepared in
-the repo. Topology reached its target on 2026-08-22: **3 servers
-(k8s-1, k8s-2, k8s-3) + 3 agents (k8s-4, k8s-5, k8s-6)**, verified with
-`kubectl get nodes` on 2026-09-02. The earlier line here named the servers as
-{k8s-1, k8s-4, k8s-6}; that was the 2026-08-19 plan, revised after the k8s-5
-incident. **k8s-7 is in the inventory as a 4th AGENT and has not joined yet** —
-see "Immediately next".
+k3s **v1.35.6+k3s1** (the QNAP CSI ceiling), **8 nodes live**: 7 at home plus a
+public edge node.
+
+* **Home — 3 servers (k8s-1, k8s-2, k8s-3) + 4 agents (k8s-4, k8s-5, k8s-6,
+  k8s-7).** Topology reached its target on 2026-08-22; k8s-7 joined as a 4th
+  agent on 2026-09-05. The earlier line here named the servers as
+  {k8s-1, k8s-4, k8s-6}; that was the 2026-08-19 plan, revised after the k8s-5
+  incident.
+* **Edge — `edge-1.edge` / `k8s-edge1`**, a public VPS joined as an agent over
+  WireGuard, `node-ip 10.250.0.1`, tainted and labelled so only the edge Envoy
+  lands on it. It publishes raw TCP/UDP to the internet through the
+  `homelab-edge` Gateway. See [`EDGE-NODE.md`](EDGE-NODE.md).
+
+⚠️ Inventory hostnames are `k8s-N` / `edge-1.edge`; the Kubernetes node names
+and OS hostnames are `k8s-labN` / `k8s-edge1`. Same machines.
+
 Target end state: k3s 1.35.6 on Cilium, Envoy Gateway replacing archived
-ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
+ingress-nginx, Kyverno via native VAP, dashboards behind authentik OIDC.
 
 | | at session start | now |
 |---|---|---|
-| Backups | **none at all** | 3 nightly jobs, restore-verified (pihole's retired — see below) |
+| Backups | **none at all** | 🔴 **still none at all** — see the warning below this table |
 | Alerting | receiver `"null"`, 7 alerts into a black hole | **Pushover**, verified delivered; 3 permanent false positives purged |
 | PV reclaim policy | 14× `Delete` | 18× `Retain` + protect labels |
 | ArgoCD | 13 OutOfSync / 27 Synced / **15 Unknown** | **60 Synced / 1 OutOfSync / 0 Unknown** — and the one is `pihole`, OutOfSync *by design* |
@@ -42,18 +51,71 @@ ingress-nginx, Kyverno via native VAP, dashboards behind Google OIDC.
 | ServiceLB / traefik | 9 svclb DS, 640+ crashloops | **removed** |
 | inotify sysctl | broken on all 5 for 211 days | 1048576 everywhere |
 | Node config | prose runbook only | Ansible, detect-then-remediate |
-| CNI | flannel (in the k3s server process) | **Cilium 1.20.0 on all 5**, 63/63 pods, 5/5 reachable |
+| CNI | flannel (in the k3s server process) | **Cilium 1.20.0 on all 8**, 8/8 reachable |
+| Join token | `k3sblog`, 7 chars, **published in a public repo** | rotated 2026-09-06; agent token split out so an agent credential cannot join a server |
+| Edge exposure | none — no public path for raw TCP/UDP | `homelab-edge` Gateway on a public VPS agent; namespaces opt in by label |
+| Tunnel containment | edge could reach etcd + kubelet on every home node | `wg_guard` nftables — 6443/4240/8473/ICMP only, **proven from the edge 2026-09-06** |
+
+### 🔴 There are no backups. None.
+
+This row used to read "3 nightly jobs, restore-verified" and **that has been
+false since 2026-08-15**, when the three CronJobs were deleted in `e0c470e` in
+favour of a Velero deployment that never happened. The repo holds only tombstone
+comments; there are zero CronJobs, zero `ScheduledBackup`s, no `spec.backup` on
+either CNPG cluster, and no Velero.
+
+Deferred by the operator on 2026-08-31 and re-confirmed 2026-09-06 — so this is
+a known, accepted risk and not an oversight. It is recorded here because a
+deferred risk you can see is a decision, and one the docs deny is a trap.
+
+What that currently means: `databases/postgres-ha` (ReportPortal + authentik),
+`immich/immich-db`, and the 100Gi `immich-library` the volume register calls
+"irreplaceable; there is no other copy anywhere" have no backup of any kind.
+**HA is not backup** — three replicas replicate a `DROP TABLE` faithfully.
+⚠️ `audit-protected-volumes.py` going green means layers 1–3, **not** backup.
+⚠️ Do not delete the `*-backup` PVCs; they hold the last dumps that exist
+(cold, and stale since 2026-08-16).
 
 ### Immediately next
 
-#### 🔄 2026-09-02 — k8s-7: a 4th agent, prepared but NOT joined
+**Resume point, 2026-09-06.** Everything below this block is history and is
+labelled with the date it landed. Read this block first; do not resume from the
+first `🔄` heading you find, which is how this section misled readers before.
+
+The consolidated plan covering what is left lives at
+[`HARDENING.md`](HARDENING.md). In order:
+
+1. ~~Prove `wg_guard` from the edge~~ — ✅ done 2026-09-06. etcd 2379/2380 and
+   kubelet 10250 refuse on all 7 home nodes, 6443 still answers on the three
+   servers, `cilium-health` 8/8.
+2. **This doc truth pass** (in flight).
+3. **The edge exposure contract** — a Kyverno policy requiring what a published
+   workload must *be*, plus `scripts/audit-edge-exposure.py` for the
+   cross-resource facts admission cannot see.
+4. **Detection** — a PrometheusRule on node count. Nothing fires on a node
+   appearing today.
+5. **Close the pod-network gap** — the edge node currently reaches every
+   namespace over VXLAN. Needs `enableNodeSelectorLabels` in Cilium and a
+   clusterwide `fromNodes` deny, measured with Hubble first.
+6. **The VPN** — NetBird, control plane on the edge host, routing peer in-cluster.
+7. **Retire the two decorative cloudflared `tcp://` entries** and close etcd
+   2379/2380 to the LAN.
+
+Deferred by decision, not forgotten: **backups** (see the warning above) and
+**H4 — SA tokens and RBAC**.
+
+---
+
+#### ✅ 2026-09-05 — k8s-7 joined as a 4th agent (history)
 
 `192.168.33.24`, static hostname already `k8s-lab7`, Ubuntu 24.04.3,
 6 vCPU / 31 GiB, a single 238.5 GB NVMe and **no SATA disk** — the first node
 in the fleet without one.
 
-The REPO changes have landed; **nothing has been run against the machine.**
-Live state is still 6 nodes. What exists now:
+✅ **Joined, storage-proven and uncordoned on 2026-09-05** — see the
+"k8s-7 IS IN SERVICE" entry below. The rest of this subsection is the
+preparation record, kept because it is how two gate bugs were found. What
+landed in the repo first:
 
 * `ansible/inventory/homelab.yml` — `k8s-7.home` under `k3s_agents`. It joins
   straight in as an agent, so `45-change-node-role.yml` has nothing to do here.
@@ -196,11 +258,12 @@ and the standing decision is cluster-wide CI scheduling), and no Cilium change
 — the pool is `10.245.0.0/16` at `/24` per node, so a 7th node CIDR is already
 available.
 
-#### 🔄 2026-08-19 — Node roles: k8s-6 added, control plane shrinking to 3
+#### ✅ 2026-08-19 → 2026-08-22 — Node roles: control plane shrunk to 3 (history)
 
-The Ansible layer LANDED (commit "a node's role is now a line in the
-inventory"); **the cluster changes have NOT been made yet.** Live state at time
-of writing is still 5 nodes, all servers. What exists now:
+✅ **Reached on 2026-08-22**: 3 servers + agents, verified with
+`kubectl get nodes`. The text below is the preparation record from 2026-08-19,
+when the Ansible layer had landed (commit "a node's role is now a line in the
+inventory") but the cluster changes had not yet been made. What existed then:
 
 * `ansible/inventory/homelab.yml` is topology-only: `k3s_nodes` with
   `k3s_servers` / `k3s_agents` beneath it. Per-host detail moved to
@@ -274,9 +337,11 @@ of writing is still 5 nodes, all servers. What exists now:
      **Retire `dns/pihole` (PVC then PV) before running it** — the gate refuses
      otherwise, which is the gate working. `Retain` does not protect it:
      `k3s-uninstall.sh` deletes the data and leaves a tombstone reading Bound.
-5. ⚠️ Three rejoins will reuse the cluster token `k3sblog`, which is in
-   plaintext in `gitops/argo-install.md` (MANUAL-STEPS §8). Good moment to
-   rotate it.
+5. ⚠️ **Historic — do not follow.** This step used to say the rejoins would
+   reuse the cluster token `k3sblog`. That token was rotated on 2026-09-06 and
+   is dead (`server-bootstrap` returns 401 for it on all three servers). Servers
+   and agents now hold *different* tokens; take the current one from 1Password
+   and see [`CLUSTER-TOKEN.md`](CLUSTER-TOKEN.md).
 
 ⚠️ Do not run `25-kube-vip-daemonset.yml`, `35-cilium-migrate.yml` or
 `30-upgrade.yml` while a role change is in flight: the inventory and the
@@ -2389,10 +2454,12 @@ break, where `target_info` did exist and the panel was fine.
 - ~~Do not uncordon k8s-lab5 until a storage proof passes on it.~~ ✅ The
   proof passed 2026-08-02 and it is uncordoned. The rule stands for any
   *future* node: `Ready` is not the gate, a mounted volume is.
-- **Backups are on the same NAS as the data.** They cover driver bugs,
-  accidental deletion and bad restores. They do **not** cover the NAS failing.
-  The 57 GB Immich library has no second copy anywhere — accepted risk,
-  recorded in `MANUAL-STEPS.md`.
+- 🔴 **There are no backups.** This warning used to describe backups that lived
+  on the same NAS as the data; the CronJobs producing them were deleted
+  2026-08-15 and nothing replaced them. Deferred by the operator 2026-08-31,
+  re-confirmed 2026-09-06. The last dumps are cold and stale since 2026-08-16,
+  and everything created after that date — authentik's entire database included
+  — has never been backed up at all. See the warning under the summary table.
 - **Never `kubectl patch` the QNAP StorageClasses** — chart-managed, `selfHeal`
   reverts it. Change them in git.
 - **`flannel-backend: none` is not a config-convergence item.** It removes the

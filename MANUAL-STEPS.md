@@ -5,7 +5,7 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-08-26
+Last updated: 2026-09-06
 
 ---
 
@@ -657,30 +657,35 @@ Verified afterwards: 18/18 PVCs Bound, all 13 VolumeAttachments intact, both
 CNPG clusters healthy. The stale repo-root files `mealie-pvc-qnap.yaml` and
 `test-pvc-qnap.yaml` that created them have also been removed.
 
-### 8. Rotate the k3s cluster token
-The current token is committed in plaintext in `gitops/argo-install.md`, in a
-**public** repository, and is in git history. Anyone with it and network reach
-can join a **server** to your cluster — which is etcd, which is everything.
+### 8. ✅ DONE 2026-09-06 — Rotate the k3s cluster token
 
-**See [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md)** for the full plan and the rotation
-runbook. Three things that document establishes and this line used to miss:
+**Executed.** `k3sblog` is dead — `server-bootstrap` returns `401` for it on all
+three servers, verified rather than assumed. An **agent token was split out** in
+the same window, so an agent credential can no longer join a server.
+`gitops/argo-install.md` now reads `--token "$K3S_TOKEN"`.
 
-- Rotation alone is not the fix. The token is unmanaged — not in Ansible, not
-  in `config.yaml` — so rotating replaces one unmanaged secret with another.
-- **Normalising the unit ENV is a precondition** (corrected 2026-09-06: this
-  used to say `ExecStart`). The token is not in `ExecStart` — servers pass no
-  arguments at all. It is `K3S_TOKEN=` in each agent's
-  `k3s-agent.service.env`, and that env var overrides `config.yaml` exactly as a
-  CLI flag would. Note `30-upgrade.yml` wipes that file on every upgrade, which
-  is why `token-file:` in `config.yaml` is the durable target.
-- **Keep the old token when you rotate.** Snapshots taken before a rotation
-  require it to restore.
+The token is no longer unmanaged: `token-file` / `agent-token-file` are rendered
+by `roles/k3s_config`, both join playbooks pick their source by role, and
+`ansible/playbooks/71-rotate-cluster-token.yml` is the runbook. The unit-ENV
+normalisation that used to be listed here as a precondition was done in
+`0b331fe` — `K3S_TOKEN=` in the agent `.env` was overriding `config.yaml`
+exactly as a CLI flag would.
 
-### 9. Decide: keep or remove Envoy Gateway's idle install
-Not urgent on its own, but it is what broke the k3s Traefik addon (580+
-crashloops: Gateway API CRDs installed without Helm ownership labels). The plan
-adopts Envoy Gateway, so the answer is probably "keep and finish it" — but if
-you would rather not, say so before I do the CRD ownership work.
+⚠️ **Two things that remain true.** Rotation does not erase history: `k3sblog`
+stays in the public git history permanently — that is the reason to rotate, not
+a side effect. And the **old token was archived deliberately**: etcd snapshots
+taken before the rotation cannot be restored without it.
+
+See [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md) and
+[CLUSTER-JOIN-HARDENING.md](CLUSTER-JOIN-HARDENING.md).
+
+### 9. ✅ DECIDED — keep Envoy Gateway
+
+This asked whether to keep or remove Envoy Gateway's then-idle install. It was
+kept and finished: v1.8.3 with Gateway API CRDs v1.5.1, four Gateways
+(`homelab`, `homelab-gated`, `homelab-tunnel`, `homelab-edge`) and a second
+controller in `gateway-edge` for the internet-facing data plane. No decision is
+outstanding; the section is kept only so the reasoning is not re-derived.
 
 ### 9b. DEFERRED BY DECISION 2026-08-03 — retire the old `pihole` PVC
 
@@ -911,12 +916,17 @@ kubectl -n dns        create job --from=cronjob/pihole-backup    pihole-backup-n
   `ContainerCreating` forever.
 - **A node being demoted loses its etcd snapshots** along with the rest of
   `/var/lib/rancher/k3s`. `45-change-node-role.yml` takes a fresh snapshot on a
-  peer first, but there is still no off-cluster backup (see §8 and the Velero
-  note in MODERNIZATION.md).
+  peer first, but there is still no off-cluster backup — see the backups warning
+  under the summary table in `MODERNIZATION.md`. (This used to cite "§8", which
+  is the token-rotation section and has never had anything to do with backups.)
 - **Never `kubectl patch` the QNAP StorageClasses.** They are chart-managed and
   `selfHeal` silently reverts imperative patches. Change them in git.
-- **Backups live on the same NAS as the data.** They cover driver bugs,
-  accidental deletion and bad restores. They do **not** cover the NAS failing.
+- 🔴 **There are no backups.** This used to say backups live on the same NAS as
+  the data. The CronJobs that produced them were deleted 2026-08-15 in favour of
+  a Velero deployment that never happened; there are zero CronJobs, zero
+  `ScheduledBackup`s and no `spec.backup` on either CNPG cluster. Deferred by
+  you 2026-08-31, re-confirmed 2026-09-06 — an accepted risk, not an oversight.
+  See the warning under the summary table in `MODERNIZATION.md`.
 
 ## Reaching the two-port TCP demo (ot-demo)
 
