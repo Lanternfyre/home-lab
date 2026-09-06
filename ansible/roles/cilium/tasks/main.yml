@@ -63,6 +63,8 @@
 # ── How much of the cluster is actually on Cilium right now? ─────────────────
 
 - name: "detect | nodes carrying the migration label"
+  # ⚠️ KEPT FOR DIAGNOSTICS, NO LONGER GATED ON. See the preflight below for
+  # why this label cannot mean what the gate used to assume.
   ansible.builtin.shell: >-
     set -o pipefail;
     kubectl get nodes
@@ -73,6 +75,50 @@
   register: cil_migrated
   changed_when: false
   check_mode: false
+
+# 🔴 THE REAL QUESTION: is Cilium the ACTIVE CNI on every node?
+#
+# Asked of the CNI config directory itself, because that is what containerd
+# reads when it creates a sandbox. Every other signal is a proxy:
+#   * the migration label says a PLAYBOOK ran, not what the node does now
+#   * a running cilium-agent says Cilium is installed, not that it owns the CNI
+#     -- during a migration both are true and flannel is still serving pods
+#
+# The directory is root-only on the node, but the cilium-agent pod mounts it at
+# /host/etc/cni/net.d, so this needs no sudo and no SSH -- consistent with this
+# playbook's "workstation-only" contract.
+#
+# A node is on Cilium when 05-cilium.conflist is present AND no other *.conflist
+# is active. Cilium renames what it displaces to *.cilium_bak, which does not
+# match, so a correctly-migrated node reports 0 foreign conflists.
+- name: "detect | nodes whose ACTIVE CNI conflist is Cilium"
+  # ⚠️ A LITERAL BLOCK (`|`), NOT A FOLDED ONE (`>-`), AND THAT IS LOAD-BEARING.
+  # In a folded scalar YAML keeps the newline on any line indented MORE than the
+  # first, so a wrapped `kubectl ... \n  -o jsonpath=...` becomes TWO commands.
+  # Written folded first, this reported "0 of 8 nodes serve 05-cilium.conflist"
+  # on a cluster where all 8 do -- a gate that fails closed on a lie is worse
+  # than no gate. Keep every statement on its own line and let bash read them.
+  ansible.builtin.shell: |
+    set -o pipefail
+    ok=0
+    foreign=0
+    for p in $(kubectl -n kube-system get pods -l k8s-app=cilium -o name); do
+      out=$(kubectl -n kube-system exec "${p#pod/}" -c cilium-agent -- ls /host/etc/cni/net.d/ 2>/dev/null | grep '\.conflist$' || true)
+      if echo "$out" | grep -q '^05-cilium\.conflist$'; then ok=$((ok + 1)); fi
+      n=$(echo "$out" | grep -v '^05-cilium\.conflist$' | grep -c '\.conflist$' || true)
+      foreign=$((foreign + n))
+    done
+    echo "$ok $foreign"
+  args:
+    executable: /bin/bash
+  register: cil_cni_owned
+  changed_when: false
+  check_mode: false
+
+- name: "detect | split that into two numbers"
+  ansible.builtin.set_fact:
+    cil_cni_ok: "{{ (cil_cni_owned.stdout | trim).split()[0] | int }}"
+    cil_cni_foreign: "{{ (cil_cni_owned.stdout | trim).split()[1] | int }}"
 
 - name: "detect | total nodes"
   ansible.builtin.shell: >-
@@ -105,21 +151,44 @@
 # exercised, because flannel does not implement NetworkPolicy at all. Doing
 # that while nodes are still on flannel ALSO risks dropping traffic between
 # migrated and unmigrated pods, which upstream warns about explicitly.
-- name: "preflight | refuse production values on a half-migrated cluster"
+# ⚠️ THIS GATE USED TO TEST THE MIGRATION LABEL, AND THAT WAS WRONG.
+#
+# It required every node to carry `io.cilium.migration/cilium-default`. That
+# label is written ONLY by playbooks/35-cilium-migrate.yml and never removed, so
+# it means "was migrated off flannel by that playbook" -- which a node that
+# JOINED STRAIGHT ONTO CILIUM can never satisfy, because it had nothing to
+# migrate. k8s-lab7 and k8s-edge1 are exactly that.
+#
+# The result: on 2026-09-06 the gate blocked EVERY run of this playbook,
+# including a no-op converge, on a cluster that was fully on Cilium. Measured
+# then: 2 of 8 nodes labelled, and all 8 serving 05-cilium.conflist. The label
+# test would have kept failing, and failing harder, as the fleet grows by fresh
+# joins -- so it taught the operator to reach for
+# `cilium_allow_partial_production=true`, which disables the half of this gate
+# that is actually load-bearing.
+#
+# It now tests what it always meant to: is Cilium the active CNI everywhere, and
+# is anything still addressed by flannel.
+- name: "preflight | refuse production values while any node is not on Cilium"
   ansible.builtin.fail:
     msg: >-
-      cilium_stage=production, but only {{ cil_migrated.stdout | trim }} of
-      {{ cil_nodes.stdout | trim }} nodes carry the migration label and
-      {{ cil_on_flannel.stdout | trim }} pods are still on
-      {{ cilium_flannel_cidr_prefix }}x. Production values enable policy
-      enforcement cluster-wide, and upstream is explicit that policy must stay
-      off while any pod is still on the old CNI. Finish
-      playbooks/35-cilium-migrate.yml first. Override with
-      -e cilium_allow_partial_production=true only if you know why.
+      cilium_stage=production, but the cluster is not fully on Cilium:
+      {{ cil_cni_ok }} of {{ cil_nodes.stdout | trim }} nodes serve
+      05-cilium.conflist, {{ cil_cni_foreign }} foreign *.conflist files are
+      still active, and {{ cil_on_flannel.stdout | trim }} pods are still
+      addressed by {{ cilium_flannel_cidr_prefix }}x. Production values enable
+      policy enforcement cluster-wide, and upstream is explicit that policy must
+      stay off while any pod is still on the old CNI. Finish
+      playbooks/35-cilium-migrate.yml first.
+      (Migration label, DIAGNOSTIC ONLY: {{ cil_migrated.stdout | trim }} of
+      {{ cil_nodes.stdout | trim }} nodes -- a low number here is NOT a fault
+      for nodes that joined straight onto Cilium.)
+      Override with -e cilium_allow_partial_production=true only if you know why.
   when:
     - cilium_stage == 'production'
     - not (cilium_allow_partial_production | bool)
-    - (cil_migrated.stdout | trim | int) < (cil_nodes.stdout | trim | int)
+    - (cil_cni_ok | int) < (cil_nodes.stdout | trim | int)
+      or (cil_cni_foreign | int) > 0
       or (cil_on_flannel.stdout | trim | int) > 0
 
 - name: "detect | version already deployed"
