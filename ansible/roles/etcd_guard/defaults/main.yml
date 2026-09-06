@@ -1,0 +1,43 @@
+---
+# What may reach etcd on a k3s SERVER, over the LAN.
+#
+# ⚠️ NOT A FIREWALL. `policy accept`, and the only rules match on the etcd
+# ports. Everything else on the node is untouched, which is what makes this
+# safe to apply to machines whose only management path is SSH -- the same shape
+# as roles/wg_guard, and for the same reason.
+#
+# ── What this closes, MEASURED 2026-09-06 from a plain LAN workstation ───────
+#
+#   192.168.33.{3,2,7}:2379  OPEN   etcd client API -- the whole datastore
+#   192.168.33.{3,2,7}:2380  OPEN   etcd peer API
+#
+# Any device on 192.168.32.0/23 could reach the datastore that IS the cluster.
+# The join token was rotated because it was published; this is the other half of
+# the same exposure, and it was never addressed.
+#
+# ── Who legitimately talks to them, also measured ───────────────────────────
+#
+# `ss -tn state established` on all three servers showed exactly one pattern:
+# 2380 between 192.168.33.2, .3 and .7 and nothing else, and NO established
+# connection to 2379 from anywhere on the LAN -- the apiserver reaches etcd over
+# loopback. So the allow-list is the servers themselves plus lo.
+#
+# ⚠️ THE PEERS ARE THE SERVERS' *LAN* ADDRESSES, not the API VIP. 192.168.32.2
+# floats between servers and is never an etcd peer source address; adding it
+# would be a rule that never matches and reads like it does something.
+etcd_guard_ports: [2379, 2380]
+
+# 🔴 2381 IS DELIBERATELY NOT IN THAT LIST, and it is still LAN-open.
+#
+# It carries etcd's Prometheus metrics, and `etcd-expose-metrics: true` was set
+# precisely so it would listen on 0.0.0.0 instead of loopback -- the ARC CI
+# WAL-fsync p99 canary in apps/prometheus/manifests/ci-guards.prometheusrule.yaml
+# depends on that scrape. Prometheus reaches it from a POD address
+# (10.245.0.0/16), not from a server, so closing 2381 needs the pod CIDR in the
+# allow-list, and getting that wrong silently kills the only etcd disk alert
+# this cluster has.
+#
+# Read-only metrics on the LAN is a much smaller exposure than the datastore.
+# Left open ON PURPOSE, recorded here rather than quietly omitted.
+
+etcd_guard_conf_path: /etc/nftables.d/etcd-guard.conf

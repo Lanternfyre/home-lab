@@ -1,0 +1,148 @@
+---
+# Restrict etcd's client and peer ports to the etcd members.
+#
+# ⚠️ SERVERS ONLY, and the role refuses anything else. An agent runs no etcd, so
+# this would install a table that can never match -- a file that reads like
+# protection and is not. Same guard shape as roles/wg_guard and
+# roles/edge_firewall, which are likewise scoped by an assert AND by the
+# playbook's `hosts:`.
+
+- name: "guard | refuse to run on anything that is not a k3s server"
+  ansible.builtin.assert:
+    that: inventory_hostname in (groups['k3s_servers'] | default([]))
+    fail_msg: >-
+      {{ inventory_hostname }} is not in k3s_servers. Only servers run etcd;
+      applying this elsewhere installs a table whose rules can never match, and
+      the next person to read the ruleset would believe that node was protected.
+
+- name: "guard | there must be at least one member to allow"
+  ansible.builtin.assert:
+    that: (groups['k3s_servers'] | default([]) | length) > 0
+    fail_msg: >-
+      k3s_servers is empty, so this would render a table that drops etcd traffic
+      from EVERY source including the other members -- quorum loss on the next
+      reload. Refusing.
+
+# ───────────────────────────── DETECT ─────────────────────────────
+
+- name: "detect | is the guard table already loaded?"
+  tags: [always]
+  become: true
+  ansible.builtin.command: "nft list table inet etcd_guard"
+  register: t_etcd_guard
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | report"
+  tags: [always]
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: etcd_guard
+      {{ 'loaded (' ~ (t_etcd_guard.stdout_lines | length) ~ ' lines)'
+         if t_etcd_guard.rc == 0 else 'ABSENT' }},
+      members allowed:
+      {{ groups['k3s_servers'] | map('extract', hostvars, 'ansible_host') | join(', ') }}
+
+# ───────────────────────────── REMEDIATE ─────────────────────────────
+
+- name: "fix | install nftables"
+  become: true
+  ansible.builtin.apt:
+    name: nftables
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: "fix | directory for the guard ruleset"
+  become: true
+  ansible.builtin.file:
+    path: "{{ etcd_guard_conf_path | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: "fix | write the guard ruleset"
+  become: true
+  ansible.builtin.template:
+    src: etcd-guard.conf.j2
+    dest: "{{ etcd_guard_conf_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+    # ⚠️ VALIDATED BEFORE IT REACHES DISK. `nft -c -f` parses without loading.
+    # This file is also loaded at boot by the unit below, so a broken ruleset
+    # that landed would break the node on REBOOT rather than now -- far worse,
+    # because nobody would connect the two events.
+    validate: "nft -c -f %s"
+  notify: reload etcd_guard
+
+- name: "fix | load the guard at boot"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/etcd-guard.service
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- roles/etcd_guard.
+      #
+      # Loads ONE nftables table. Deliberately not `nftables.service`, which
+      # loads /etc/nftables.conf wholesale -- a file these nodes do not have and
+      # must not gain, because loading it would flush the rules Cilium and
+      # kube-proxy program.
+      [Unit]
+      Description=Restrict etcd client and peer ports to the etcd members
+      After=network-pre.target
+      Wants=network-pre.target
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/nft -f {{ etcd_guard_conf_path }}
+      ExecStop=/usr/sbin/nft delete table inet etcd_guard
+      [Install]
+      WantedBy=multi-user.target
+  notify: reload systemd
+
+- name: "fix | enable it"
+  become: true
+  ansible.builtin.systemd:
+    name: etcd-guard
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: "flush | apply before verifying"
+  ansible.builtin.meta: flush_handlers
+
+# ───────────────────────────── VERIFY ─────────────────────────────
+
+- name: "verify | the table is live in the kernel"
+  become: true
+  ansible.builtin.command: "nft list table inet etcd_guard"
+  register: v_etcd_table
+  changed_when: false
+
+- name: "verify | assert the policy is ACCEPT, not drop"
+  ansible.builtin.assert:
+    that: v_etcd_table.stdout is search('policy accept')
+    fail_msg: >-
+      etcd_guard's input chain is not `policy accept`. On a control-plane node
+      that is a firewall where a targeted filter was intended, and the next
+      thing to fail will be your own SSH session. Fix it before anything else.
+    success_msg: "etcd_guard loaded, policy accept, {{ v_etcd_table.stdout_lines | length }} lines"
+
+- name: "verify | assert every member is still permitted"
+  ansible.builtin.assert:
+    that: "v_etcd_table.stdout is search(hostvars[item].ansible_host | regex_escape)"
+    fail_msg: >-
+      {{ hostvars[item].ansible_host }} ({{ item }}) is an etcd member but does
+      not appear in the live ruleset, so its peer traffic is being dropped.
+      Quorum is at risk RIGHT NOW.
+  loop: "{{ groups['k3s_servers'] }}"
+
+# ⚠️ THE REAL PROOF IS NOT HERE. A node reading back its own ruleset can be
+# right about the text and wrong about the effect, and it cannot test itself:
+# every packet it sends to its own port comes from lo or from a member address,
+# both of which are allowed. The check that matters runs from a NON-MEMBER LAN
+# host -- the workstation -- and lives in the second play of
+# playbooks/63-etcd-guard.yml, the same split roles/edge_firewall uses.

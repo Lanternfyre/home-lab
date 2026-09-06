@@ -1,0 +1,112 @@
+---
+# Restrict etcd's client and peer ports to the etcd members.
+#
+#   ansible-playbook playbooks/63-etcd-guard.yml --ask-become-pass
+#
+# ⚠️ ROLL IT ONE NODE AT A TIME THE FIRST TIME:
+#   ansible-playbook playbooks/63-etcd-guard.yml --ask-become-pass --limit k8s-3.home
+#
+# Take a NON-VOTING member first if you can. Nothing here is rendered from the
+# fleet's collective state, so a partial run leaves the other servers exactly as
+# they were.
+#
+# ── What this closes ────────────────────────────────────────────────────────
+# Measured from a plain LAN workstation on 2026-09-06, before this existed:
+#
+#   192.168.33.3:2379  OPEN      192.168.33.3:2380  OPEN
+#   192.168.33.2:2379  OPEN      192.168.33.2:2380  OPEN
+#   192.168.33.7:2379  OPEN      192.168.33.7:2380  OPEN
+#
+# Any device on 192.168.32.0/23 could open the etcd client API -- the datastore
+# that IS the cluster. CLUSTER-JOIN-HARDENING.md recorded this as open and
+# independent of the edge node, and nothing had addressed it.
+#
+# ── Who actually needs them, also measured ──────────────────────────────────
+# `ss -tn state established` on all three servers: 2380 only ever between
+# 192.168.33.2, .3 and .7; NO established connection to 2379 from any LAN
+# address, because the apiserver reaches etcd over loopback.
+#
+# ── serial: 1, and it matters more here than anywhere else ──────────────────
+# These are the etcd members. A ruleset that drops peer traffic costs quorum,
+# and quorum loss on all three at once is a restore-from-snapshot event. One at
+# a time means a mistake costs one member, which the cluster survives.
+- name: Restrict etcd to its own members
+  hosts: k3s_servers
+  serial: 1
+  any_errors_fatal: true
+  gather_facts: true
+  tags: [etcd-guard]
+
+  roles:
+    - role: etcd_guard
+
+  post_tasks:
+    # 🔴 QUORUM GATE BETWEEN NODES. Without this a bad ruleset would be applied
+    # to the second and third members before anyone noticed the first had left
+    # the cluster.
+    - name: "gate | etcd still has full membership before moving on"
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        k3s kubectl get nodes
+        -l node-role.kubernetes.io/etcd=true
+        --no-headers 2>/dev/null | grep -c ' Ready'
+      args:
+        executable: /bin/bash
+      register: etcd_ready
+      changed_when: false
+      retries: 12
+      delay: 10
+      until: (etcd_ready.stdout | trim | int) == (groups['k3s_servers'] | length)
+      become: true
+
+    - name: "gate | report"
+      ansible.builtin.debug:
+        msg: >-
+          {{ etcd_ready.stdout | trim }}/{{ groups['k3s_servers'] | length }}
+          etcd members Ready after guarding {{ inventory_hostname }}.
+
+# ── THE PROOF THE MEMBERS CANNOT GIVE ───────────────────────────────────────
+# A server cannot test this rule against itself: every packet it sends to its
+# own etcd port arrives from lo or from a member address, and both are allowed.
+# The only honest check is from a NON-MEMBER host on the same LAN. Same split as
+# 61-edge-firewall.yml and 62-wg-guard.yml, for the same reason.
+- name: Prove from a non-member LAN host that etcd is closed
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  any_errors_fatal: true
+  tags: [etcd-guard, verify]
+
+  tasks:
+    - name: "verify | etcd client and peer ports must NOT answer from the LAN"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item.0].ansible_host }}"
+        port: "{{ item.1 }}"
+        state: stopped
+        timeout: 6
+      loop: "{{ groups['k3s_servers'] | product([2379, 2380]) | list }}"
+      loop_control:
+        label: "{{ hostvars[item.0].ansible_host }}:{{ item.1 }} must be closed"
+
+    # ⚠️ THE CHECK THAT CATCHES OVER-TIGHTENING. 2381 carries etcd's metrics and
+    # is deliberately NOT guarded -- Prometheus scrapes it from a pod address,
+    # and the ARC CI WAL-fsync canary depends on that scrape. If this starts
+    # failing, someone added 2381 to etcd_guard_ports without adding the pod
+    # CIDR to the allow-list, and the etcd disk alerting is now silent.
+    - name: "verify | 2381 (metrics) must STILL answer -- it is not ours to close"
+      ansible.builtin.wait_for:
+        host: "{{ hostvars[item].ansible_host }}"
+        port: 2381
+        state: started
+        timeout: 6
+      loop: "{{ groups['k3s_servers'] }}"
+      loop_control:
+        label: "{{ hostvars[item].ansible_host }}:2381 must stay open"
+
+    - name: "verify | report"
+      ansible.builtin.debug:
+        msg: >-
+          etcd proven closed from a non-member LAN host: 2379 and 2380 refuse on
+          every member, 2381 (metrics) still answers. The members reach each
+          other over 2380 and the apiserver over loopback, neither of which this
+          host can observe -- the quorum gate above is what covers those.
