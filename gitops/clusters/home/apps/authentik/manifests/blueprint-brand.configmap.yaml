@@ -12,11 +12,11 @@
 #
 # ── It UPDATES the existing brand, it does not add one ──────────────────────
 # Checked against the live instance before writing: there is exactly ONE brand,
-# `authentik-default`, `default: true`, title "authentik", with an empty custom
-# CSS field. `identifiers.domain` below matches it, so this blueprint takes
-# ownership of that row. Using any other domain would create a SECOND brand
-# that never matches a request, and the login page would look untouched with
-# the blueprint reporting success.
+# `authentik-default`, `default: true`, with an empty custom CSS field.
+# `identifiers.domain` below matches it, so this blueprint takes ownership of
+# that row. Using any other domain would create a SECOND brand that never
+# matches a request, and the login page would look untouched with the blueprint
+# reporting success.
 #
 # ── Field names are from the live model, not from the docs ──────────────────
 # The documentation lists UI labels ("Custom CSS"), not API fields. These came
@@ -36,6 +36,26 @@
 # ⚠️ Editing the brand in the admin UI is NOT the way. The blueprint reasserts
 # on every apply and will silently revert it -- the same "I changed it and it
 # went back" trap as patching a chart-managed resource.
+#
+# ── How this CSS actually reaches the page ──────────────────────────────────
+# Verified by rendering the live page in a headless browser, not assumed.
+# `branding_custom_css` is emitted TWICE: once as `<style data-id="brand-css">`
+# in <head>, and once as a constructed stylesheet pushed onto
+# `adoptedStyleSheets` of every authentik web component's shadow root. Three
+# consequences drive everything below:
+#
+#   1. Adopted sheets come LAST in the cascade, so these rules beat authentik's
+#      own component styles on a specificity tie. No `!important` is needed.
+#   2. Selectors must be written for the shadow root they land in -- there is
+#      no document-wide tree. `.pf-c-login__footer .pf-c-list` cannot work: the
+#      footer is in <ak-flow-executor>'s shadow root and the list is slotted
+#      light DOM. Each is styled where it actually lives.
+#   3. The <head> copy is the only one that is document-scoped, which is what
+#      makes @font-face and the `body::before` rule below work at all.
+#
+# The class names are PatternFly 4 (`.pf-c-*`) as rendered by 2026.8.0, read
+# off the live DOM. If an upgrade moves to `.pf-v5-c-*` this file goes inert
+# and the page falls back to stock authentik -- it will look wrong, not break.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -45,97 +65,421 @@ data:
   brand.yaml: |
     version: 1
     metadata:
-      name: brand-techyon
+      name: brand-lanternfyre
     entries:
       - model: authentik_brands.brand
         identifiers:
           domain: authentik-default
         attrs:
-          branding_title: "techyon"
+          branding_title: "Lanternfyre"
+
+          # ⚠️ `branding_default_flow_background` is NOT set here. The
+          # obvious move -- blanking it so the stock mountain photo stops
+          # being referenced -- is rejected by the serializer:
+          #   Serializer errors {'branding_default_flow_background':
+          #     [ErrorDetail(string='This field may not be blank.')]}
+          # and a rejected entry fails the WHOLE blueprint, taking the theme
+          # with it. The photo is removed in CSS instead; see body::before.
 
           # ── The theme ───────────────────────────────────────────────────
-          # Deliberately SHORT. This is a first look, meant to be edited --
-          # every value worth changing is a variable at the top, and the rules
-          # below only reference those. Restyling means editing five lines,
-          # not hunting through selectors.
-          #
-          # ⚠️ Written without being rendered. authentik is PatternFly-based
-          # and these are its class names; if a selector misses, the page
-          # falls back to stock authentik rather than breaking. Look at it
-          # before assuming it landed.
+          # Every colour worth changing is a variable at the top; the rules
+          # below only reference those. Restyling means editing the block, not
+          # hunting through selectors.
           branding_custom_css: |
+            /* Manrope for UI, Lora for the headline -- the two faces the
+               design calls for. These are the `latin` subsets Google Fonts
+               serves today; Manrope is a variable font, hence one @font-face
+               for the whole weight range. The fonts are fetched by the
+               VISITOR'S browser, not by the pod, so the authentik egress
+               policy is not involved. A client with no route to
+               fonts.gstatic.com falls back to the stacks below and the page
+               is still correct, just less distinctive. */
+            @font-face {
+              font-family: 'Manrope';
+              font-style: normal;
+              font-weight: 200 800;
+              font-display: swap;
+              src: url(https://fonts.gstatic.com/s/manrope/v20/xn7gYHE41ni1AdIRggexSg.woff2) format('woff2');
+            }
+            @font-face {
+              font-family: 'Lora';
+              font-style: normal;
+              font-weight: 400 700;
+              font-display: swap;
+              src: url(https://fonts.gstatic.com/s/lora/v37/0QI6MX1D_JOuGQbT0gvTJPa787zAvBJBkq0.woff2) format('woff2');
+            }
+
             :host,
             :root {
-              --ak-accent:      #5eead4;
-              --ak-bg-deep:     #0b0f14;
-              --ak-bg-raised:   #111820;
-              --ak-border:      #1f2b36;
-              --ak-text:        #e6edf3;
-              --ak-text-muted:  #8b9aa8;
-              --ak-radius:      14px;
+              --lf-bg:      #2a1e3f;  /* the plum field behind the card */
+              --lf-card:    #f4ecf1;  /* the card itself                */
+              --lf-ink:     #2b2038;  /* body text on the card          */
+              --lf-muted:   #6f6280;  /* subtitle, placeholder          */
+              --lf-label:   #4a3d5c;  /* field labels                   */
+              --lf-line:    #d9c9d8;  /* input + secondary button edge  */
+              --lf-rule:    #e3d6e2;  /* the "or" divider               */
+              --lf-accent:  #e0862e;  /* focus ring, button base        */
+              --lf-onbg:    #e9dcf0;  /* text ON the plum field         */
+              --lf-radius:  24px;
+
+              --ak-sans: Manrope, "Helvetica Neue", Arial, sans-serif;
+              --pf-global--FontFamily--sans-serif: var(--ak-sans);
+              --pf-global--FontFamily--redhat-updated--sans-serif: var(--ak-sans);
+              --pf-global--FontFamily--heading--sans-serif: var(--ak-sans);
             }
 
-            /* The page behind the card: near-black, with one soft accent
-               bloom so it is not a flat rectangle. */
-            .pf-c-background-image,
+            :host,
+            .pf-c-login,
+            .pf-c-form,
+            .pf-c-button,
+            .pf-c-form-control { font-family: var(--ak-sans); }
+
+            /* ── The field behind the card ─────────────────────────────── */
             .pf-c-login {
-              background: radial-gradient(
-                            900px 520px at 50% -10%,
-                            rgba(94, 234, 212, 0.10),
-                            transparent 70%),
-                          var(--ak-bg-deep);
+              min-height: 100vh;
+              color: var(--lf-ink);
+              background-color: var(--lf-bg);
+              background-image:
+                radial-gradient(70% 55% at 50% 100%, rgba(240, 150, 60, .35), transparent 70%),
+                radial-gradient(50% 40% at 50%   0%, rgba(150, 120, 200, .25), transparent 70%);
             }
-            .pf-c-background-image::before { display: none; }
 
-            /* The card. Raised, softly bordered, no hard drop shadow. */
+            /* ⚠️ This one line is what removes the stock mountain photo,
+               and there is no other way to do it. The photo is painted by
+               `body::before`, not by any class. Overriding
+               --ak-global--background-image does not reach it: a second
+               <style> sets that variable on :root AFTER this stylesheet, so
+               it wins. And the brand field that would stop the image being
+               referenced at all cannot be blanked (see the note on
+               branding_default_flow_background above). So: the document-scoped
+               copy of this CSS blanks the pseudo-element. Verified by
+               rendering -- with this rule the photo is gone, without it the
+               plum gradient never shows. */
+            body::before { background-image: none; }
+
+            /* ── Wordmark, top left ────────────────────────────────────── */
+            /* ⚠️ <ak-locale-select> is a SIBLING of the header, not a child of
+               it -- it is the first cell of the .pf-c-login grid, which is why
+               it sits top-left and no amount of alignment on the header moves
+               it. Lifted out of flow and pinned top-right so the wordmark has
+               the corner the design gives it. */
+            .pf-c-login { position: relative; }
+            /* `left: auto` is not redundant: authentik already pins this to
+               `left: 16px`, and setting only `right` leaves BOTH edges bound,
+               which stretches the element across the page and parks its
+               content back on the left. */
+            .pf-c-login ak-locale-select {
+              position: absolute;
+              top: 20px;
+              left: auto;
+              right: 44px;
+              z-index: 1;
+            }
+
+            .pf-c-login__header {
+              position: relative;
+              display: flex;
+              justify-content: flex-end;
+              align-items: center;
+              padding-inline: 56px;
+              min-height: 44px;
+            }
+            .pf-c-login__header::before {
+              content: "Lanternfyre";
+              position: absolute;
+              left: 56px;
+              top: 50%;
+              transform: translateY(-50%);
+              font-family: Lora, Georgia, serif;
+              font-size: 20px;
+              font-weight: 600;
+              letter-spacing: .02em;
+              color: var(--lf-onbg);
+            }
+
+            /* ── The card ──────────────────────────────────────────────── */
             .pf-c-login__main {
-              background: var(--ak-bg-raised);
-              border: 1px solid var(--ak-border);
-              border-radius: var(--ak-radius);
-              box-shadow: 0 18px 50px rgba(0, 0, 0, 0.55);
+              max-width: 460px;
+              margin: 0 auto;
+              background: var(--lf-card);
+              border: none;
+              border-radius: var(--lf-radius);
+              box-shadow: 0 30px 80px rgba(20, 10, 40, .5),
+                          0 0 0 1px rgba(255, 255, 255, .08);
+              padding-bottom: 12px;
               overflow: hidden;
             }
             .pf-c-login__main-header,
             .pf-c-login__main-body,
             .pf-c-login__main-footer { background: transparent; }
 
-            .pf-c-title,
-            .pf-c-login__main-header-desc { color: var(--ak-text); }
-            .pf-c-form__label-text { color: var(--ak-text-muted); }
-
-            /* Inputs: flat, and the accent appears only on focus so the form
-               reads calm until you are actually in it. */
-            .pf-c-form-control {
-              background: #0d141b;
-              border: 1px solid var(--ak-border);
-              border-radius: 10px;
-              color: var(--ak-text);
+            /* ── The mark ──────────────────────────────────────────────── */
+            /* ⚠️ This is drawn in CSS instead of being set as the brand's
+               logo, and that is not a stylistic choice -- `branding_logo`
+               REFUSES anything but a bare file path:
+                 ErrorDetail('File name can only contain letters (a-z, A-Z),
+                 numbers (0-9), dots (.), hyphens (-), underscores (_),
+                 forward slashes (/), and the placeholder %(theme)s')
+               which rules out both a `data:` URI and an https:// URL. The only
+               paths it would accept are inside the container image or the
+               media volume, i.e. not in git. So the stock authentik wordmark
+               is hidden and the Lanternfyre mark is painted as a background on
+               the header that held it. The same restriction applies to
+               `branding_favicon`, and CSS cannot reach a favicon -- the browser
+               tab therefore keeps authentik's icon. That is the one piece of
+               the design this file cannot deliver.
+               Source: the Lanternfyre org avatar,
+               https://avatars.githubusercontent.com/u/270296815 -- inlined so
+               the login page makes no third-party request and the mark cannot
+               rot when the avatar is changed. Re-encoded to 192px WebP, which
+               is what keeps it to 13 KB rather than 69 KB of PNG. To replace:
+                 magick new.png -resize 192x192 -quality 88 new.webp
+                 printf 'data:image/webp;base64,%s' "$(base64 -w0 new.webp)" */
+            .pf-c-login__main-header.pf-c-brand {
+              justify-content: center;
+              padding: 40px 44px 4px;
             }
+            /* Qualified by the header, not bare: `img.branding-logo` alone
+               loses to authentik's own rule and the stock wordmark keeps
+               rendering next to the mark. */
+            .pf-c-login__main-header.pf-c-brand img.branding-logo {
+              display: none;
+            }
+            .pf-c-login__main-header.pf-c-brand::before {
+              content: "";
+              display: block;
+              width: 96px;
+              height: 96px;
+              border-radius: 50%;
+              box-shadow: 0 8px 24px rgba(60, 30, 90, .25);
+              background-size: cover;
+              background-position: center;
+              background-image: url("data:image/webp;base64,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");
+            }
+
+            /* ── Headline and subtitle ─────────────────────────────────── */
+            /* This header is `display: grid` in stock authentik, which lays
+               the title and the pseudo-element out side by side. Block, so
+               they stack. */
+            .pf-c-login__main-header:has(.pf-c-title) {
+              display: block;
+              text-align: center;
+              padding: 4px 44px 0;
+            }
+            .pf-c-title.pf-m-3xl {
+              font-family: Lora, Georgia, serif;
+              font-size: 30px;
+              font-weight: 600;
+              letter-spacing: -.01em;
+              color: var(--lf-ink);
+            }
+            /* authentik renders no subtitle element, so there is nothing to
+               restyle -- it is drawn. Decorative only; the headline itself
+               stays a real <h1> set from the flow.
+               ⚠️ The wording is deliberately NOT "Sign in to your Lanternfyre
+               account", which is what the design asks for. This header lives
+               in <ak-flow-card>, which every stage of every flow reuses, and
+               its host carries no attribute naming the stage -- so this line
+               also appears under "Authorize Application" on the OIDC consent
+               screen that Grafana and ArgoCD users see, under the MFA prompt,
+               and under password recovery. There is no CSS hook to scope it
+               to the login screen, so it has to read true on all of them. */
+            .pf-c-login__main-header:has(.pf-c-title)::after {
+              content: "Lanternfyre single sign-on";
+              display: block;
+              margin-top: 6px;
+              font-size: 15px;
+              font-weight: 400;
+              color: var(--lf-muted);
+            }
+
+            /* ── Form ──────────────────────────────────────────────────── */
+            /* Both the body and the footer are given the card's inset --
+               the footer needs it too, or the "or" rule below spans the full
+               card width and runs out past the buttons it divides. */
+            .pf-c-login__main-body   { padding: 8px 44px 0; }
+            .pf-c-login__main-footer { padding: 0 44px 8px; }
+            .pf-c-form__label .pf-c-form__label-text {
+              font-size: 13px;
+              font-weight: 600;
+              color: var(--lf-label);
+            }
+            /* ⚠️ Not redundant. The card is cream in BOTH viewer themes, so
+               its text must stay dark -- but when the visitor's OS is in dark
+               mode authentik stamps theme="dark" on the stage host and a
+               :host([theme="dark"]) rule repaints this label near-white. Being
+               adopted last is not enough against it; only the matching host
+               qualifier outranks it. Everything else on the card already
+               carries the specificity to survive dark mode -- verified by
+               rendering with prefers-color-scheme: dark, which is the only way
+               to catch this: the light render looks perfect either way. */
+            :host([theme="dark"]) .pf-c-form__label .pf-c-form__label-text {
+              color: var(--lf-label);
+            }
+            /* ⚠️ `input`, not a bare class. This stylesheet is adopted into
+               EVERY authentik surface, admin UI included, and
+               `.pf-c-form-control` is also worn by <textarea> and <select> --
+               a bare rule would give every expression-policy editor a 48px
+               tall textarea. Colour and radius are safe to share; a fixed
+               height is not. */
+            .pf-c-form-control {
+              background: #fff;
+              border: 1px solid var(--lf-line);
+              border-radius: 12px;
+              color: var(--lf-ink);
+            }
+            input.pf-c-form-control {
+              height: 48px;
+              padding: 0 14px;
+              font-size: 15px;
+            }
+            .pf-c-form-control::placeholder { color: var(--lf-muted); opacity: .55; }
             .pf-c-form-control:focus {
-              border-color: var(--ak-accent);
-              box-shadow: 0 0 0 3px rgba(94, 234, 212, 0.15);
+              border-color: var(--lf-accent);
+              box-shadow: 0 0 0 3px rgba(224, 134, 46, .22);
               outline: none;
             }
+            .pf-c-form__group.pf-m-action { margin-top: 8px; }
 
-            /* One accent element on the page: the primary button. */
+            /* ── Buttons ───────────────────────────────────────────────── */
             .pf-c-button.pf-m-primary {
-              background: var(--ak-accent);
-              border: none;
-              border-radius: 10px;
-              color: #04231f;
-              font-weight: 600;
-              letter-spacing: 0.01em;
+              height: 50px;
+              border: 0;
+              border-radius: 12px;
+              background: linear-gradient(180deg, #f0a23a, #dd6a22);
+              color: #2b1a10;
+              font-size: 15px;
+              font-weight: 700;
+              box-shadow: 0 8px 20px rgba(224, 134, 46, .35);
               transition: filter 120ms ease, transform 120ms ease;
             }
-            .pf-c-button.pf-m-primary:hover { filter: brightness(1.08); }
+            .pf-c-button.pf-m-primary:hover  { filter: brightness(1.05); }
             .pf-c-button.pf-m-primary:active { transform: translateY(1px); }
+            .pf-c-button.pf-m-link { color: #b5541c; font-weight: 600; }
 
-            .pf-c-button.pf-m-link { color: var(--ak-accent); }
-
-            /* The "Log in with Google" style source buttons. */
-            .pf-c-login__main-footer-links-item > button,
-            .pf-c-login__main-footer-links-item > a {
-              background: #0d141b;
-              border: 1px solid var(--ak-border);
-              border-radius: 10px;
+            /* ⚠️ The identity-source buttons ("Continue with Google") are
+               rendered `pf-m-primary` too -- stock authentik gives the
+               federated login the same weight as the password submit. They
+               must read as the second choice, so this rule needs the extra
+               class to outrank the block above. */
+            .pf-c-button.pf-m-primary.source-button {
+              height: 46px;
+              background: #fff;
+              border: 1px solid var(--lf-line);
+              color: var(--lf-ink);
+              font-size: 14px;
+              font-weight: 600;
+              box-shadow: none;
             }
+            .pf-c-button.pf-m-primary.source-button:hover {
+              border-color: #b9a5c0;
+              filter: none;
+            }
+
+            /* The "or" rule above them. Drawn with both pseudo-elements --
+               the line and the label -- because a border on the fieldset is
+               overridden by a logical-property rule further up authentik's
+               own cascade. */
+            /* Qualified by :has() so the divider is drawn only for a fieldset
+               that actually contains identity-source buttons -- the class
+               itself is generic and this stylesheet reaches every flow. */
+            .ak-c-fieldset:has(.source-button) {
+              position: relative;
+              border: 0;
+              margin: 14px 0 0;
+              padding: 26px 0 0;
+            }
+            .ak-c-fieldset:has(.source-button)::after {
+              content: "";
+              position: absolute;
+              top: 10px;
+              left: 0;
+              right: 0;
+              height: 1px;
+              background: var(--lf-rule);
+            }
+            .ak-c-fieldset:has(.source-button)::before {
+              content: "or";
+              position: absolute;
+              top: 10px;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              padding: 0 12px;
+              background: var(--lf-card);
+              color: #a496ad;
+              font-size: 12px;
+              z-index: 1;
+            }
+
+            /* ── Phones ────────────────────────────────────────────────── */
+            /* The desktop gutters (56px) plus a 460px card overflow a 390px
+               viewport -- the card's rounded corners get cut off at both
+               edges. The wordmark goes with them: at this width the language
+               picker is already pinned into the same corner, and the mark and
+               title inside the card carry the branding perfectly well. */
+            @media (max-width: 600px) {
+              .pf-c-login ak-locale-select { top: 12px; right: 16px; }
+              .pf-c-login__header::before { display: none; }
+              .pf-c-login__header { padding-inline: 16px; }
+              .pf-c-login__footer.pf-m-dark { padding-inline: 24px; }
+              .pf-c-login__main { margin: 0 16px; }
+              .pf-c-login__main-header.pf-c-brand { padding: 28px 24px 4px; }
+              .pf-c-login__main-header:has(.pf-c-title) { padding-inline: 24px; }
+              .pf-c-login__main-body   { padding-inline: 24px; }
+              .pf-c-login__main-footer { padding-inline: 24px; }
+            }
+
+            /* ── Footer ────────────────────────────────────────────────── */
+            /* Two halves in two trees: the <footer> is in the flow executor's
+               shadow root, the <ul> inside it is slotted LIGHT DOM and so is
+               reached by the document-scoped copy of this stylesheet. Hence
+               two rules that look like they should be one. */
+            .pf-c-login__footer.pf-m-dark {
+              display: flex;
+              justify-content: flex-start;
+              align-items: flex-start;
+              text-align: left;
+              padding-inline: 56px;
+            }
+            /* The <ul> is a grid that centres its items; flex is what makes
+               `justify-content` actually pull them to the start. */
+            ak-brand-links .pf-c-list.pf-m-inline {
+              display: flex;
+              justify-content: flex-start;
+              margin: 0;
+            }
+            ak-brand-links .pf-c-list.pf-m-inline,
+            ak-brand-links .pf-c-list.pf-m-inline li,
+            ak-brand-links .pf-c-list.pf-m-inline a {
+              font-size: 12px;
+              font-weight: 600;
+              letter-spacing: .08em;
+              text-transform: uppercase;
+              color: rgba(233, 220, 240, .55);
+              text-decoration: none;
+            }
+
+      # ── The headline is a FLOW field, not a brand field ────────────────
+      # "Welcome to authentik!" is `title` on the default authentication flow.
+      # Setting it here keeps it a real, translatable <h1> rather than CSS
+      # `content:` text.
+      #
+      # ⚠️ authentik's own system blueprint
+      # (/blueprints/default/flow-default-authentication-flow.yaml) also sets
+      # this title, and re-imports itself when the file hash changes -- i.e.
+      # on an authentik UPGRADE. When that happens the headline reverts to
+      # "Welcome to authentik!" and STAYS reverted, because this blueprint is
+      # only re-imported when ITS content changes. There is no fight, no flap;
+      # it just quietly goes back. To detect and fix:
+      #
+      #   kubectl -n authentik exec deploy/authentik-server -- ak shell -c \
+      #     "from authentik.flows.models import Flow; \
+      #      print(Flow.objects.get(slug='default-authentication-flow').title)"
+      #
+      # and if it reads "Welcome to authentik!", change anything in this file
+      # (a comment will do) and let ArgoCD re-sync.
+      - model: authentik_flows.flow
+        identifiers:
+          slug: default-authentication-flow
+        attrs:
+          title: "Light the way in"
