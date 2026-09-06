@@ -19,20 +19,46 @@
 # digest, and a chart cannot supply that for you -- a tag is the chart's job,
 # the digest is the estate's. Resolved from the registry 2026-09-06.
 #
-# ⚠️ appVersion 0.46.0 is materially behind upstream NetBird (0.78.1). Kept at
-# the version the chart's templates were written against. The 0.78.1 digests,
-# so nobody re-derives them when the fork catches up:
-#   management  sha256:e114d2c8e699da19a05678c0600b821c59587541c404ac550cc062b96c3d3f54
-#   signal      sha256:ebc42056ce135b5163554fad47c5b1456673e7132dc4fad9f9cc34d84c70feb4
-#   relay       sha256:d5df6e3fe802734164fbe81d814d4575d7c29b29f9e03c95b49f18c10efd7958
-#   client      sha256:5025865661882adc6ef2ea125de5d2b9f1a298fb67da990ab180ef55dddfeadb
+# 🔴 0.78.1, AND THE UPGRADE FROM 0.46.0 WAS FORCED BY THE RELAY WIRE
+# PROTOCOL -- IT IS NOT HOUSEKEEPING.
+#
+# 0.46.0 was "materially behind, kept at the version the templates were written
+# against", which read like an acceptable debt. It was not: a current client
+# CANNOT USE A 0.46.0 RELAY AT ALL. Measured 2026-09-06 with an Android client
+# on 0.71.0, in the relay's own log, once every ~4 seconds:
+#
+#   relay/server/peer.go:89: failed to determine message type: invalid msg
+#   type 8
+#
+# The client connects over the WebSocket, sends a frame type the old server has
+# never heard of, and the server drops it. On the peer side that surfaces as
+#
+#   Relay is not supported by remote peer
+#   OnRemoteOffer, on status ICE: Disconnected, status Relay: Connected
+#
+# -- "Relay: Connected" is the peer's own link to the relay, so it looks fine.
+# With Stuns/Turns empty by decision there is no ICE fallback, so no relay
+# means NO DATA PATH AT ALL, and the handshake loops forever while both peers
+# report as connected in the dashboard.
+#
+# ⚠️ THE SYMPTOM POINTS AT ROUTING, NOT VERSIONS. Peers enrol, management and
+# signal work, the dashboard lists everything as connected, and nothing passes
+# traffic -- which sends you to network policy and NetBird routes. It is the
+# relay server being 32 releases behind the client.
+#
+# ⚠️ Client versions are NOT under this repo's control. Phones update
+# themselves, so the server side must stay current or it breaks on someone
+# else's release schedule. Treat a NetBird version bump as maintenance with a
+# deadline, not as optional.
+#
+# All four digests re-verified against the live registry before this landed.
 
 global:
   namespace: netbird
 
 management:
   image:
-    tag: "0.46.0@sha256:b0adc4ad4ec6e3394c1f3e13680b7a8bbb1eeefddd1733cf658862e39468e062"
+    tag: "0.78.1@sha256:e114d2c8e699da19a05678c0600b821c59587541c404ac550cc062b96c3d3f54"
   # 🔴 WITHOUT THIS, EVERY gRPC CALL IS A 500 WHILE REST KEEPS WORKING.
   #
   # Measured from the public internet before this landed:
@@ -160,7 +186,7 @@ management:
 
 signal:
   image:
-    tag: "0.46.0@sha256:e8f39261115233c05098d0a0ced33d13e77bdefb32f93505d238a7bf979fa80d"
+    tag: "0.78.1@sha256:ebc42056ce135b5163554fad47c5b1456673e7132dc4fad9f9cc34d84c70feb4"
   # Signal is gRPC and nothing else, so this is unconditional.
   service:
     appProtocol: kubernetes.io/h2c
@@ -171,7 +197,7 @@ relay:
   # h2c. Declaring it would break the upgrade handshake while looking like the
   # same hardening applied to its neighbours.
   image:
-    tag: "0.46.0@sha256:d32f82514a24b9582fe04d3e6e4cbaa9d5a9efcbf31234fd3ff289971e0bfe0e"
+    tag: "0.78.1@sha256:d5df6e3fe802734164fbe81d814d4575d7c29b29f9e03c95b49f18c10efd7958"
   # 🔴 `exposed address is required` -- the relay refuses to start without it,
   # and it is the one value that CANNOT be defaulted in the chart, because only
   # this repo knows the public endpoint. `rels://` is the TLS scheme; the path
@@ -207,7 +233,7 @@ routingPeer:
   managementURL: "https://vpn.techyon.dev"
   hostname: "cluster-routing-peer"
   image:
-    tag: "0.46.0-rootless@sha256:4ee5b2b090a04e6df203b78f9fe29e40db0ab2b275267bde0af7a18ea1286801"
+    tag: "0.78.1-rootless@sha256:5025865661882adc6ef2ea125de5d2b9f1a298fb67da990ab180ef55dddfeadb"
   setupKeySecret:
     name: netbird-setup-key
     key: setup-key
