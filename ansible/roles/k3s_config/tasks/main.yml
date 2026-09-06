@@ -106,6 +106,43 @@
     group: root
     mode: "0600"
 
+
+# 🔴 K3S_TOKEN IN THE UNIT ENV OVERRIDES config.yaml, so writing token-file
+# above changes NOTHING while this line survives. Measured on edge-1 after the
+# first re-key: /etc/rancher/k3s/token existed, 0600, correct contents -- and
+# `grep -c K3S_TOKEN <unit>.service.env` still returned 1, so the node was
+# still authenticating with the old value.
+#
+# That is the whole "unit normalisation is a precondition" argument from
+# CLUSTER-TOKEN.md, made concrete: the precondition is this env file, NOT
+# ExecStart (which carries no arguments at all).
+#
+# ⚠️ Only runs when we are deliberately managing the token. A node that already
+# joined keeps running either way -- it holds client certificates, not the
+# token -- so stripping this is safe on a live node and only changes what it
+# would use if it ever re-registered.
+#
+# ⚠️ The k3s installer REGENERATES this file on every upgrade, so this is not a
+# one-time fix. It belongs in the role, and 30-upgrade.yml will need it applied
+# again afterwards.
+- name: "token | strip K3S_TOKEN from the unit env, or token-file is inert"
+  become: true
+  when: k3s_token_value is defined
+  ansible.builtin.lineinfile:
+    path: "/etc/systemd/system/{{ k3s_unit }}.service.env"
+    regexp: '^K3S_TOKEN='
+    state: absent
+  register: k3s_env_stripped
+
+- name: "token | say plainly that a restart is needed to pick that up"
+  ansible.builtin.debug:
+    msg: >-
+      K3S_TOKEN removed from {{ k3s_unit }}.service.env on
+      {{ inventory_hostname }}. config.yaml's token-file is authoritative only
+      after k3s restarts -- this role never restarts, by design. The calling
+      serial:1 play does it.
+  when: k3s_env_stripped.changed | default(false)
+
 - name: Back up the k3s unit env before any installer run
   ansible.builtin.fetch:
     src: "/etc/systemd/system/{{ k3s_unit }}.service.env"
