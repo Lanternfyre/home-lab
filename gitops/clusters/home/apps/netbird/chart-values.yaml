@@ -80,6 +80,37 @@ management:
     enabled: true
     size: 1Gi
   envRaw:
+    # 🔴 WITHOUT THIS, MANAGEMENT 0.78.1 EXITS FATALLY AT STARTUP IN A
+    # NAMESPACE WITH DEFAULT-DENY EGRESS.
+    #
+    # 0.78.1 initialises a geolocation service that DOWNLOADS a GeoLite2
+    # database on boot. `netbird-containment` permits egress to DNS, this
+    # namespace, authentik and vpn.techyon.dev -- and nothing else -- so the
+    # fetch hangs until it times out and the process calls log.Fatalf:
+    #
+    #   FATL could not initialize geolocation service: failed to get database
+    #   filename: Head "https://pkgs.netbird.io/geolocation-dbs/GeoLite2-City/
+    #   download?suffix=tar.gz": dial tcp 5.22.212.152:443: i/o timeout
+    #
+    # ⚠️ IT CRASHES ~30s AFTER A CLEAN, COMPLETE SCHEMA MIGRATION, so the last
+    # hundred log lines are successful migration output and it reads like the
+    # upgrade failing. The migration is fine; the network call after it is not.
+    #
+    # Read from the source rather than guessed --
+    # management/internals/server/modules.go:38-51 at v0.78.1:
+    #
+    #   const geolocationDisabledKey = "NB_DISABLE_GEOLOCATION"
+    #   if os.Getenv(geolocationDisabledKey) == "true" { ...return nil }
+    #   ... log.Fatalf("could not initialize geolocation service: %v", err)
+    #
+    # ⚠️ DISABLED RATHER THAN ALLOWED, DELIBERATELY. The alternative is an
+    # egress rule for pkgs.netbird.io, which grants this namespace a standing
+    # route to the internet so a feature nobody here uses can phone home on
+    # every boot. Geolocation exists for country-based POSTURE CHECKS; none are
+    # configured. If they are ever wanted, this flips to false AND the egress
+    # rule goes in -- both, and as a deliberate decision.
+    - name: NB_DISABLE_GEOLOCATION
+      value: "true"
     - name: NETBIRD_MGMT_API_ENDPOINT
       value: "https://vpn.techyon.dev"
     - name: NETBIRD_MGMT_DNS_DOMAIN
