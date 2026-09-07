@@ -1,0 +1,53 @@
+# H1 -- what the reconciler may reach: two names, DNS, and the apiserver.
+#
+# ⚠️ `enableDefaultDeny` IS EXPLICIT ON BOTH DIRECTIONS. This namespace holds a
+# ServiceAccount token and an authentik credential; it is the last place to
+# rely on an implicit default.
+#
+# 🔴 THE SELECTOR IS A CONTRACT WITH THE CHART. `app.kubernetes.io/name:
+# netbird-reconciler` comes from `netbird.reconciler.selectorLabels` in the
+# helm-compendium chart. Rename it there and this policy silently selects
+# NOTHING -- and in a default-deny namespace an unselected pod is not
+# unrestricted, it is unreachable: the Job hangs on its first request with no
+# error that names a policy.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: netbird-reconciler-egress
+  namespace: netbird-ops
+spec:
+  description: >-
+    The reconciler reaches authentik for a token, the NetBird API to apply
+    desired state, and the apiserver to write one Secret. Nothing else.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: netbird-reconciler
+  enableDefaultDeny:
+    egress: true
+    ingress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{ port: "53", protocol: UDP }]
+          rules:
+            dns: [{ matchPattern: "*" }]
+    # authentik, for the client_credentials token.
+    - toFQDNs:
+        - matchName: "authentik.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    # ⚠️ The PUBLIC NetBird endpoint, not the in-cluster Service. The API is
+    # only routed through the edge Gateway, and using the public name keeps the
+    # reconciler on the same path a real client takes -- so a broken gateway
+    # breaks the reconciler too, visibly, instead of hiding behind a shortcut.
+    - toFQDNs:
+        - matchName: "vpn.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    # ⚠️ The apiserver is an ENTITY, not an FQDN. A toFQDNs rule for
+    # kubernetes.default.svc matches nothing and fails closed.
+    - toEntities:
+        - kube-apiserver
