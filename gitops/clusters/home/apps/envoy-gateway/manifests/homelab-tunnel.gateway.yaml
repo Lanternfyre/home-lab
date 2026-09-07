@@ -90,10 +90,7 @@ metadata:
     #                           which resolves to nothing a client can reach.
     # See canary/canary-tunnel.httproute.yaml for where it lives.
 spec:
-  # A declared address, not an allocated one -- see homelab-gated.gateway.yaml.
-  addresses:
-    - type: IPAddress
-      value: 192.168.32.11   # serves the PUBLIC names behind cloudflared
+  # No declared address, deliberately -- see homelab-gated.gateway.yaml.
   gatewayClassName: envoy
   listeners:
     - name: https

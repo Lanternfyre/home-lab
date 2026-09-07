@@ -146,7 +146,7 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 | **0** | close the public NodePort door: every LoadBalancer NodePort released (MANUAL-STEPS §0c form), `pihole-dhcp` off, `NODEPORT` check + `--probe` in `audit-edge-exposure.py` | no | 2026-09-07, #153 |
 | **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin. Phone enrolment is the B2b gate | no | 2026-09-07 (chart 0.1.11, #155/#156) |
 | **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
-| **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | |
+| **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |
 | **B2b** | delete `spec.addresses` from the three Gateways | no | |
 | **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | |
 | **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | |
@@ -171,6 +171,37 @@ Why this order:
   to start.
 
 ---
+
+### 🔴 Hard-won, B2a: the flip kills every established pod→Service connection, and PostgreSQL keeps the corpses
+
+Measured 2026-09-07, right after the DaemonSet roll. Connections that existed
+BEFORE the flip were translated per-packet in `bpf_lxc` with conntrack entries;
+the regenerated pod programs (socket LB, per-packet LB compiled out) no longer
+carry that reverse NAT, so every such TCP session died on the client side and the
+client reconnected through socket LB. The **server** side never saw a FIN. On
+`postgres-ha` that left **75 idle zombie backends** — reportportal-api 27,
+reportportal-uat 24, reportportal-jobs 11, authentik-worker 8, authentik-server
+5 — with `state_change` equal to the roll time, against `max_connections=100`.
+`authentik-server` could not open a connection ("remaining connection slots are
+reserved for roles with the SUPERUSER attribute"), failed its startup probe and
+crash-looped; with it, every login on the gated Gateway. `tcp_keepalives_idle`
+is 0 on both CNPG clusters, i.e. the kernel's 7200 s, so untouched the zombies
+live for **two hours**.
+
+The cure is one statement on the primary, and it is the operator's call because
+it terminates sessions:
+
+```sql
+select count(pg_terminate_backend(pid)) from pg_stat_activity
+ where backend_type='client backend' and state='idle'
+   and state_change < now() - interval '10 minutes';
+```
+
+Lessons: (1) a datapath-mode switch is a connection-reset event for every pod on
+the node, plan it like one; (2) any server that counts connections needs
+`tcp_keepalives_idle/interval/count` set low enough that a vanished client is
+reaped in minutes — follow-up for both CNPG clusters; (3) `roles/cilium`'s
+post-verify caught it ("1 Running pod not Ready") — keep that assert.
 
 ## 6. What changes
 

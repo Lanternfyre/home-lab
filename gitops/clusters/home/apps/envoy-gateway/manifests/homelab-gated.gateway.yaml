@@ -65,40 +65,28 @@ metadata:
   name: homelab-gated
   namespace: gateway-envoy
 spec:
-  # 🔴 A DECLARED ADDRESS, NOT AN ALLOCATED ONE.
+  # 🔴 NO DECLARED ADDRESS, DELIBERATELY. MetalLB allocates from lb-pool-32 and
+  # nothing in git may name the result.
   #
-  # Every gateway address here used to be whatever MetalLB handed out of
-  # lb-pool-32 (192.168.32.10-250) on a first-come basis, with no Gateway
-  # declaring one. The Service name also carries a Gateway-derived hash
-  # (envoy-gateway-envoy-homelab-gated-06cddf46), so recreating a Gateway
-  # recreates the Service and takes a FRESH allocation. MetalLB is sticky in
-  # practice and guarantees nothing.
+  # From 2026-09-06 to 2026-09-07 each LAN Gateway declared its address here so
+  # that a CiliumNetworkPolicy `toCIDRSet` naming it was at least honest. That
+  # was the wrong fix for the wrong diagnosis, measured on 2026-09-07:
   #
-  # That matters because things outside this file depend on these addresses:
-  # the VPN's NetBird routes, and the CiliumNetworkPolicy that lets the routing
-  # peer reach them. Both fail CLOSED and SILENTLY on a stale address -- the
-  # name still resolves, the route still exists, traffic just stops.
+  #   * A declared address becomes `spec.externalIPs` on the generated Service.
+  #     With kube-proxy replacement OFF, Cilium loaded that as an ExternalIPs
+  #     frontend with only the NODE-LOCAL backend, so a pod could reach this
+  #     Gateway's address only from the node hosting its Envoy pod. The VPN
+  #     routing peer, on another node, could not.
+  #   * With kube-proxy replacement ON (stage B2a), socket LB refuses to
+  #     translate an ExternalIPs frontend that is not the node's own address
+  #     (external-IP MITM mitigation), so the identity-based rule could not
+  #     match until the addresses were gone.
   #
-  # ⚠️ THE OBVIOUS ALTERNATIVE WAS TRIED AND DOES NOT WORK. A Cilium
-  # `toServices` rule selecting these Services by label resolves correctly --
-  # the policy map gains an allow for the envoy pod identity -- and traffic is
-  # still DENIED, because with `kube-proxy-replacement: false` egress policy is
-  # evaluated BEFORE kube-proxy's DNAT. Measured:
-  #
-  #   netbird-routing-peer <> envoy-gateway/...-homelab-gated:443 (world)
-  #   policy-verdict:none EGRESS DENIED
-  #
-  # Hubble NAMES the destination as the Service while the identity it carries
-  # is `world` -- the packet is addressed to the LoadBalancer IP, so a rule
-  # naming backends can never match. Declaring the address is therefore not a
-  # workaround; it is the only way to make an address-based rule HONEST.
-  #
-  # ⚠️ These values are the addresses MetalLB has ALREADY assigned, so this
-  # declares the status quo and moves nothing. Changing one of them here MOVES
-  # a live gateway.
-  addresses:
-    - type: IPAddress
-      value: 192.168.32.19   # *.lab.techyon.dev -- what the VPN routes reach
+  # The identity form -- `toServices` selecting these Services by label -- is
+  # what the netbird CNP uses now; it needs no address at all. NetBird routes
+  # reach the LAN by `domains`, resolved on the client. If MetalLB ever hands
+  # out a different address, external-dns and the VPN follow it; nothing in
+  # this repository has to. KUBE-PROXY-REPLACEMENT.md §2 has the measurements.
   gatewayClassName: envoy
   listeners:
     - name: https
