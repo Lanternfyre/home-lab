@@ -14,7 +14,7 @@ server: "https://{{ k3s_server_peer | default(k3s_api_vip) }}:6443"
 
 tls-san:
   - "{{ k3s_api_vip }}"
-{% if k3s_token_value is defined %}
+{% if k3s_token_value is defined or (k3s_token_file_present | default(false)) %}
 
 # ── THE JOIN CREDENTIALS ─────────────────────────────────────────────────────
 #
@@ -33,7 +33,7 @@ tls-san:
 # on every upgrade; config.yaml does not.
 token-file: {{ k3s_token_path }}
 {% endif %}
-{% if k3s_agent_token_value is defined %}
+{% if k3s_agent_token_value is defined or (k3s_agent_token_file_present | default(false)) %}
 
 # 🔴 THE WHOLE POINT OF THIS FILE, in k3s's own words:
 #   --agent-token  "Shared secret used to join agents to the cluster, but not
@@ -126,7 +126,7 @@ disable-network-policy: {{ k3s_disable_network_policy | default(true) | lower }}
 # `tls-san` is likewise server-only: the serving certs are issued by the
 # control plane and propagated through the datastore.
 server: "https://{{ k3s_server_peer | default(k3s_api_vip) }}:6443"
-{% if k3s_token_value is defined %}
+{% if k3s_token_value is defined or (k3s_token_file_present | default(false)) %}
 
 # This node's own join credential. On an AGENT this file holds the AGENT token,
 # which cannot join a server -- that asymmetry is the entire security property.
