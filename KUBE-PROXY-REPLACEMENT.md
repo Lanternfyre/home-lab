@@ -106,7 +106,7 @@ translated at the pod, and in Cilium 1.20 that means `kubeProxyReplacement: true
 |---|---|---|
 | `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | B2b, 2026-09-07 |
 | `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | B3, 2026-09-07 — `toServices` by Gateway name |
-| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3, 2026-09-07 — `domains: ["*.lab.techyon.dev"]` |
+| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3, 2026-09-07 — a `domains` route listing the LAN Gateways' hostnames (NetBird Routes take no wildcard; the Networks API does — follow-up) |
 
 **Reached.** No Gateway address is written anywhere in this repository. What
 still names a `192.168.32.x` address in git is the MetalLB pool itself, and the
@@ -386,6 +386,14 @@ promoted to admin. What it took, all measured:
 
 ⚠️ Order still matters for any future rebuild: the reconciler must authenticate
 BEFORE any human session reaches management, tabs included.
+
+⚠️ **NetBird network Routes do not take wildcards.** `domains: ["*.lab.techyon.dev"]`
+was accepted by the API and did nothing on the phone (client-side resolution of
+a literal name list). The route now lists the hostnames the two LAN Gateways
+serve; a new HTTPRoute there needs a line in `apps/netbird-ops/chart-values.yaml`.
+Wildcards live in NetBird's newer Networks API (domain resources resolved by the
+routing peer, `*.lab.techyon.dev` matching every subdomain); moving the
+reconciler to it is the follow-up that makes this list disappear.
 
 ⚠️ **The routing peer's identity lives in an emptyDir.** Any pod recreation
 registers a new peer with the same name; the old record lingers, and until chart

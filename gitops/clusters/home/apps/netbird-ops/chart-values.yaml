@@ -93,10 +93,40 @@ reconciler:
     # leaving a second one behind. `lab-gateway-plain` is dropped: the wildcard
     # covers the names that resolved to .18 too, and `routePrune` below removes
     # the old route on the same sync.
+    #
+    # ⚠️ NO WILDCARD. NetBird's network ROUTES resolve each listed name on the
+    # client and do not support `*.lab.techyon.dev` (measured 2026-09-07: the
+    # route was accepted, the phone installed nothing, every request hung).
+    # Wildcards exist only in NetBird's newer NETWORKS API (a domain resource
+    # resolved by the routing peer), which the reconciler does not drive yet --
+    # that migration is the recorded follow-up. Until then this is the list of
+    # hostnames the two LAN Gateways serve, taken from the live HTTPRoutes;
+    # a new HTTPRoute on `homelab`/`homelab-gated` needs a line here. The
+    # Routes API allows 32 per route.
     routes:
       - network_id: lab-gateway
-        domains: ["*.lab.techyon.dev"]
-        description: "every *.lab.techyon.dev name, resolved on the client"
+        domains:
+          - argocd.lab.techyon.dev
+          - authentik.lab.techyon.dev
+          - faro.lab.techyon.dev
+          - goldilocks.lab.techyon.dev
+          - grafana.lab.techyon.dev
+          - headlamp.lab.techyon.dev
+          - home.lab.techyon.dev
+          - mealie.lab.techyon.dev
+          - opensearch.lab.techyon.dev
+          - otel.lab.techyon.dev
+          - photos.lab.techyon.dev
+          - pihole.lab.techyon.dev
+          - prometheus.lab.techyon.dev
+          - pyroscope-ingest.lab.techyon.dev
+          - pyroscope.lab.techyon.dev
+          - rabbitmq.lab.techyon.dev
+          - reports.lab.techyon.dev
+          - s3.lab.techyon.dev
+          - silo.lab.techyon.dev
+          - vpn.lab.techyon.dev
+        description: "the *.lab.techyon.dev names, resolved on the client"
         masquerade: true
         metric: 9999
         enabled: true
