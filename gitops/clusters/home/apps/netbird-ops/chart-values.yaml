@@ -47,34 +47,6 @@ reconciler:
 
   netbirdApi: "https://vpn.techyon.dev"
 
-  # 🔴 THE PUBLIC HOSTNAME, RESOLVED TO A LOCAL GATEWAY.
-  #
-  # The IdP MUST be addressed by its public name -- authentik derives the
-  # token's `iss` from the request Host, and NetBird pins ONE issuer, the same
-  # one every phone and browser receives. Measured:
-  #
-  #   via authentik.techyon.dev      iss https://authentik.techyon.dev/...
-  #   via authentik.lab.techyon.dev  iss https://authentik.lab.techyon.dev/...
-  #
-  # so calling the `.lab` name mints a token NetBird rejects as `token
-  # invalid`, and repointing AuthIssuer at it would break every real client.
-  #
-  # This keeps Host and SNI public -- right issuer, right certificate -- while
-  # the request never leaves the cluster. That removes CLOUDFLARE from a
-  # control path, which is not theoretical: the reconciler's first real run
-  # died on a Cloudflare bot rule (403 "error code: 1010") rejecting the
-  # default Python User-Agent, and the 403 came from the token endpoint so it
-  # read as an auth failure.
-  #
-  # ⚠️ 192.168.32.11 is the TUNNEL gateway, which is the one that SERVES this
-  # hostname. Verified: `--resolve authentik.techyon.dev:443:192.168.32.11`
-  # reaches authentik; the same against .18 fails the connection outright.
-  # "A gateway on the LAN" is not the requirement.
-  hostAliases:
-    - ip: 192.168.32.11
-      hostnames:
-        - authentik.techyon.dev
-
   auth:
     tokenUrl: "https://authentik.techyon.dev/application/o/token/"
     # ⚠️ The PUBLIC netbird client, shared with the dashboard and the CLI --

@@ -34,22 +34,25 @@ spec:
         - ports: [{ port: "53", protocol: UDP }]
           rules:
             dns: [{ matchPattern: "*" }]
-    # 🔴 authentik BY ADDRESS, NOT BY FQDN, AND THAT IS FORCED.
+    # authentik, for the client_credentials token.
     #
-    # The Job carries a hostAlias pinning authentik.techyon.dev to the tunnel
-    # gateway, so it never performs a DNS lookup for that name -- and Cilium's
-    # toFQDNs rules are built FROM observed DNS answers. A toFQDNs rule here
-    # would therefore match nothing and the request would be denied, while the
-    # policy still reads as though authentik were allowed.
+    # ⚠️ BY FQDN, AND THE PUBLIC NAME. The token's `iss` is derived from the
+    # request Host and NetBird pins ONE issuer -- the same one every phone and
+    # browser gets -- so calling authentik.lab.techyon.dev mints a token that
+    # is rejected as `token invalid`. Measured; see chart-values.yaml.
     #
-    # ⚠️ The two must change together: remove the hostAlias and this rule stops
-    # covering the traffic; remove this rule and the hostAlias sends the
-    # request somewhere the policy does not permit. Both directions fail
-    # closed, which is right, but neither says why.
-    - toCIDRSet:
-        - cidr: 192.168.32.11/32   # tunnel Gateway -- serves authentik.techyon.dev
+    # ⚠️ This path crosses Cloudflare, which is why the reconciler sets an
+    # explicit User-Agent: the default Python one is refused outright with a
+    # 403 "error code: 1010" that arrives from the token endpoint and reads as
+    # an auth failure. Keeping the request in-cluster with a hostAlias would
+    # avoid that, but every gateway address here is a DYNAMIC MetalLB
+    # allocation from 192.168.32.10-250 with no Gateway declaring
+    # spec.addresses -- so pinning one today is a silent breakage tomorrow.
+    - toFQDNs:
+        - matchName: "authentik.techyon.dev"
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
+
     # ⚠️ The PUBLIC NetBird endpoint, not the in-cluster Service. The API is
     # only routed through the edge Gateway, and using the public name keeps the
     # reconciler on the same path a real client takes -- so a broken gateway
