@@ -13,4 +13,5 @@ k3s_role: server
 # its own gate: Cilium must already be running with kubeProxyReplacement=true
 # (gitops/cilium-values-production.yaml) or no Service resolves anywhere.
 # Restart order is servers first, then agents -- see the template's comment.
-# k3s_disable_kube_proxy: true
+# Set 2026-09-07 (stage B4); Cilium has replaced kube-proxy since stage B2a.
+k3s_disable_kube_proxy: true
