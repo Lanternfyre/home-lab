@@ -122,22 +122,44 @@ spec:
         - matchLabels:
             io.kubernetes.pod.namespace: silo
 
-    # ── The LAN gateways, so `*.lab.techyon.dev` works unchanged over the VPN ─
+    # ── The LAN gateways, so `*.lab.techyon.dev` works over the VPN ────────
     #
-    # Every `*.lab.techyon.dev` name resolves -- in PUBLIC DNS -- to
-    # 192.168.32.19, so a VPN client needs no DNS configuration at all: route
-    # the address and every existing URL works exactly as it does on the LAN.
+    # 🟢 SELECTED BY LABEL, NOT BY ADDRESS -- ON PURPOSE.
     #
-    # ⚠️ TWO /32s, NOT `192.168.32.0/23`. The wide form would hand every VPN
-    # client the whole home LAN -- printers, NAS, everything -- to reach web
-    # UIs that all live on two addresses. This is the difference between a VPN
-    # into the CLUSTER and a VPN into the HOUSE.
+    # This was two /32s. They were never ours to assume: every gateway address
+    # here is a first-come MetalLB allocation from 192.168.32.10-250, no
+    # Gateway declares spec.addresses, and the Service name carries a
+    # Gateway-derived hash (envoy-gateway-envoy-homelab-gated-06cddf46), so
+    # recreating a Gateway recreates the Service and takes a fresh address.
+    # MetalLB is sticky in practice and guarantees nothing.
     #
-    # ⚠️ This grants REACHABILITY, not authentication. .19 is the gated
-    # Gateway and still demands authentik on every route behind it.
-    - toCIDRSet:
-        - cidr: 192.168.32.18/32   # homelab  Gateway
-        - cidr: 192.168.32.19/32   # gated    Gateway -- *.lab.techyon.dev
+    # A stale CIDR here fails CLOSED and SILENTLY: the name still resolves,
+    # the route still exists, and traffic simply stops -- with nothing naming
+    # the policy as the cause.
+    #
+    # `gateway.envoyproxy.io/owning-gateway-name` is set by Envoy Gateway and
+    # names the GATEWAY, which is a thing this repo declares, rather than the
+    # Service name or the address, which are both generated. So this rule says
+    # "whatever currently fronts these two Gateways" and needs no edit when an
+    # address moves.
+    #
+    # ⚠️ VERIFY THE DATAPATH, NOT JUST THE MANIFEST. `kube-proxy-replacement`
+    # is false here, so if egress policy is evaluated BEFORE kube-proxy's DNAT
+    # the destination is the LoadBalancer IP -- `world` -- and a rule naming
+    # backends matches nothing. Cilium does hold the service
+    # (192.168.32.19:443 => 10.245.1.53:10443 active), which is why this is
+    # worth doing, but the proof is a policy-map entry or a Hubble verdict,
+    # never a clean `kubectl apply`.
+    - toServices:
+        - k8sServiceSelector:
+            namespace: gateway-envoy
+            selector:
+              matchExpressions:
+                - key: gateway.envoyproxy.io/owning-gateway-name
+                  operator: In
+                  values:
+                    - homelab        # 192.168.32.18 today
+                    - homelab-gated  # 192.168.32.19 today -- *.lab.techyon.dev
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
 
