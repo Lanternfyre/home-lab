@@ -43,6 +43,44 @@ data:
     metadata:
       name: netbird-oidc
     entries:
+      # ── The claims that put a token in the RIGHT NetBird account ──────────
+      #
+      # 🔴 NETBIRD DOES NOT INFER THE ACCOUNT. IT READS THESE CLAIMS, AND
+      # WITHOUT THEM AN IDENTITY LANDS IN AN ACCOUNT OF ITS OWN.
+      #
+      # Read from the source, shared/auth/jwt/extractor.go at v0.78.1:
+      #
+      #   DomainIDSuffix       = "wt_account_domain"
+      #   DomainCategorySuffix = "wt_account_domain_category"
+      #   claim name = url.JoinPath(audience, suffix) -> "netbird/wt_..."
+      #
+      # management/server/account.go then routes on them: a PRIVATE-category
+      # domain matching an existing account joins THAT account
+      # (addNewUserToDomainAccount); anything else falls through to
+      # GetAccountIDByUserID and gets one of its own. These two claims are the
+      # difference between the reconciler administering YOUR NetBird account
+      # and it quietly building a parallel empty one.
+      #
+      # ⚠️ scope_name IS `profile`, NOT a scope of its own. authentik emits a
+      # ScopeMapping's claims only when the client REQUESTS that scope, and
+      # neither the dashboard nor `netbird up` can be made to ask for a custom
+      # one -- both request "openid profile email offline_access". Several
+      # mappings may share a scope; their claims merge.
+      - id: netbird-account-claims
+        model: authentik_providers_oauth2.scopemapping
+        identifiers:
+          name: netbird-account-claims
+        attrs:
+          scope_name: profile
+          description: "NetBird account routing claims (domain + category)"
+          expression: |
+            # techyon.dev is the NetBird account's private domain. Hardcoded
+            # rather than derived from the user's email so the SERVICE ACCOUNT
+            # -- which has no email -- lands in the same account as the humans.
+            return {
+                "netbird/wt_account_domain": "techyon.dev",
+                "netbird/wt_account_domain_category": "private",
+            }
       - id: netbird-provider
         model: authentik_providers_oauth2.oauth2provider
         identifiers:
@@ -157,6 +195,10 @@ data:
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
             - !Find [authentik_providers_oauth2.scopemapping, [scope_name, offline_access]]
+            # Defined ABOVE in this file and referenced by !KeyOf: `!Find`
+            # returns None silently, and a None here drops the account claims
+            # with no error at all.
+            - !KeyOf netbird-account-claims
       - model: authentik_core.application
         identifiers:
           slug: netbird
