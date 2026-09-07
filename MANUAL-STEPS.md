@@ -309,6 +309,28 @@ control that proves the probe was not simply returning CLOSED for everything.
 Kept here as the reference form for the remaining services and for any future
 Service.
 
+🔴 **2026-09-07: that "deliberately left open" port was on the public internet.**
+Probed from outside the cluster, `167.86.81.59:32497` and `:31066` — the edge
+node's public address — **accepted connections**. The edge is a k3s agent, so
+kube-proxy runs there too: it DNATs any NodePort in `prerouting` and forwards
+the packet over VXLAN to the pod on a home node. `edge_firewall` filters the
+`input` hook only; a forwarded packet never traverses it. Every
+`externalTrafficPolicy: Cluster` NodePort was reachable this way (`mealie:31447`
+too); the `Local` ones were closed only because no endpoint is scheduled on the
+edge. **All nine LoadBalancer NodePorts were released the same day** with the
+form below, one Service at a time with a connection check after each: the
+LB addresses still answer (`.53` UDP and TCP resolve, `.14`, `.18`, `.19`
+connect, `argocd.lab` returns 200 through the plain Gateway), every port is
+closed on the public address and on the nodes. Each patch was built from the
+LIVE object's `ports`, not from the list below, so `targetPort` names could
+not drift. `scripts/audit-edge-exposure.py` now carries a `NODEPORT` check
+(FAIL on any `Cluster` NodePort, WARN on `Local`) and a `--probe` flag that
+connects to each one on the public address.
+
+⚠️ Under Cilium's kube-proxy replacement (KUBE-PROXY-REPLACEMENT.md) this door
+gets *harder* to close: BPF NodePort runs at tc ingress, before nftables, so no
+edge firewall rule can ever see it. Releasing the port is the only fix.
+
 ```sh
 kubectl -n databases patch svc postgres-ha-lb --type=merge -p \
   '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
@@ -343,8 +365,8 @@ Then confirm each service still answers on its LB address —
 `192.168.32.10:5432`, `192.168.32.11:6379`, `192.168.32.15:5432`,
 `192.168.32.13:80`. **`Ready` is not the test; a connection is.**
 
-**The remaining seven services** — pihole (4 ports), `argocd-server` (2),
-`mealie` (1) and the two Envoy Gateways (4) — are now covered *going forward*
+**All of them** — pihole (4 ports), `argocd-server` (2), `mealie` (1) and the
+two Envoy Gateways (4), released 2026-09-07 — are covered *going forward*
 by `apps/kyverno/manifests/loadbalancer-no-nodeports.mutatingpolicy.yaml`,
 which sets the flag on every LoadBalancer Service at admission. That is what
 made an `EnvoyProxy` CR unnecessary and what makes the four git-declared
@@ -377,6 +399,7 @@ rule as above; port specs taken from the live objects, so `targetPort` names
 and protocols are preserved):
 
 ```sh
+# ✅ All seven run 2026-09-07 in this form (ports read from the live objects), verified.
 kubectl -n argocd patch svc argocd-server --type=merge -p \
   '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"http","port":80,"protocol":"TCP","targetPort":8080},{"name":"https","port":443,"protocol":"TCP","targetPort":8080}]}}'
 

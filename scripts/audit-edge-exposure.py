@@ -46,6 +46,15 @@ PROGRAM    every declared listener is actually Programmed on the LIVE Gateway.
 BACKEND    every route attached to the Gateway resolves its backendRefs. A route
            can be Accepted and still point at a Service that does not exist --
            Envoy then answers 500 on that path        [live cluster]
+NODEPORT   no Service in the cluster allocates a NodePort. The edge node is a
+           k3s agent: kube-proxy there DNATs any NodePort in prerouting and
+           forwards it over VXLAN, and edge_firewall filters `input` only, so a
+           NodePort is a door on the PUBLIC address that no firewall rule sees.
+           Measured 2026-09-07: argocd-server answered on 167.86.81.59:32497.
+           eTP=Cluster is a FAIL; eTP=Local is a WARN (closed only while no
+           endpoint happens to be scheduled on the edge)  [live cluster]
+           With --probe, every allocated TCP NodePort is also connected to on
+           the public address; one that accepts is a FAIL regardless of policy.
 
 Exit codes
 ----------
@@ -56,6 +65,11 @@ Exit codes
 Usage
 -----
     scripts/audit-edge-exposure.py [--gateway PATH] [--firewall PATH] [--quiet]
+                                   [--probe] [--public-ip ADDR]
+
+--probe opens TCP connections to the edge's public address (taken from the
+Gateway manifest's external-dns target annotation unless --public-ip is given).
+Still read-only, but network-visible, so it is opt-in.
 """
 
 from __future__ import annotations
@@ -63,6 +77,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import socket
 import subprocess
 import sys
 
@@ -445,6 +460,96 @@ def check_firewall(
         else:
             r.ok("ORPHAN", f"DNAT {public_port} -> {dnat[public_port]} has a listener", quiet)
 
+PUBLIC_IP_ANNOTATION = "external-dns.alpha.kubernetes.io/target"
+
+
+def gateway_public_ip(path: str, yaml) -> str | None:
+    """The edge's public address, from the Gateway's external-dns target."""
+    try:
+        with open(path) as fh:
+            docs = [d for d in yaml.safe_load_all(fh) if d]
+    except OSError:
+        return None
+    for doc in docs:
+        if doc.get("kind") == "Gateway" and doc.get("metadata", {}).get("name") == EDGE_GATEWAY:
+            return (doc.get("metadata", {}).get("annotations", {}) or {}).get(PUBLIC_IP_ANNOTATION)
+    return None
+
+
+def check_nodeports(r: Report, public_ip: str | None, probe: bool, quiet: bool) -> None:
+    """NODEPORT -- no Service may allocate a NodePort; with --probe, none may answer.
+
+    Found 2026-09-07 by probing from outside the cluster: argocd-server's
+    NodePorts 32497 and 31066 answered on the edge's public address. The edge
+    is a k3s agent, so kube-proxy runs there too: it DNATs a NodePort in
+    prerouting and forwards the packet over VXLAN to a pod on a home node.
+    edge_firewall has an `input` hook with policy drop and no `forward` hook,
+    so it never sees that packet. externalTrafficPolicy=Local ports were closed
+    only because no endpoint happened to be scheduled on the edge -- an
+    accident, not a control.
+
+    Under Cilium's kube-proxy replacement BPF NodePort runs at tc ingress,
+    BEFORE nftables, so a firewall can never close this. The only fix is at
+    the source: no allocated NodePort at all. `loadbalancer-no-nodeports`
+    (Kyverno) stops new allocations; MANUAL-STEPS.md 0c releases old ones.
+    """
+    svcs = kubectl("get", "services", "-A")
+    if svcs is None:
+        r.fail("NODEPORT", "could not list Services")
+        return
+    allocated: list[tuple[str, str, str, int, int, str]] = []
+    for s in svcs.get("items", []):
+        spec = s.get("spec", {})
+        etp = spec.get("externalTrafficPolicy", "Cluster")
+        for port in spec.get("ports", []) or []:
+            if port.get("nodePort"):
+                allocated.append((
+                    s["metadata"]["namespace"], s["metadata"]["name"], etp,
+                    int(port.get("port", 0)), int(port["nodePort"]),
+                    str(port.get("protocol", "TCP")).upper(),
+                ))
+    if not allocated:
+        r.ok("NODEPORT", "no Service allocates a NodePort", quiet)
+    for ns, name, etp, port, nodeport, proto in allocated:
+        if etp != "Local":
+            r.fail(
+                "NODEPORT",
+                f"{ns}/{name} port {port}/{proto} allocates NodePort {nodeport} with "
+                f"externalTrafficPolicy={etp}. That answers on EVERY node address, "
+                f"including the edge's public one, and no firewall rule sees it. "
+                f"Release it: MANUAL-STEPS.md 0c.",
+            )
+        else:
+            r.warn(
+                "NODEPORT",
+                f"{ns}/{name} port {port}/{proto} allocates NodePort {nodeport} "
+                f"(externalTrafficPolicy=Local). Closed on the edge only while no "
+                f"endpoint is scheduled there. Release it: MANUAL-STEPS.md 0c.",
+            )
+    if not probe:
+        return
+    if not public_ip:
+        r.warn("NODEPORT", "--probe given but no public address known; pass --public-ip")
+        return
+    tcp = [(ns, name, np) for ns, name, _etp, _p, np, proto in allocated if proto == "TCP"]
+    if not tcp:
+        r.ok("NODEPORT", f"nothing to probe on {public_ip}", quiet)
+        return
+    for ns, name, nodeport in tcp:
+        try:
+            with socket.create_connection((public_ip, nodeport), timeout=3):
+                accepted = True
+        except OSError:
+            accepted = False
+        if accepted:
+            r.fail(
+                "NODEPORT",
+                f"{public_ip}:{nodeport} ACCEPTED a TCP connection -- {ns}/{name} is "
+                f"reachable from the internet through the edge node.",
+            )
+        else:
+            r.ok("NODEPORT", f"{public_ip}:{nodeport} ({ns}/{name}) does not answer", quiet)
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -453,6 +558,10 @@ def main() -> int:
     ap.add_argument("--gateway", default=DEFAULT_GATEWAY)
     ap.add_argument("--firewall", default=DEFAULT_FIREWALL)
     ap.add_argument("--quiet", action="store_true", help="only print WARN/FAIL")
+    ap.add_argument("--probe", action="store_true",
+                    help="also TCP-connect to every allocated NodePort on the public address")
+    ap.add_argument("--public-ip", default=None,
+                    help=f"public address to probe (default: the Gateway's {PUBLIC_IP_ANNOTATION})")
     args = ap.parse_args()
 
     if not shutil.which("kubectl"):
@@ -494,6 +603,8 @@ def main() -> int:
         r.warn("PSA", f"no namespace carries {PUBLISH_LABEL}=true; nothing to contain")
     for ns in sorted(published):
         check_namespace(r, ns, published[ns], args.quiet)
+    check_nodeports(r, args.public_ip or gateway_public_ip(args.gateway, yaml),
+                    args.probe, args.quiet)
 
     print(f"\n{BOLD}Summary{RESET}")
     print(f"  {GREEN}{r.oks} passed{RESET}, "
