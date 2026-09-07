@@ -1,0 +1,206 @@
+# The reconciler itself. Python 3 stdlib ONLY, deliberately.
+#
+# ⚠️ NO REQUESTS, NO KUBERNETES CLIENT, NO jq. This namespace has default-deny
+# egress and cannot reach a package index, so anything not in the stdlib would
+# have to become a container image in another repo -- a second release cycle
+# for every change to this logic. urllib is uglier and buys the whole thing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbird-reconciler-script
+  namespace: netbird-ops
+data:
+  reconcile.py: |
+    #!/usr/bin/env python3
+    """Reconcile NetBird account state from git. Idempotent; safe to re-run."""
+    import json, os, ssl, sys, urllib.error, urllib.parse, urllib.request
+    
+    NB = os.environ["NETBIRD_API"].rstrip("/")
+    TOKEN_URL = os.environ["AUTHENTIK_TOKEN_URL"]
+    CLIENT_ID = os.environ["AUTHENTIK_CLIENT_ID"]
+    USERNAME = os.environ["AUTHENTIK_USERNAME"]
+    PASSWORD = os.environ["AUTHENTIK_PASSWORD"]
+    DESIRED = json.load(open(os.environ.get("DESIRED_PATH", "/config/desired.json")))
+    SECRET_NS = os.environ["SETUP_KEY_NAMESPACE"]
+    SECRET_NAME = os.environ["SETUP_KEY_SECRET"]
+    SECRET_KEY = os.environ["SETUP_KEY_FIELD"]
+    
+    K8S = "https://kubernetes.default.svc"
+    SA = "/var/run/secrets/kubernetes.io/serviceaccount"
+    
+    
+    def log(msg):
+        print(msg, flush=True)
+    
+    
+    def http(url, method="GET", body=None, headers=None, ctx=None):
+        data = json.dumps(body).encode() if body is not None else None
+        h = {"Content-Type": "application/json", "Accept": "application/json"}
+        h.update(headers or {})
+        req = urllib.request.Request(url, data=data, headers=h, method=method)
+        try:
+            with urllib.request.urlopen(req, context=ctx, timeout=30) as r:
+                raw = r.read()
+                return r.status, (json.loads(raw) if raw else None)
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            try:
+                return e.code, json.loads(raw)
+            except Exception:
+                return e.code, {"raw": raw.decode(errors="replace")[:300]}
+    
+    
+    def nb(path, method="GET", body=None):
+        return http(f"{NB}/api{path}", method, body, {"Authorization": f"Bearer {TOKEN}"})
+    
+    
+    def k8s(path, method="GET", body=None, ctype="application/json"):
+        ctx = ssl.create_default_context(cafile=f"{SA}/ca.crt")
+        tok = open(f"{SA}/token").read().strip()
+        return http(f"{K8S}{path}", method, body,
+                    {"Authorization": f"Bearer {tok}", "Content-Type": ctype}, ctx)
+    
+    
+    # ── 1. token ────────────────────────────────────────────────────────────────
+    # authentik's client_credentials takes the username/password branch BEFORE it
+    # looks at client_secret, so the PUBLIC `netbird` provider mints this. That is
+    # deliberate: NetBird validates issuer against ONE value and audience against
+    # `netbird`, and a second provider would fail both.
+    form = urllib.parse.urlencode({
+        "grant_type": "client_credentials", "client_id": CLIENT_ID,
+        "username": USERNAME, "password": PASSWORD,
+        "scope": "openid profile email",
+    }).encode()
+    req = urllib.request.Request(TOKEN_URL, data=form,
+                                 headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            TOKEN = json.loads(r.read())["access_token"]
+    except urllib.error.HTTPError as e:
+        # authentik returns the SAME generic error for a wrong password, a token
+        # with the wrong intent, and a grant type missing from the provider.
+        log(f"FATAL token request failed: {e.code} {e.read().decode(errors='replace')[:200]}")
+        log("  check: provider grant_types includes client_credentials; the Token's")
+        log("  intent is app_password; the service account is active.")
+        sys.exit(1)
+    log("got a token from authentik")
+    
+    status, me = nb("/users")
+    if status != 200:
+        log(f"FATAL /api/users -> {status} {me}")
+        sys.exit(1)
+    
+    # ── 2. routing peer ─────────────────────────────────────────────────────────
+    want_host = DESIRED["routingPeerHostname"]
+    status, peers = nb("/peers")
+    if status != 200:
+        log(f"FATAL /api/peers -> {status} {peers}")
+        sys.exit(1)
+    peer = next((p for p in peers if p.get("hostname") == want_host), None)
+    log(f"peers: {len(peers)}; routing peer {want_host!r} "
+        f"{'found ' + peer['id'] if peer else 'NOT YET ENROLLED'}")
+    
+    # ── 3. setup key ────────────────────────────────────────────────────────────
+    # Created here rather than read from 1Password because a setup key belongs to a
+    # NetBird ACCOUNT: rebuild the account and any stored key is dead. The value is
+    # generated server-side and cannot be pre-seeded, so the reconciler creates it
+    # and hands it to the routing peer through a Secret.
+    sk = DESIRED["setupKey"]
+    status, keys = nb("/setup-keys")
+    if status == 403:
+        log("FATAL /api/setup-keys -> 403. The identity is in the account but is a")
+        log("  REGULAR user. On a fresh account the first caller becomes owner; on")
+        log("  an existing one it joins as a regular user and must be promoted once.")
+        sys.exit(1)
+    existing = next((k for k in (keys or [])
+                     if k.get("name") == sk["name"] and k.get("valid")), None)
+    if existing:
+        log(f"setup key {sk['name']!r} already exists ({existing['id']}), not recreating")
+    else:
+        status, created = nb("/setup-keys", "POST", {
+            "name": sk["name"], "type": sk["type"],
+            "expires_in": sk.get("expiresIn", 0),
+            "usage_limit": sk.get("usageLimit", 0),
+            "auto_groups": [], "revoked": False, "ephemeral": False,
+        })
+        if status not in (200, 201):
+            log(f"FATAL create setup key -> {status} {created}")
+            sys.exit(1)
+        # 🔴 The plaintext key is returned ONLY on creation. It is never readable
+        # again, so it must be persisted here or the key is unusable.
+        import base64
+        val = base64.b64encode(created["key"].encode()).decode()
+        st, _ = k8s(f"/api/v1/namespaces/{SECRET_NS}/secrets/{SECRET_NAME}")
+        if st == 200:
+            st, resp = k8s(f"/api/v1/namespaces/{SECRET_NS}/secrets/{SECRET_NAME}",
+                           "PATCH", {"data": {SECRET_KEY: val}},
+                           "application/merge-patch+json")
+        else:
+            st, resp = k8s(f"/api/v1/namespaces/{SECRET_NS}/secrets", "POST", {
+                "apiVersion": "v1", "kind": "Secret",
+                "metadata": {"name": SECRET_NAME, "namespace": SECRET_NS},
+                "type": "Opaque", "data": {SECRET_KEY: val},
+            })
+        if st not in (200, 201):
+            log(f"FATAL writing {SECRET_NS}/{SECRET_NAME} -> {st} {resp}")
+            sys.exit(1)
+        log(f"created setup key {sk['name']!r} and wrote {SECRET_NS}/{SECRET_NAME}")
+    
+    # ── 4. routes ───────────────────────────────────────────────────────────────
+    # Matched on network_id, so editing `network` in git UPDATES the route rather
+    # than adding a second one.
+    if peer:
+        status, routes = nb("/routes")
+        if status != 200:
+            log(f"FATAL /api/routes -> {status} {routes}")
+            sys.exit(1)
+        by_id = {r.get("network_id"): r for r in (routes or [])}
+        for want in DESIRED["routes"]:
+            body = {
+                "network_id": want["network_id"], "network": want["network"],
+                "description": want.get("description", ""),
+                "enabled": want.get("enabled", True),
+                "peer": peer["id"], "metric": want.get("metric", 9999),
+                "masquerade": want.get("masquerade", True),
+                "groups": [], "keep_route": False,
+            }
+            cur = by_id.get(want["network_id"])
+            if not cur:
+                st, resp = nb("/routes", "POST", body)
+                log(f"route {want['network_id']} -> created {want['network']}"
+                    if st in (200, 201) else f"FATAL create route -> {st} {resp}")
+                if st not in (200, 201):
+                    sys.exit(1)
+            elif (cur.get("network") != body["network"]
+                  or cur.get("enabled") != body["enabled"]
+                  or cur.get("peer") != body["peer"]):
+                st, resp = nb(f"/routes/{cur['id']}", "PUT", body)
+                log(f"route {want['network_id']} -> UPDATED to {want['network']}"
+                    if st == 200 else f"FATAL update route -> {st} {resp}")
+                if st != 200:
+                    sys.exit(1)
+            else:
+                log(f"route {want['network_id']} already matches {want['network']}")
+    else:
+        log("skipping routes: the routing peer has not enrolled yet. It will on the")
+        log("next run, once it has picked up the setup key written above.")
+    
+    # ── 5. admins ───────────────────────────────────────────────────────────────
+    # A person must have logged in once to exist -- there is no IdP directory to
+    # invite into (IdpManagerConfig.ManagerType: none). This runs every sync, so
+    # they are promoted on the pass after their first login.
+    status, users = nb("/users")
+    for email in DESIRED.get("adminEmails", []):
+        u = next((x for x in (users or []) if x.get("email") == email), None)
+        if not u:
+            log(f"admin {email}: not present yet (has never logged in) -- will retry")
+            continue
+        if u.get("role") == "admin":
+            log(f"admin {email}: already admin")
+            continue
+        st, resp = nb(f"/users/{u['id']}", "PUT",
+                      {"role": "admin", "auto_groups": u.get("auto_groups", []),
+                       "is_blocked": u.get("is_blocked", False)})
+        log(f"admin {email}: promoted" if st == 200 else f"admin {email}: FAILED {st} {resp}")
+    
+    log("reconcile complete")

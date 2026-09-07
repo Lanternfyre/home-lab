@@ -1,0 +1,47 @@
+# The reconciler's cluster access, which is deliberately almost nothing.
+#
+# It writes exactly ONE Secret, in ANOTHER namespace, and can do nothing else.
+# `resourceNames` is what makes that true: without it, `secrets: [get, create,
+# patch]` in the netbird namespace would let this pod read the datastore
+# encryption key and the relay password, which sit in the same namespace. A
+# Role scoped by verb alone reads as tight and is not.
+#
+# ⚠️ `create` cannot be restricted by resourceNames -- Kubernetes evaluates the
+# name from the request body, which does not exist at authorization time for a
+# collection-level verb. So `create` is split into its own rule and is the one
+# genuinely broad permission here: this SA could create OTHER secrets in
+# netbird. It cannot read or modify any it did not create, which is the part
+# that matters.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: netbird-reconciler
+  namespace: netbird-ops
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: netbird-reconciler-setup-key
+  namespace: netbird
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["netbird-setup-key"]
+    verbs: ["get", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: netbird-reconciler-setup-key
+  namespace: netbird
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: netbird-reconciler-setup-key
+subjects:
+  - kind: ServiceAccount
+    name: netbird-reconciler
+    namespace: netbird-ops

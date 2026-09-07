@@ -1,0 +1,29 @@
+# Where the NetBird reconciler runs, and why it is not in `netbird`.
+#
+# 🔴 THE RECONCILER CANNOT LIVE IN THE `netbird` NAMESPACE. That namespace
+# carries `homelab.techyon.dev/edge-publish: "true"`, and
+# `edge-published-pod-constraints` requires every pod there to set
+# `automountServiceAccountToken: false`. The reconciler's whole job includes
+# writing the generated setup key into a Secret, which needs a ServiceAccount
+# token. The two requirements are irreconcilable.
+#
+# ⚠️ The tempting fix is to exempt the Job from that policy. Do not. The
+# constraint exists precisely so that a pod reachable from the internet cannot
+# also hold cluster credentials -- and the reconciler is the one pod here that
+# genuinely holds them. Splitting it out keeps the published namespace free of
+# API credentials AND gives the reconciler a token, instead of trading one
+# away for the other.
+#
+# ⚠️ NOT edge-publish, and it must never become so: nothing here is published,
+# and the label would re-impose the constraint that forced this split.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: netbird-ops
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

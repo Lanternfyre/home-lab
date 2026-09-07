@@ -1,0 +1,95 @@
+# Applies gitops/.../reconciler-desired.configmap.yaml to NetBird, on EVERY sync.
+#
+# 🔴 PostSync, NOT PreSync or a one-shot install hook. The requirement is
+# "change a route in git and it applies on deploy", so this must run again on
+# every sync, not once at install. PostSync also guarantees management is
+# already reconciled when the Job calls its API.
+#
+# ⚠️ `hook-delete-policy: BeforeHookCreation` keeps exactly one Job object
+# around -- the last run's, with its logs. `HookSucceeded` would delete it on
+# success and leave only failures behind, which is precisely backwards when you
+# want to confirm what a successful run actually did.
+#
+# ⚠️ IT IS IDEMPOTENT BY DESIGN, because it runs on every sync of an app that
+# syncs on every commit. Routes are matched on network_id and only written when
+# they differ; the setup key is created only when no valid key of that name
+# exists. A run that changes nothing logs that it changed nothing.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: netbird-reconciler
+  namespace: netbird-ops
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  # A failed reconcile should be visible, not retried into a crashloop that
+  # buries the first error. Two attempts covers a transient token fetch.
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: netbird-reconciler
+    spec:
+      restartPolicy: Never
+      serviceAccountName: netbird-reconciler
+      # 🔴 The ONLY pod in this design that carries a token, and the reason it
+      # lives in netbird-ops rather than netbird -- see the namespace manifest.
+      automountServiceAccountToken: true
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: reconcile
+          # Digest-pinned like everything else here. Chosen because the script
+          # is stdlib-only, so a plain python image needs no build step and no
+          # second repo to release from.
+          image: docker.io/library/python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285
+          command: ["python3", "/script/reconcile.py"]
+          env:
+            - name: NETBIRD_API
+              value: "https://vpn.techyon.dev"
+            - name: AUTHENTIK_TOKEN_URL
+              value: "https://authentik.techyon.dev/application/o/token/"
+            # ⚠️ The PUBLIC netbird client, not a dedicated one. NetBird
+            # validates issuer against a single value; a second provider issues
+            # under a different path and every token would be rejected.
+            - name: AUTHENTIK_CLIENT_ID
+              value: "netbird"
+            - name: AUTHENTIK_USERNAME
+              value: "netbird-reconciler"
+            - name: AUTHENTIK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: netbird-reconciler-credentials
+                  key: password
+            - name: SETUP_KEY_NAMESPACE
+              value: "netbird"
+            - name: SETUP_KEY_SECRET
+              value: "netbird-setup-key"
+            - name: SETUP_KEY_FIELD
+              value: "setup-key"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          volumeMounts:
+            - { name: script, mountPath: /script, readOnly: true }
+            - { name: desired, mountPath: /config, readOnly: true }
+            # readOnlyRootFilesystem with no scratch dir has bitten this repo
+            # before; python writes bytecode and temp files.
+            - { name: tmp, mountPath: /tmp }
+          workingDir: /tmp
+      volumes:
+        - { name: script, configMap: { name: netbird-reconciler-script } }
+        - { name: desired, configMap: { name: netbird-reconciler-desired } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 16Mi } }

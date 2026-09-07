@@ -1,0 +1,54 @@
+# 🟢 THIS IS THE FILE YOU EDIT. Everything else about the reconciler is
+# machinery.
+#
+# Change a CIDR here, merge, and the next ArgoCD sync applies it to NetBird.
+# Nothing is configured in the NetBird UI, and anything configured there by
+# hand is overwritten on the next run -- that is the point, not a side effect.
+#
+# ⚠️ `network_id` IS THE IDENTITY OF A ROUTE, NOT ITS NAME OR ITS CIDR. The
+# reconciler matches on it, so:
+#   * changing `network` under an unchanged network_id UPDATES that route --
+#     this is how you change an IP;
+#   * changing `network_id` CREATES A SECOND ROUTE and leaves the old one,
+#     because it cannot tell a rename from a new route.
+# Rename deliberately, and remove the old entry in the same commit.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: netbird-reconciler-desired
+  namespace: netbird-ops
+data:
+  desired.json: |
+    {
+      "routingPeerHostname": "cluster-routing-peer",
+
+      "setupKey": {
+        "name": "cluster-routing-peer",
+        "type": "reusable",
+        "expiresIn": 0,
+        "usageLimit": 0
+      },
+
+      "routes": [
+        {
+          "network_id": "lab-gateway",
+          "network": "192.168.32.19/32",
+          "description": "gated Gateway -- every *.lab.techyon.dev name resolves here",
+          "masquerade": true,
+          "metric": 9999,
+          "enabled": true
+        },
+        {
+          "network_id": "lab-gateway-plain",
+          "network": "192.168.32.18/32",
+          "description": "homelab Gateway",
+          "masquerade": true,
+          "metric": 9999,
+          "enabled": true
+        }
+      ],
+
+      "adminEmails": [
+        "adrian.jutrowski@techyon.dev"
+      ]
+    }

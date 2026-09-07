@@ -1,0 +1,47 @@
+# H1 -- what the reconciler may reach. Two names and DNS, nothing else.
+#
+# ⚠️ `enableDefaultDeny.egress: true` is EXPLICIT, not inherited. This
+# namespace holds a ServiceAccount token and an authentik credential, so it is
+# the last place to rely on a default.
+#
+# ⚠️ It also needs the KUBERNETES API, which is NOT an FQDN rule: the apiserver
+# is `reserved:kube-apiserver`, and an FQDN rule for
+# kubernetes.default.svc silently matches nothing.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: netbird-reconciler-egress
+  namespace: netbird-ops
+spec:
+  description: >-
+    The reconciler reaches authentik for a token, the NetBird API to apply
+    desired state, and the apiserver to write one Secret.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: netbird-reconciler
+  enableDefaultDeny:
+    egress: true
+    ingress: true
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports: [{ port: "53", protocol: UDP }]
+          rules:
+            dns: [{ matchPattern: "*" }]
+    # The token endpoint.
+    - toFQDNs:
+        - matchName: "authentik.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    # The NetBird management API. The PUBLIC name, not the in-cluster Service:
+    # the API is only routed through the Gateway, and this keeps the reconciler
+    # exercising the same path a real client does.
+    - toFQDNs:
+        - matchName: "vpn.techyon.dev"
+      toPorts:
+        - ports: [{ port: "443", protocol: TCP }]
+    - toEntities:
+        - kube-apiserver
