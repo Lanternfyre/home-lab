@@ -154,7 +154,7 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 | **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |
 | **B2b** | delete `spec.addresses` from the three Gateways | no | 2026-09-07, #158 |
-| **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | 2026-09-07 (this change) |
+| **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | 2026-09-07, #160 + the port fix below |
 | **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | |
 
 Why this order:
@@ -177,6 +177,16 @@ Why this order:
   to start.
 
 ---
+
+### 🔴 Hard-won, B3: a `toServices` rule's `toPorts` is the BACKEND port
+
+Policy runs after socket LB has rewritten the connection to the backend pod, so
+the port it sees is the pod's. Envoy Gateway binds privileged listeners +10000:
+the Gateways' `:443` is `10443` in the pod. Measured 2026-09-07 with the restored
+#149 rule (`port: "443"`): the routing peer's SYN carried the Envoy pod identity
+(`ID:14942`, no longer `world`) and was still `EGRESS DENIED`. `port: "10443"`
+is the rule that matches. Any future `toServices` rule in this estate names the
+targetPort, never the Service port.
 
 ### 🔴 Hard-won, B2a: the flip kills every established pod→Service connection, and PostgreSQL keeps the corpses
 

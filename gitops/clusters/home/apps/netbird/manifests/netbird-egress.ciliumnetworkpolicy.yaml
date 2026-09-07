@@ -143,6 +143,16 @@ spec:
     #
     # ⚠️ The proof is a Hubble verdict on the routing peer, never a clean
     # `kubectl apply`. An identity rule that matches nothing denies silently.
+    #
+    # 🔴 THE PORT IS THE BACKEND'S, NOT THE SERVICE'S. Policy runs after socket
+    # LB has rewritten the connection to the Envoy pod, so it sees the port the
+    # pod listens on. Envoy Gateway binds privileged listeners +10000, so the
+    # Gateways' :443 is 10443 in the pod. Measured 2026-09-07 with `port: 443`:
+    #
+    #   netbird-routing-peer (ID:29783) <> envoy-…-homelab-…:10443 (ID:14942)
+    #   policy-verdict:none EGRESS DENIED
+    #
+    # -- the identity matched (no more `world`), the port did not.
     - toServices:
         - k8sServiceSelector:
             namespace: gateway-envoy
@@ -154,7 +164,7 @@ spec:
                     - homelab        # argocd.lab and friends
                     - homelab-gated  # every other *.lab.techyon.dev name
       toPorts:
-        - ports: [{ port: "443", protocol: TCP }]
+        - ports: [{ port: "10443", protocol: TCP }]   # the pod's :443, see above
 
     # ⚠️ NO `toEntities: [world]` ANYWHERE, deliberately. The audit script fails
     # a published namespace that grants it, and a control plane strangers can
