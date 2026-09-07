@@ -157,6 +157,33 @@
     flat: true
     fail_on_missing: false
 
+# 🔴 THE TOKEN LINES MUST SURVIVE A CONVERGE THAT CARRIES NO TOKEN.
+#
+# Until 2026-09-07 the template rendered `token-file` / `agent-token-file` only
+# while the VALUES were being written (the rotation play). Every plain
+# `site.yml` since the 2026-09-06 rotation therefore rendered config.yaml WITHOUT
+# them -- and k3s without `agent-token-file` defaults the agent token to the
+# SERVER token. Measured during stage B4 of KUBE-PROXY-REPLACEMENT.md: k8s-3
+# restarted into such a config, its `server/agent-token` became the server
+# token (the split was gone), its `cred/passwd` then differed from the
+# datastore copy, and every further restart died on k3s's "passwd newer than
+# datastore" guard. The lines are rendered whenever the FILES exist on the
+# node, which is the only fact that matters.
+- name: "token | which credential files exist on this node"
+  become: true
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ k3s_token_path }}"
+    - "{{ k3s_agent_token_path }}"
+  register: k3s_token_files
+  no_log: true
+
+- name: "token | remember that, for the template"
+  ansible.builtin.set_fact:
+    k3s_token_file_present: "{{ k3s_token_files.results[0].stat.exists | default(false) }}"
+    k3s_agent_token_file_present: "{{ k3s_token_files.results[1].stat.exists | default(false) }}"
+
 # CLI flags override config.yaml in k3s. So a config that is a semantic superset
 # of the flags currently baked into ExecStart changes NOTHING while those flags
 # remain -- which makes this a zero-risk first step. Only once the unit is
