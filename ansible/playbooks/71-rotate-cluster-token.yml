@@ -286,6 +286,63 @@
       ansible.builtin.wait_for: { timeout: 20 }
 
 
+# ══ PHASE 5b: re-save the bootstrap data from disk ═════════════════════════
+# 🔴 WITHOUT THIS, EVERY SERVER'S NEXT RESTART IS ITS LAST. `k3s token rotate`
+# only re-encrypts the copy of the bootstrap data held in etcd; the cred/passwd
+# inside it still carries the OLD server token and the pre-split node password.
+# Each server's restart in phase 5 then rewrote its own cred/passwd with the new
+# tokens (genUsers runs at every start), so from that moment disk and datastore
+# disagree -- and k3s's reconcile guard refuses the NEXT restart:
+#
+#   level=fatal msg="/var/lib/rancher/k3s/server/cred/passwd newer than
+#   datastore and could cause a cluster outage. Remove the file(s) from disk
+#   and restart to be recreated from datastore."
+#
+# "Remove the file" buys exactly one start: k3s recreates it from the stale
+# datastore copy and genUsers diverges it again. Measured 2026-09-07 during
+# stage B4 of KUBE-PROXY-REPLACEMENT.md: k8s-3 was the first server to restart
+# since the 2026-09-06 rotation and stayed down until the datastore was
+# re-saved from a running server's disk.
+#
+# The supported re-save is `k3s certificate rotate-ca` with NOTHING staged: the
+# server fills every field from its current on-disk data, skips validation
+# because nothing changed, and writes that to etcd with override
+# (pkg/server/handlers/cert.go: defaultBootstrap -> cluster.Save(override)).
+# One server is enough; every server holds the same tokens after phase 5.
+- name: Re-save the bootstrap data from disk, so the next restart is not the last
+  hosts: k3s_servers
+  gather_facts: false
+  any_errors_fatal: true
+  tasks:
+    - name: "resave | an empty staging directory"
+      run_once: true
+      become: true
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: rotate-ca-noop-
+      register: resave_dir
+
+    - name: "resave | rotate-ca with nothing staged = save the current files"
+      run_once: true
+      become: true
+      ansible.builtin.command:
+        argv:
+          - /usr/local/bin/k3s
+          - certificate
+          - rotate-ca
+          - --path
+          - "{{ resave_dir.path }}"
+      register: resave
+      changed_when: "'certificates saved to datastore' in resave.stdout"
+      failed_when: "'certificates saved to datastore' not in resave.stdout"
+
+    - name: "resave | remove the staging directory"
+      run_once: true
+      become: true
+      ansible.builtin.file:
+        path: "{{ resave_dir.path }}"
+        state: absent
+
 # ══ PHASE 6: prove it ══════════════════════════════════════════════════════
 - name: Prove the rotation took on every server
   hosts: k3s_servers

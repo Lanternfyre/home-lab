@@ -92,14 +92,14 @@ the status. Where it stands:
 4. ~~B2b — no declared Gateway addresses~~ ✅ #158.
 5. ~~B3 — `toServices` by Gateway name, VPN routes by `domains`~~ ✅ #160, #162.
    The reconciler applies the route switch on its next successful sync.
-6. **B4 — `disable-kube-proxy` in k3s.** PR #161 is open and carries the
-   runbook; needs the operator and sudo. Servers before agents.
-7. **Open from B2a:** `postgres-ha` sat at 98/100 connections with 75 zombie
-   backends after the datapath flip and `authentik-server` crash-looped on it.
-   One `pg_terminate_backend` statement on the primary clears it (operator's
-   call, it terminates sessions); keepalives are already shortened (#159).
-8. Then the phone re-enrols in NetBird and `grafana.lab` over the VPN is the
-   last proof.
+6. ~~B4 — `disable-kube-proxy` in k3s~~ ✅ #161, all 8 nodes, 2026-09-07. It
+   surfaced two landmines from the 2026-09-06 token rotation, both fixed:
+   `CLUSTER-TOKEN.md` → "What 2026-09-07 taught us" (playbook phase 5b, #164).
+7. ~~postgres zombies from B2a~~ ✅ terminated by the operator; CNPG keepalives
+   shortened (#159).
+8. **Open:** the phone re-enrols in NetBird and `grafana.lab` over the VPN is
+   the last proof. Also worth a look: `postgres-ha` runs at ~80/100
+   connections in normal operation (reportportal's three pools hold 66).
 
 Deferred by decision, not forgotten: **backups** (see the warning above) and
 **H4 — SA tokens and RBAC**.
@@ -1823,6 +1823,15 @@ The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
 ---
 
 ## Hard-won findings — do not re-derive these
+
+**A token rotation leaves every server one restart from death, and a converge
+without secrets removed the agent-token split (2026-09-07).** `k3s token rotate`
+only re-encrypts etcd's copy of the bootstrap data; each server's next start
+rewrites `cred/passwd` with the new tokens; the restart after that dies on the
+"passwd newer than datastore" guard. Durable fix: `k3s certificate rotate-ca`
+with an EMPTY staging dir on a running server (playbook phase 5b). Separately,
+`roles/k3s_config` rendered the token lines only while writing the values;
+fixed in #164. Both in `CLUSTER-TOKEN.md`.
 
 **A Cilium datapath-mode switch is a connection-reset event, and PostgreSQL keeps
 the corpses (2026-09-07).** Flipping `kubeProxyReplacement` regenerated every
