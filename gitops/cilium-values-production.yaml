@@ -1,14 +1,12 @@
-# Cilium 1.20.0 — END-STATE values, applied only at CLEANUP (stage 5).
+# Cilium 1.20.0 — the LIVE values on all 8 nodes (helm release rev 6+).
 #
-# ⚠️ Do NOT apply this until every one of the five nodes is migrated and
-# validated. Each of the four changes below is a cluster-wide behaviour change,
-# and two of them are the riskiest moments in the whole of Phase 3.
+# Applied by `ansible-playbook playbooks/34-cilium.yml` (workstation only, no
+# sudo), never by hand and never by ArgoCD -- roles/cilium explains why. The
+# role re-reads this file and asserts the RUNNING agent agrees with it.
 #
-#   helm upgrade cilium cilium/cilium --version 1.20.0 \
-#     -n kube-system -f gitops/cilium-values-production.yaml
-#
-# Diff against cilium-values-migration.yaml is the honest summary of what
-# cleanup actually does. See CILIUM-MIGRATION.md stage 5.
+# History: this was the "end-state, apply only at cleanup" file of the flannel
+# migration (CILIUM-MIGRATION.md stage 5). Cleanup happened; it is simply the
+# values now. Diff against cilium-values-migration.yaml for what cleanup did.
 
 cni:
   # Cilium now owns CNI on every node unconditionally, rather than per-node
@@ -98,7 +96,31 @@ policyEnforcementMode: "default"
 # on them -- an empty match denies nothing and looks identical to a clean run.
 nodeSelectorLabels: true
 
+# ── kube-proxy replacement (KUBE-PROXY-REPLACEMENT.md) ──────────────────────
+# "false" today. Stage B2a flips it to "true" while k3s still runs kube-proxy
+# in-process (a supported overlap: Cilium's BPF sees every packet first and
+# kube-proxy's rules go dead); stage B4 then removes kube-proxy from k3s.
+#
+# Under "true" socket LB is forced on, at the Cilium default (full, pods
+# included -- operator's choice 2026-09-07). Per-packet LB is then compiled
+# OUT of bpf_lxc, so a pod that emits NON-socket traffic to a Service address
+# (raw sockets, kernel forwarding) is no longer translated. None known in this
+# estate; the rootless NetBird routing peer forwards through real sockets.
 kubeProxyReplacement: "false"
+
+# NodePort/LoadBalancer frontends are created only for device addresses inside
+# these CIDRs: the LAN NIC (192.168.33.x -- node addresses, NOT the
+# 192.168.32.x MetalLB pool) and wg0 (10.250.0.x). Deliberately EXCLUDED:
+#   * the edge's PUBLIC address on eth0. Under kube-proxy replacement BPF
+#     NodePort runs at tc ingress, BEFORE nftables, so edge_firewall could never
+#     close a NodePort there. (kube-proxy on the edge DID forward argocd-server's
+#     NodePorts to the internet until 2026-09-07 -- MANUAL-STEPS.md 0c.)
+#   * the API VIP 192.168.32.2, a secondary address on lab2's eno1 that floats.
+#   * flannel.1's 10.42.x address, a dead interface Cilium still auto-detects.
+# Set while kubeProxyReplacement is still "false" (it renders, does nothing yet)
+# so the flip is a one-line change. Verified: renders as nodeport-addresses.
+nodePort:
+  addresses: ["192.168.33.0/24", "10.250.0.0/24"]
 
 enableLBIPAM: false
 defaultLBServiceIPAM: none
