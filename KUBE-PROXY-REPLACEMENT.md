@@ -387,5 +387,12 @@ promoted to admin. What it took, all measured:
 ⚠️ Order still matters for any future rebuild: the reconciler must authenticate
 BEFORE any human session reaches management, tabs included.
 
+⚠️ **The routing peer's identity lives in an emptyDir.** Any pod recreation
+registers a new peer with the same name; the old record lingers, and until chart
+`0.1.13` the route stayed bound to it (found when B4's k3s restart on lab3 took
+containerd, and the pod, with it: the phone connected fine and `grafana.lab`
+loaded forever). The reconciler now binds the route to the newest incarnation
+and prunes the dead ones (`peerPrune: true`).
+
 ⚠️ Until B2b, the routing peer on any node but lab1 cannot reach .19 (§2), so
 "the phone loads grafana.lab" is a B2b check, not a stage-A check.

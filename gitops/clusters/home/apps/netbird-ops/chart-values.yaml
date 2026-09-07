@@ -103,6 +103,13 @@ reconciler:
     # Routes ARE these values: one not listed above is deleted on the next sync
     # (chart 0.1.12). This is what removed `lab-gateway-plain` (192.168.32.18/32).
     routePrune: true
+    # The routing peer keeps its NetBird identity in an emptyDir, so a pod
+    # recreation registers a NEW peer with the same name and the old record
+    # lingers -- with the route still bound to it. Measured 2026-09-07: k3s
+    # restarting on lab3 restarted containerd, the pod was recreated, and every
+    # VPN client was routed to a peer that no longer existed. The reconciler
+    # (0.1.13) binds the route to the newest incarnation and deletes the rest.
+    peerPrune: true
 
     # ⚠️ Eventually consistent, and that is a property of NetBird rather than a
     # defect here: with `IdpManagerConfig.ManagerType: none` there is no
