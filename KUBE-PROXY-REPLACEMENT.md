@@ -287,12 +287,31 @@ workstation (`192.168.33.8`), before and after:
 | shared address | `.53` TCP + UDP | both answer |
 | Hubble on the owner | `hubble observe --to-ip <LB>` | FORWARDED, no DROPPED |
 
+### B4 runbook (sudo; the operator drives, one node at a time)
+
+Precondition: SSH to a control-plane node open and confirmed. Rollback is by
+SSH, not kubectl (§8).
+
+```sh
+cd ansible
+# 1. render config.yaml on the servers -- converges, NEVER restarts
+ansible-playbook site.yml --limit k3s_servers --ask-become-pass
+# 2. servers first, serial, etcd-gated, k8s-1 last. Agents fetch the flag from
+#    a server at startup, so no agent may restart before this finishes.
+ansible-playbook playbooks/20-config-converge.yml --limit k3s_servers --ask-become-pass
+# 3. per-server gate (behaviour, not files), then the agents the same way
+ansible-playbook playbooks/20-config-converge.yml --limit k3s_agents --ask-become-pass
+# 4. flush what kube-proxy left behind, every node, then the gate again
+ansible k3s_nodes -b --ask-become-pass -m shell -a 'iptables-save | grep -v KUBE | iptables-restore'
+```
+
 ### B4 gate, per node
 
-`ss -ltn` shows no `127.0.0.1:10249`/`10256`; a pod on that node reaches
-`10.43.0.1` and a LB address; node DNS resolves. Then flush the ~885 stale rules
-(`iptables-save | grep -v KUBE | iptables-restore`, root) and re-run the gate.
-nft-native tables (`edge_firewall`, `wg_guard`) are untouched by that.
+`ss -ltn` shows no `127.0.0.1:10249`/`10256` (kube-proxy's metrics and healthz
+are the only listeners it owns); a pod on that node reaches `10.43.0.1` and a LB
+address; node DNS resolves; the edge still answers 7171/7172 from outside. Then
+the flush above, and the gate again: `iptables -t nat -S | grep -c KUBE` reads 0.
+nft-native tables (`edge_firewall`, `wg_guard`) are untouched by the flush.
 
 ---
 
