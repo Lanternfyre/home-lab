@@ -20,6 +20,14 @@ serviceWeb:
   annotations:
     metallb.io/allow-shared-ip: pihole-svc
 
+# DHCP is not active in this Pi-hole (`pihole-FTL --config dhcp.active` reads
+# `false`; the router does DHCP). The chart still generates a NodePort Service
+# for it by default -- 67/UDP as a NodePort on EVERY node, the public edge
+# included. Verified against chart 2.35.0: with this false the Service is not
+# rendered at all. See MANUAL-STEPS.md 0c for why a NodePort on the edge matters.
+serviceDhcp:
+  enabled: false
+
 # ── Migrated to Envoy Gateway (Phase 6) ──────────────────────────────────────
 # Routing is manifests/pihole.httproute.yaml, on the GATED Gateway.
 #
