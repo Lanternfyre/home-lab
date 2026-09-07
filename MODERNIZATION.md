@@ -460,6 +460,10 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
    The playbook completed clean: `failed=0 unreachable=0`, `changed=3` per
    node, k8s-1 last. Phase 4 is complete.
 
+   ⚠️ That confirmation was against Google. After A6 moved the issuer to
+   authentik (2026-08-31) the same login failed silently on `email_verified`
+   until 2026-09-07 -- see "Hard-won findings".
+
    🔵 **Optional follow-up, not required:** `kubectl` OIDC is installed
    (`playbooks/16-kubectl-oidc.yml`, context `homelab-oidc`) but needs
    `http://localhost:8000` registered on the Google client — `MANUAL-STEPS.md`
@@ -1833,6 +1837,19 @@ The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
 ---
 
 ## Hard-won findings — do not re-derive these
+
+**authentik answers `email_verified: false` for everyone, and the API server
+refuses the token for exactly that (2026-09-07).** With `oidc-username-claim=email`
+Kubernetes rejects any token whose `email_verified` claim is present and false:
+`oidc: email not verified` in the k3s journal (readable without sudo, `adm`
+group), a bare 401 in Headlamp after a login that visibly succeeded, and
+`jwt_authenticator_latency_seconds_count{result="failure"}` climbing on
+`/metrics`. authentik's stock `email` scope mapping has emitted `False` since
+before 2026.2, so the API-server half of A6 never worked and no converge gate
+could see it -- only a login that yields an identity can. Fixed in the
+kubernetes blueprint with a mapping that returns the claim true for
+`authentik Admins` only; an unconditional true would let any self-edited email
+match the cluster-admin binding.
 
 **A token rotation leaves every server one restart from death, and a converge
 without secrets removed the agent-token split (2026-09-07).** `k3s token rotate`
