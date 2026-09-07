@@ -34,9 +34,20 @@ spec:
         - ports: [{ port: "53", protocol: UDP }]
           rules:
             dns: [{ matchPattern: "*" }]
-    # authentik, for the client_credentials token.
-    - toFQDNs:
-        - matchName: "authentik.techyon.dev"
+    # 🔴 authentik BY ADDRESS, NOT BY FQDN, AND THAT IS FORCED.
+    #
+    # The Job carries a hostAlias pinning authentik.techyon.dev to the tunnel
+    # gateway, so it never performs a DNS lookup for that name -- and Cilium's
+    # toFQDNs rules are built FROM observed DNS answers. A toFQDNs rule here
+    # would therefore match nothing and the request would be denied, while the
+    # policy still reads as though authentik were allowed.
+    #
+    # ⚠️ The two must change together: remove the hostAlias and this rule stops
+    # covering the traffic; remove this rule and the hostAlias sends the
+    # request somewhere the policy does not permit. Both directions fail
+    # closed, which is right, but neither says why.
+    - toCIDRSet:
+        - cidr: 192.168.32.11/32   # tunnel Gateway -- serves authentik.techyon.dev
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
     # ⚠️ The PUBLIC NetBird endpoint, not the in-cluster Service. The API is
