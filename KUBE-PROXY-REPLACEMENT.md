@@ -106,7 +106,7 @@ translated at the pod, and in Cilium 1.20 that means `kubeProxyReplacement: true
 |---|---|---|
 | `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | B2b, 2026-09-07 |
 | `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | B3, 2026-09-07 — `toServices` by Gateway name |
-| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3, 2026-09-07 — a `domains` route listing the LAN Gateways' hostnames (NetBird Routes take no wildcard; the Networks API does — follow-up) |
+| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3, 2026-09-07 — a `fromService` route: the reconciler reads each Gateway Service's address at apply time (NetBird Routes take no wildcard and the Android client installs no DNS route at all) |
 
 **Reached.** No Gateway address is written anywhere in this repository. What
 still names a `192.168.32.x` address in git is the MetalLB pool itself, and the
@@ -387,13 +387,24 @@ promoted to admin. What it took, all measured:
 ⚠️ Order still matters for any future rebuild: the reconciler must authenticate
 BEFORE any human session reaches management, tabs included.
 
-⚠️ **NetBird network Routes do not take wildcards.** `domains: ["*.lab.techyon.dev"]`
-was accepted by the API and did nothing on the phone (client-side resolution of
-a literal name list). The route now lists the hostnames the two LAN Gateways
-serve; a new HTTPRoute there needs a line in `apps/netbird-ops/chart-values.yaml`.
-Wildcards live in NetBird's newer Networks API (domain resources resolved by the
-routing peer, `*.lab.techyon.dev` matching every subdomain); moving the
-reconciler to it is the follow-up that makes this list disappear.
+⚠️ **Routes by name did not survive contact with the phone.** NetBird network
+Routes take no wildcard (`*.lab.techyon.dev` was accepted and matched nothing),
+and the Android client (0.71) installs no DNS route at all — one name or twenty.
+The route is now `fromService`: the reconciler reads each LAN Gateway Service's
+LoadBalancer address from the cluster at apply time and keeps one `/32` per
+Gateway. No address is written anywhere; a moved address moves the route on the
+next sync. Wildcard names live in NetBird's Networks API; moving there is a
+follow-up, not a need.
+
+🔴 **The reconciler blocked the operator.** NetBird represents a user pending
+approval as blocked; chart `0.1.10`–`0.1.13` approved the user and then
+promoted them with the `is_blocked` value read *before* approving — account
+events 11:23:47: approved, role updated, blocked, all by the reconciler. A
+blocked user's peers are refused at `Sync`, so the phone cycled
+connected → connecting for an hour while routing was blamed. Chart `0.1.14`
+sends `is_blocked: false` on every pass. The tell was the edge Envoy trace:
+`Login` 200, then `Sync` 200 with **zero bytes in 40 ms**, then the client
+closing its own relay session — the management refusing a peer silently.
 
 ⚠️ **The routing peer's identity lives in an emptyDir.** Any pod recreation
 registers a new peer with the same name; the old record lingers, and until chart
