@@ -143,9 +143,9 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 
 | stage | what | sudo? | landed |
 |---|---|---|---|
-| **0** | close the public NodePort door: release `argocd-server` + `mealie` NodePorts (MANUAL-STEPS §0c form), `NODEPORT` check in `audit-edge-exposure.py` | no | |
-| **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, phone re-enrols | no (phone in hand) | |
-| **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | |
+| **0** | close the public NodePort door: every LoadBalancer NodePort released (MANUAL-STEPS §0c form), `pihole-dhcp` off, `NODEPORT` check + `--probe` in `audit-edge-exposure.py` | no | 2026-09-07, #153 |
+| **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin. Phone enrolment is the B2b gate | no | 2026-09-07 (chart 0.1.11, #155/#156) |
+| **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | |
 | **B2b** | delete `spec.addresses` from the three Gateways | no | |
 | **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | |
@@ -268,23 +268,34 @@ broken too. Have SSH to a control-plane node open and confirmed before B4.
 through the edge proven from the public internet; Android peer enrolled; the 15s
 Envoy stream cuts fixed.
 
-**Built, blocked on stage A:** the reconciler (chart `0.1.9`, the `netbird-ops`
-app, an ArgoCD PostSync hook Job). Its authentik identity works end to end. It
-authenticated into an account **of its own** because the existing account predates
-the domain-routing claims, so against the real account it is a regular user and
-gets **403** on `/api/setup-keys` and `/api/routes` — still measured live on
-2026-09-07, every sync.
+**Stage A done 2026-09-07.** The management PVC (`local-path`, `reclaim=Delete`,
+on lab7) was wiped; the reconciler (chart `0.1.11`, the `netbird-ops` app, an
+ArgoCD PostSync hook Job) authenticated first and is the account **owner**; it
+created the setup key, wrote `netbird/netbird-setup-key`, the routing peer
+re-enrolled on it (emptyDir state, `NB_SETUP_KEY` read at pod start — delete the
+pod to re-enrol), the two routes exist, and the operator's login was approved and
+promoted to admin. What it took, all measured:
 
-**The fix, authorised by the operator:** wipe the management PVC (`local-path`,
-`reclaim=Delete`, on lab7 — no Trident leak, the CLAUDE.md Retain warning does not
-apply). On a fresh account the reconciler authenticates first, becomes **owner**,
-creates the setup key, writes `netbird/netbird-setup-key`, creates the routes and
-promotes `adminEmails` after their first login. The routing peer (emptyDir state,
-`NB_SETUP_KEY` read at pod start) re-enrols when its pod is deleted; the phone
-re-enrols by hand.
+* 🔴 **The first wipe was lost to a browser tab.** 54 s after fresh management
+  came up, the dashboard's auto-refresh (a valid OIDC session) created the
+  account with the human as owner; the reconciler then joined as a user *pending
+  approval*. Second wipe: the `netbird-ops` sync was fired the second the pod
+  reported Ready, with every dashboard tab closed. The window is seconds, not
+  minutes.
+* Chart `0.1.9` matched the routing peer on the API's `hostname` (the OS hostname,
+  i.e. the pod name) — it can never equal the `NB_HOSTNAME` name. `0.1.10` matches
+  `name`/`dns_label`.
+* Routes need a non-empty distribution `groups` list (`422` otherwise). `0.1.11`
+  resolves `routeGroups` (default `["All"]`) by name, and accepts `domains` routes
+  for stage B3.
+* NetBird 0.78 puts every new login in *pending approval*; the reconciler now
+  approves (`POST /api/users/{id}/approve`) before promoting.
+* An ArgoCD sync whose PostSync hook keeps failing **retries for ~15 min and
+  blocks the next sync**, so a chart bump that fixes the hook does not apply until
+  the old operation is terminated (`status.operationState.phase: Terminating`).
 
-⚠️ Order matters: the reconciler must authenticate BEFORE any human logs in, or
-the human owns the account and the reconciler is a regular user again.
+⚠️ Order still matters for any future rebuild: the reconciler must authenticate
+BEFORE any human session reaches management, tabs included.
 
 ⚠️ Until B2b, the routing peer on any node but lab1 cannot reach .19 (§2), so
 "the phone loads grafana.lab" is a B2b check, not a stage-A check.
