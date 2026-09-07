@@ -124,42 +124,33 @@ spec:
 
     # ── The LAN gateways, so `*.lab.techyon.dev` works over the VPN ────────
     #
-    # 🟢 SELECTED BY LABEL, NOT BY ADDRESS -- ON PURPOSE.
+    # 🔴 BY ADDRESS, AND THE ADDRESSES ARE NOW DECLARED RATHER THAN
+    # ALLOCATED. The Gateways carry `spec.addresses`, so these are facts this
+    # repo states, not values MetalLB happened to hand out. Change one there
+    # and change it here; nothing else moves them.
     #
-    # This was two /32s. They were never ours to assume: every gateway address
-    # here is a first-come MetalLB allocation from 192.168.32.10-250, no
-    # Gateway declares spec.addresses, and the Service name carries a
-    # Gateway-derived hash (envoy-gateway-envoy-homelab-gated-06cddf46), so
-    # recreating a Gateway recreates the Service and takes a fresh address.
-    # MetalLB is sticky in practice and guarantees nothing.
+    # ⚠️ SELECTING THE SERVICE BY LABEL WAS TRIED AND CANNOT WORK HERE. A
+    # `toServices` rule resolves correctly -- the policy map gains an allow for
+    # the envoy pod identity, verified -- and traffic is STILL denied:
     #
-    # A stale CIDR here fails CLOSED and SILENTLY: the name still resolves,
-    # the route still exists, and traffic simply stops -- with nothing naming
-    # the policy as the cause.
+    #   netbird-routing-peer <> envoy-gateway/...-homelab-gated:443 (world)
+    #   policy-verdict:none EGRESS DENIED
     #
-    # `gateway.envoyproxy.io/owning-gateway-name` is set by Envoy Gateway and
-    # names the GATEWAY, which is a thing this repo declares, rather than the
-    # Service name or the address, which are both generated. So this rule says
-    # "whatever currently fronts these two Gateways" and needs no edit when an
-    # address moves.
+    # Hubble NAMES the destination as the Service while the identity it carries
+    # is `world`. With `kube-proxy-replacement: false`, egress policy is
+    # evaluated BEFORE kube-proxy's DNAT, so the packet is still addressed to
+    # the LoadBalancer frontend -- an address with no ipcache entry, hence
+    # `world` -- and a rule naming backends can never match it. `toCIDRSet` is
+    # what CREATES an ipcache entry for that frontend, which is why this form
+    # works and the identity form does not.
     #
-    # ⚠️ VERIFY THE DATAPATH, NOT JUST THE MANIFEST. `kube-proxy-replacement`
-    # is false here, so if egress policy is evaluated BEFORE kube-proxy's DNAT
-    # the destination is the LoadBalancer IP -- `world` -- and a rule naming
-    # backends matches nothing. Cilium does hold the service
-    # (192.168.32.19:443 => 10.245.1.53:10443 active), which is why this is
-    # worth doing, but the proof is a policy-map entry or a Hubble verdict,
-    # never a clean `kubectl apply`.
-    - toServices:
-        - k8sServiceSelector:
-            namespace: gateway-envoy
-            selector:
-              matchExpressions:
-                - key: gateway.envoyproxy.io/owning-gateway-name
-                  operator: In
-                  values:
-                    - homelab        # 192.168.32.18 today
-                    - homelab-gated  # 192.168.32.19 today -- *.lab.techyon.dev
+    # ⚠️ This becomes obsolete the day Cilium owns service translation
+    # (kubeProxyReplacement), because translation would then happen before
+    # policy and the identity form would start working. That is a deliberate
+    # cluster-wide change, not something to slip in here.
+    - toCIDRSet:
+        - cidr: 192.168.32.18/32   # Gateway homelab       (declared)
+        - cidr: 192.168.32.19/32   # Gateway homelab-gated (declared)
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
 

@@ -44,6 +44,10 @@ metadata:
   name: homelab
   namespace: gateway-envoy
 spec:
+  # A declared address, not an allocated one -- see homelab-gated.gateway.yaml.
+  addresses:
+    - type: IPAddress
+      value: 192.168.32.18   # the ungated LAN gateway
   gatewayClassName: envoy
   listeners:
     - name: https
