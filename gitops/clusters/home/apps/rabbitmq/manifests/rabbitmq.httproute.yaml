@@ -28,6 +28,33 @@ spec:
   hostnames:
     - rabbitmq.lab.techyon.dev
   rules:
-    - backendRefs:
+    # 🔴 STRIP THE GATE'S COOKIES BEFORE THE BACKEND SEES THEM, or RabbitMQ
+    # answers 431.
+    #
+    # The edge gate stores its authentik session in oauth2 cookies (IdToken +
+    # AccessToken + RefreshToken, encrypted). Envoy forwards the whole Cookie
+    # header upstream, and RabbitMQ's management UI is served by Cowboy
+    # (Erlang), whose per-header-value limit is far below Envoy's -- so once the
+    # cookies grow, `GET /` returns HTTP 431 "Request Header Fields Too Large"
+    # straight from the broker (seen in the Envoy access log as
+    # `via_upstream`, upstream `:15672`), NOT from the gate. Raising Envoy's
+    # own limit (gated-header-size.envoypatchpolicy.yaml) fixed the apps whose
+    # backends tolerate big headers; RabbitMQ needed this second step.
+    #
+    # Safe because the gate has ALREADY authenticated by the time this route
+    # filter runs (jwt_authn is a connection-manager filter, header mutation is
+    # applied by the router afterwards), and RabbitMQ management authenticates
+    # with HTTP Basic auth (the `rabbitmq` admin user), not a cookie. So the
+    # backend never needed the Cookie header at all.
+    #
+    # ⚠️ This is deliberately per-route, NOT on the Gateway. Other gated
+    # backends (Grafana, Silo, OpenSearch) DO keep their own session cookies,
+    # so a blanket strip would log them out.
+    - filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            remove:
+              - Cookie
+      backendRefs:
         - name: rabbitmq
           port: 15672
