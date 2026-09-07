@@ -97,8 +97,10 @@ the status. Where it stands:
    `CLUSTER-TOKEN.md` → "What 2026-09-07 taught us" (playbook phase 5b, #164).
 7. ~~postgres zombies from B2a~~ ✅ terminated by the operator; CNPG keepalives
    shortened (#159).
-8. **Open:** the phone re-enrols in NetBird and `grafana.lab` over the VPN is
-   the last proof. Also worth a look: `postgres-ha` runs at ~80/100
+8. **Open:** `grafana.lab` over the VPN from the phone is the last proof
+   (phone enrolled; the route now lists hostnames because NetBird Routes take
+   no wildcard). Follow-up: move the reconciler to NetBird's Networks API so
+   `*.lab.techyon.dev` is one domain resource again. Also worth a look: `postgres-ha` runs at ~80/100
    connections in normal operation (reportportal's three pools hold 66).
 
 Deferred by decision, not forgotten: **backups** (see the warning above) and
