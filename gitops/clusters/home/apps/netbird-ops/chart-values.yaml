@@ -76,42 +76,29 @@ reconciler:
     # route appears alongside the old one, because a rename cannot be told
     # apart from a new route.
     #
-    # 🟢 BY NAME, NOT BY ADDRESS. `*.lab.techyon.dev` is resolved on each VPN
-    # client and the learned addresses are routed through the in-cluster
-    # peer (`keepRoute` keeps them when a name stops resolving to them). Every
-    # existing URL works over the VPN with no client DNS configuration, and
-    # nothing here has to change when MetalLB hands a Gateway a new address.
+    # 🟢 BY SERVICE, NOT BY ADDRESS. `fromService` names the two LAN Gateways by
+    # the label Envoy Gateway stamps on their Services; the reconciler reads each
+    # one's LoadBalancer address from the cluster at apply time and keeps one
+    # /32 route per Gateway (`lab-gateway-homelab`, `lab-gateway-homelab-gated`).
+    # If MetalLB ever hands a Gateway a different address, the next sync moves
+    # the route. Nothing here, and nothing in this repository, records one.
     #
-    # ⚠️ NOT 192.168.32.0/23. Every *.lab.techyon.dev name resolves to one of
-    # two Gateway addresses; a domain route hands a client exactly those. The
-    # /23 would hand every VPN client the entire home LAN -- printers, NAS,
-    # everything -- to reach web UIs that live behind two addresses. That is
+    # ⚠️ Why not names. NetBird's network Routes take no wildcard, and the
+    # Android client (0.71) does not install DNS routes at all -- measured
+    # 2026-09-07, one name or twenty. A plain CIDR route is what every client
+    # installs. Wildcard names exist in NetBird's newer Networks API; moving
+    # there is a follow-up, not a need.
+    #
+    # ⚠️ NOT 192.168.32.0/23. Two /32s reach the web UIs; the /23 would hand
+    # every VPN client the entire home LAN -- printers, NAS, everything. That is
     # the difference between a VPN into the CLUSTER and a VPN into the HOUSE.
-    #
-    # Same network_id as the old /32 route on purpose: the reconciler UPDATES
-    # a route whose identity is unchanged, so this replaces it rather than
-    # leaving a second one behind. `lab-gateway-plain` is dropped: the wildcard
-    # covers the names that resolved to .18 too, and `routePrune` below removes
-    # the old route on the same sync.
-    #
-    # ⚠️ NO WILDCARD. NetBird's network ROUTES resolve each listed name on the
-    # client and do not support `*.lab.techyon.dev` (measured 2026-09-07: the
-    # route was accepted, the phone installed nothing, every request hung).
-    # Wildcards exist only in NetBird's newer NETWORKS API (a domain resource
-    # resolved by the routing peer), which the reconciler does not drive yet --
-    # that migration is the recorded follow-up. Until then this is the list of
-    # hostnames the two LAN Gateways serve, taken from the live HTTPRoutes;
-    # a new HTTPRoute on `homelab`/`homelab-gated` needs a line here. The
-    # Routes API allows 32 per route.
     routes:
       - network_id: lab-gateway
-        # 🧪 EXPERIMENT 2026-09-07: one name only. With all 20 names the Android
-        # client (0.71) cycled connected -> connecting every ~18 s (login, sync,
-        # relay connect, disconnect) and never installed a route. One name tells
-        # whether the DNS-route feature or the list length is what it chokes on.
-        domains:
-          - grafana.lab.techyon.dev
-        description: "the *.lab.techyon.dev names, resolved on the client"
+        fromService:
+          namespace: gateway-envoy
+          selector: "gateway.envoyproxy.io/owning-gateway-name in (homelab,homelab-gated)"
+          nameFromLabel: gateway.envoyproxy.io/owning-gateway-name
+        description: "LAN Gateway, address read from its Service at apply time"
         masquerade: true
         metric: 9999
         # 🧪 DISABLED 2026-09-07: the Android client (0.71) cycles
