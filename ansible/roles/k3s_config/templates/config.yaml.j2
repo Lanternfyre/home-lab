@@ -87,6 +87,20 @@ kube-apiserver-arg:
   - "oidc-username-claim={{ k3s_oidc_username_claim | default('email') }}"
 {% endif %}
 
+{% if k3s_disable_kube_proxy is defined %}
+# ⚠️ SERVER-ONLY KEY, and it governs the AGENTS too. An agent does not accept
+# `disable-kube-proxy` (unknown key -> refuses to start); it FETCHES the value
+# from a server at startup via /v1-k3s/config. So: set on every server, restart
+# the servers first, and only then restart agents -- an agent restarted earlier
+# can fetch `false` from a server that has not picked this up yet.
+#   playbooks/20-config-converge.yml --limit k3s_servers
+#   playbooks/20-config-converge.yml --limit k3s_agents
+# Only safe once Cilium runs with kubeProxyReplacement=true and stage B2a of
+# KUBE-PROXY-REPLACEMENT.md has passed its gate. With this true and Cilium NOT
+# replacing kube-proxy, no Service resolves anywhere -- ArgoCD included.
+disable-kube-proxy: {{ 'true' if (k3s_disable_kube_proxy | bool) else 'false' }}
+{% endif %}
+
 {% if k3s_flannel_backend is defined %}
 # ⚠️⚠️ DANGER ⚠️⚠️
 # flannel-backend: none REMOVES THE CNI. In k3s, flannel runs inside the server

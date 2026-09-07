@@ -5,3 +5,12 @@
 # need (asking "am I in group X" from inside a template is possible but ugly,
 # and it invites two answers to one question).
 k3s_role: server
+
+# ── kube-proxy (KUBE-PROXY-REPLACEMENT.md, stage B4) ─────────────────────────
+# Unset = k3s runs kube-proxy in-process on every node, as it always has.
+# Setting this true renders `disable-kube-proxy: true` on the SERVERS only;
+# agents fetch it from a server when they start. It is a stage-B4 change with
+# its own gate: Cilium must already be running with kubeProxyReplacement=true
+# (gitops/cilium-values-production.yaml) or no Service resolves anywhere.
+# Restart order is servers first, then agents -- see the template's comment.
+# k3s_disable_kube_proxy: true

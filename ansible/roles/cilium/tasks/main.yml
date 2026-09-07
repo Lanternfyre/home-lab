@@ -410,18 +410,33 @@
 # The values that would silently break things if a values edit moved them.
 # Asserted against the AGENT, not the ConfigMap, because a ConfigMap that has
 # not been picked up is exactly the class of bug this repo keeps finding.
+#
+# Whether kube-proxy is replaced is decided by the VALUES FILE, and the agent
+# is asserted to agree with it in EITHER direction. This used to assert
+# `KubeProxyReplacement: False` unconditionally -- which would have failed the
+# very run that flips it (KUBE-PROXY-REPLACEMENT.md, stage B2a) and, worse,
+# would have failed AFTER helm had already applied the change.
+- name: "verify | what the values file says about kube-proxy replacement"
+  ansible.builtin.set_fact:
+    cilium_kpr_expected: >-
+      {{ ((lookup('file', cilium_values_file) | from_yaml).kubeProxyReplacement
+          | default('false') | string | lower) == 'true' }}
+
 - name: "verify | the load-bearing values are live, not just rendered"
   ansible.builtin.assert:
     that:
       - "'Tunnel [vxlan]' in cil_status.stdout"
       - "cilium_pod_cidr_prefix in cil_status.stdout"
-      - "'KubeProxyReplacement:    False' in cil_status.stdout or 'KubeProxyReplacement: False' in (cil_status.stdout | regex_replace(' +', ' '))"
+      - "('KubeProxyReplacement: ' ~ ('True' if (cilium_kpr_expected | bool) else 'False')) in (cil_status.stdout | regex_replace(' +', ' '))"
     fail_msg: >-
-      The agent's live status does not match this role's expectations.
+      The agent's live status does not match the values file.
       Wanted vxlan tunnelling, IPAM from {{ cilium_pod_cidr_prefix }}x and
-      kube-proxy NOT replaced (k3s runs kube-proxy in-process). Got:
+      KubeProxyReplacement {{ 'True' if (cilium_kpr_expected | bool) else 'False' }}
+      (per kubeProxyReplacement in {{ cilium_values_file | basename }}). Got:
       {{ cil_status.stdout | regex_search('(Routing|IPAM|KubeProxyReplacement).*') | default('nothing matching') }}
-    success_msg: "vxlan, {{ cilium_pod_cidr_prefix }}x IPAM, kube-proxy retained — as configured."
+    success_msg: >-
+      vxlan, {{ cilium_pod_cidr_prefix }}x IPAM, kube-proxy
+      {{ 'replaced' if (cilium_kpr_expected | bool) else 'retained' }} — as the values file says.
   when: not ansible_check_mode
 
 # ⚠️ Reads the RUNNING agent, never the ConfigMap. The ConfigMap is what helm
