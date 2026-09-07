@@ -150,7 +150,7 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 | stage | what | sudo? | landed |
 |---|---|---|---|
 | **0** | close the public NodePort door: every LoadBalancer NodePort released (MANUAL-STEPS §0c form), `pihole-dhcp` off, `NODEPORT` check + `--probe` in `audit-edge-exposure.py` | no | 2026-09-07, #153 |
-| **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin. Phone enrolment is the B2b gate | no | 2026-09-07 (chart 0.1.11, #155/#156) |
+| **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin, phone enrolled | no | 2026-09-07 (charts 0.1.10→0.1.14, #155–#171) |
 | **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |
 | **B2b** | delete `spec.addresses` from the three Gateways | no | 2026-09-07, #158 |
@@ -289,7 +289,12 @@ post-verify caught it ("1 Running pod not Ready") — keep that assert.
    backend `10.245.1.53:10443`.
 3. **The §1 line:** grafana (lab3) `curl` .19/.18/.11 all connect, and Hubble shows
    the Envoy pod **identity**. That single line is the whole point of the exercise.
-4. From the phone via NetBird, `https://grafana.lab.techyon.dev` loads.
+4. From the phone via NetBird, `https://grafana.lab.techyon.dev` loads — ✅
+   **2026-09-07 15:1x, operator-confirmed**, after the two `/32` routes derived
+   from the Gateway Services were live on the routing peer. It needed BOTH: the
+   gated Gateway (`.19`) redirects the login to `authentik.lab`, which lives on
+   the plain Gateway (`.18`); a route to `.19` alone loads forever at the
+   redirect. The operator spotted that.
 
 ### "Verify MetalLB L2 still works" — made concrete
 

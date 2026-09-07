@@ -97,11 +97,18 @@ the status. Where it stands:
    `CLUSTER-TOKEN.md` → "What 2026-09-07 taught us" (playbook phase 5b, #164).
 7. ~~postgres zombies from B2a~~ ✅ terminated by the operator; CNPG keepalives
    shortened (#159).
-8. **Open:** `grafana.lab` over the VPN from the phone is the last proof. Two
-   things cost an hour on 2026-09-07 evening and are recorded in
-   `KUBE-PROXY-REPLACEMENT.md` §9: the reconciler had blocked the operator's
-   user (fixed, chart 0.1.14), and DNS routes do not work on the Android client
-   (routes are now derived from the Gateway Services at apply time). Also worth a look: `postgres-ha` runs at ~80/100
+8. ~~`grafana.lab` over the VPN from the phone~~ ✅ 2026-09-07 evening. What it
+   took is in `KUBE-PROXY-REPLACEMENT.md` §9: the reconciler had blocked the
+   operator's user (chart 0.1.14 fixes the pass), DNS routes do not work on the
+   Android client (routes are derived from the Gateway Services at apply time),
+   and the VPN needs BOTH gateways because the gated one redirects logins to
+   `authentik.lab` on the plain one.
+
+**The kube-proxy replacement and the NetBird bootstrap are complete.** Left
+over, small: the two stale `cuscoi_ge` phone peer records in NetBird (delete
+in the dashboard), grafana's Secret churn on every ArgoCD sync, `postgres-ha`
+running at ~80/100 connections, and the Networks-API follow-up for a wildcard
+route. Also worth a look: `postgres-ha` runs at ~80/100
    connections in normal operation (reportportal's three pools hold 66).
 
 Deferred by decision, not forgotten: **backups** (see the warning above) and
