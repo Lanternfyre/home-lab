@@ -114,6 +114,23 @@ reconciler:
         description: "the *.lab.techyon.dev names, resolved on the client"
         masquerade: true
         metric: 9999
+        # 🧪 DISABLED 2026-09-07: the Android client (0.71) cycles
+        # connected -> connecting every ~18 s as soon as it has to install a
+        # DNS route (1 name or 20, same), and stays up only while the route
+        # points at a peer it cannot reach. Off, to prove that, against the
+        # CIDR route below.
+        enabled: false
+      # 🧪 TEMPORARY, 2026-09-07, AND IT NAMES AN ADDRESS ON PURPOSE: the control
+      # case for the experiment above. If the phone stabilises and grafana.lab
+      # loads with this, DNS routes are what the Android client cannot do, and
+      # the durable form is the reconciler deriving this /32 from the live
+      # Gateway Service at apply time -- nothing in git naming it. Remove when
+      # that lands.
+      - network_id: lab-gateway-cidr-tmp
+        network: 192.168.32.19/32
+        description: "TEMPORARY control case -- gated Gateway by address"
+        masquerade: true
+        metric: 9999
         enabled: true
     # Routes ARE these values: one not listed above is deleted on the next sync
     # (chart 0.1.12). This is what removed `lab-gateway-plain` (192.168.32.18/32).
