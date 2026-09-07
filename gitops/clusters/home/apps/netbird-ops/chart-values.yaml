@@ -76,23 +76,28 @@ reconciler:
     # route appears alongside the old one, because a rename cannot be told
     # apart from a new route.
     #
-    # ⚠️ TWO /32s, NOT 192.168.32.0/23, and this matters. Every
-    # *.lab.techyon.dev name resolves to .19 in PUBLIC DNS, so routing these
-    # two addresses makes every existing URL work over the VPN with no client
-    # DNS configuration at all. The /23 would hand every VPN client the entire
-    # home LAN -- printers, NAS, everything -- to reach web UIs that live on
-    # two addresses. That is the difference between a VPN into the CLUSTER and
-    # a VPN into the HOUSE.
+    # 🟢 BY NAME, NOT BY ADDRESS. `*.lab.techyon.dev` is resolved on each VPN
+    # client and the learned addresses are routed through the in-cluster
+    # peer (`keepRoute` keeps them when a name stops resolving to them). Every
+    # existing URL works over the VPN with no client DNS configuration, and
+    # nothing here has to change when MetalLB hands a Gateway a new address.
+    #
+    # ⚠️ NOT 192.168.32.0/23. Every *.lab.techyon.dev name resolves to one of
+    # two Gateway addresses; a domain route hands a client exactly those. The
+    # /23 would hand every VPN client the entire home LAN -- printers, NAS,
+    # everything -- to reach web UIs that live behind two addresses. That is
+    # the difference between a VPN into the CLUSTER and a VPN into the HOUSE.
+    #
+    # Same network_id as the old /32 route on purpose: the reconciler UPDATES
+    # a route whose identity is unchanged, so this replaces it rather than
+    # leaving a second one behind. `lab-gateway-plain` is dropped: the wildcard
+    # covers the names that resolved to .18 too. (The reconciler never deletes,
+    # so that route was removed by hand on 2026-09-07 -- see
+    # KUBE-PROXY-REPLACEMENT.md stage B3.)
     routes:
       - network_id: lab-gateway
-        network: 192.168.32.19/32
-        description: "gated Gateway -- every *.lab.techyon.dev resolves here"
-        masquerade: true
-        metric: 9999
-        enabled: true
-      - network_id: lab-gateway-plain
-        network: 192.168.32.18/32
-        description: "homelab Gateway"
+        domains: ["*.lab.techyon.dev"]
+        description: "every *.lab.techyon.dev name, resolved on the client"
         masquerade: true
         metric: 9999
         enabled: true
