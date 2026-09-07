@@ -32,6 +32,7 @@ any line here.
 | [EDGE-NODE.md](EDGE-NODE.md) | The public edge node: raw TCP/UDP for game servers, and a VPN walled off from the LAN |
 | [CLUSTER-JOIN-HARDENING.md](CLUSTER-JOIN-HARDENING.md) | Threat model for a cluster with a public member, and what "safe to expose" has to mean. (The token it was written about was rotated 2026-09-06.) |
 | **[HARDENING.md](HARDENING.md)** | **What `H0`–`H5` mean.** Every CiliumNetworkPolicy header is tagged `H1` and every Kyverno pod-constraint `H3`; this is the file those tags resolve to |
+| **[KUBE-PROXY-REPLACEMENT.md](KUBE-PROXY-REPLACEMENT.md)** | **Planned, not started.** Why service traffic carries `world` instead of a workload identity, what that blocks, and the sequence to change it. Also carries the state of the in-flight NetBird reconciler work |
 
 If work was interrupted, `MODERNIZATION.md` → "Immediately next" is the resume
 point. Do not re-derive the "Hard-won findings" section — those cost real effort.
