@@ -1,0 +1,106 @@
+# The NetBird reconciler: this cluster's NetBird account state, as values.
+#
+# 🟢 EDIT `reconciler.desired` BELOW TO CHANGE THE VPN. Add a route, change an
+# address, add an admin -- merge, and the next sync applies it. Nothing is
+# configured in the NetBird UI; anything configured there by hand is
+# overwritten on the next run.
+#
+# ── Why this is a THIRD release of the same chart ───────────────────────────
+#
+# 🔴 The reconciler cannot run in the `netbird` namespace. That namespace is
+# `edge-publish`, so `edge-published-pod-constraints` forbids
+# `automountServiceAccountToken: true` on every pod -- the guarantee being that
+# an internet-reachable pod cannot also hold cluster credentials. The
+# reconciler must write the generated setup key into a Secret, which needs
+# exactly that token.
+#
+# So it runs here, in a namespace that is NOT published, and reaches across
+# into `netbird` with a `resourceNames`-scoped Role. The published namespace
+# stays free of API credentials AND the reconciler gets its token, instead of
+# trading one away for the other. Same shape as apps/netbird-ui, which is this
+# chart deployed a second time for the dashboard alone.
+#
+# ⚠️ Every OTHER component is disabled here. Leaving one on would deploy a
+# second management/signal/relay into this namespace -- and a second management
+# means a second sqlite datastore, silently.
+
+management: { enabled: false }
+signal: { enabled: false }
+relay: { enabled: false }
+dashboard: { enabled: false }
+routingPeer: { enabled: false }
+
+reconciler:
+  enabled: true
+
+  # 🔴 Digest-pinned like every other image in this estate. Stock python: the
+  # reconciler is stdlib-only, so there is nothing to build and no second repo
+  # to release from. Resolved from the registry 2026-09-07.
+  image:
+    tag: "3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
+
+  # Where the published release lives -- the Secret the routing peer reads.
+  targetNamespace: netbird
+  setupKeySecret:
+    name: netbird-setup-key
+    key: setup-key
+
+  netbirdApi: "https://vpn.techyon.dev"
+
+  auth:
+    tokenUrl: "https://authentik.techyon.dev/application/o/token/"
+    # ⚠️ The PUBLIC netbird client, shared with the dashboard and the CLI --
+    # NOT a dedicated provider. NetBird validates the token's issuer against
+    # ONE configured value (.../application/o/netbird/), so a second authentik
+    # provider would issue under a different path and every token would be
+    # rejected as `token invalid`.
+    clientId: netbird
+    username: netbird-reconciler
+    passwordSecret:
+      name: netbird-reconciler-credentials
+      key: password
+
+  # ── 🟢 THE DESIRED STATE ────────────────────────────────────────────────────
+  desired:
+    routingPeerHostname: cluster-routing-peer
+
+    setupKey:
+      name: cluster-routing-peer
+      type: reusable
+      expiresIn: 0
+      usageLimit: 0
+
+    # ⚠️ `network_id` IS A ROUTE'S IDENTITY -- not its name, not its CIDR.
+    # Change `network` under an unchanged network_id and that route is UPDATED,
+    # which is how an address is changed. Change `network_id` and a SECOND
+    # route appears alongside the old one, because a rename cannot be told
+    # apart from a new route.
+    #
+    # ⚠️ TWO /32s, NOT 192.168.32.0/23, and this matters. Every
+    # *.lab.techyon.dev name resolves to .19 in PUBLIC DNS, so routing these
+    # two addresses makes every existing URL work over the VPN with no client
+    # DNS configuration at all. The /23 would hand every VPN client the entire
+    # home LAN -- printers, NAS, everything -- to reach web UIs that live on
+    # two addresses. That is the difference between a VPN into the CLUSTER and
+    # a VPN into the HOUSE.
+    routes:
+      - network_id: lab-gateway
+        network: 192.168.32.19/32
+        description: "gated Gateway -- every *.lab.techyon.dev resolves here"
+        masquerade: true
+        metric: 9999
+        enabled: true
+      - network_id: lab-gateway-plain
+        network: 192.168.32.18/32
+        description: "homelab Gateway"
+        masquerade: true
+        metric: 9999
+        enabled: true
+
+    # ⚠️ Eventually consistent, and that is a property of NetBird rather than a
+    # defect here: with `IdpManagerConfig.ManagerType: none` there is no
+    # directory to invite into, so a person does not exist until they have
+    # logged in once. This runs on every sync, so promotion happens on the pass
+    # after a first login.
+    adminEmails:
+      - adrian.jutrowski@techyon.dev
