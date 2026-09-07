@@ -65,6 +65,40 @@ metadata:
   name: homelab-gated
   namespace: gateway-envoy
 spec:
+  # 🔴 A DECLARED ADDRESS, NOT AN ALLOCATED ONE.
+  #
+  # Every gateway address here used to be whatever MetalLB handed out of
+  # lb-pool-32 (192.168.32.10-250) on a first-come basis, with no Gateway
+  # declaring one. The Service name also carries a Gateway-derived hash
+  # (envoy-gateway-envoy-homelab-gated-06cddf46), so recreating a Gateway
+  # recreates the Service and takes a FRESH allocation. MetalLB is sticky in
+  # practice and guarantees nothing.
+  #
+  # That matters because things outside this file depend on these addresses:
+  # the VPN's NetBird routes, and the CiliumNetworkPolicy that lets the routing
+  # peer reach them. Both fail CLOSED and SILENTLY on a stale address -- the
+  # name still resolves, the route still exists, traffic just stops.
+  #
+  # ⚠️ THE OBVIOUS ALTERNATIVE WAS TRIED AND DOES NOT WORK. A Cilium
+  # `toServices` rule selecting these Services by label resolves correctly --
+  # the policy map gains an allow for the envoy pod identity -- and traffic is
+  # still DENIED, because with `kube-proxy-replacement: false` egress policy is
+  # evaluated BEFORE kube-proxy's DNAT. Measured:
+  #
+  #   netbird-routing-peer <> envoy-gateway/...-homelab-gated:443 (world)
+  #   policy-verdict:none EGRESS DENIED
+  #
+  # Hubble NAMES the destination as the Service while the identity it carries
+  # is `world` -- the packet is addressed to the LoadBalancer IP, so a rule
+  # naming backends can never match. Declaring the address is therefore not a
+  # workaround; it is the only way to make an address-based rule HONEST.
+  #
+  # ⚠️ These values are the addresses MetalLB has ALREADY assigned, so this
+  # declares the status quo and moves nothing. Changing one of them here MOVES
+  # a live gateway.
+  addresses:
+    - type: IPAddress
+      value: 192.168.32.19   # *.lab.techyon.dev -- what the VPN routes reach
   gatewayClassName: envoy
   listeners:
     - name: https
