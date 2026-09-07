@@ -97,6 +97,20 @@ data:
             - authorization_code
             - refresh_token
             - urn:ietf:params:oauth:grant-type:device_code
+            # 🔴 THE RECONCILER'S GRANT. WITHOUT IT authentik ANSWERS
+            # `invalid_grant`, WHICH READS AS A BAD PASSWORD.
+            #
+            # authentik enforces this list -- an omitted grant is refused with
+            # the generic OAuth error, the same one a wrong username or a
+            # wrong-intent token produces. So the single most likely cause of
+            # "the reconciler cannot authenticate" is this line missing, and
+            # nothing in the message will say so.
+            #
+            # This does NOT make the provider confidential and does not affect
+            # the dashboard or `netbird up`: authentik's client_credentials
+            # handler takes a username/password branch before it looks at
+            # client_secret, so a public client can still serve it.
+            - client_credentials
           authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
           invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
