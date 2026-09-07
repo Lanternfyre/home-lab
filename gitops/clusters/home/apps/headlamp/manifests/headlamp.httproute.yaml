@@ -28,7 +28,7 @@ metadata:
   annotations:
     gethomepage.dev/description: Kubernetes Dashboard
     gethomepage.dev/enabled: "true"
-    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/group: Administration
     gethomepage.dev/icon: kubernetes.png
     gethomepage.dev/name: Headlamp
 spec:
