@@ -97,16 +97,32 @@ policyEnforcementMode: "default"
 nodeSelectorLabels: true
 
 # ── kube-proxy replacement (KUBE-PROXY-REPLACEMENT.md) ──────────────────────
-# "false" today. Stage B2a flips it to "true" while k3s still runs kube-proxy
-# in-process (a supported overlap: Cilium's BPF sees every packet first and
-# kube-proxy's rules go dead); stage B4 then removes kube-proxy from k3s.
+# "true" since stage B2a (2026-09-07). k3s STILL runs kube-proxy in-process
+# until stage B4 -- a supported overlap: Cilium's BPF sees every packet first
+# and kube-proxy's rules go dead. Why: without this no LoadBalancer frontend
+# is in the BPF map at all, so a pod's packet to a MetalLB address leaves
+# untranslated carrying identity `world`, and no policy can name the backend.
 #
-# Under "true" socket LB is forced on, at the Cilium default (full, pods
-# included -- operator's choice 2026-09-07). Per-packet LB is then compiled
-# OUT of bpf_lxc, so a pod that emits NON-socket traffic to a Service address
-# (raw sockets, kernel forwarding) is no longer translated. None known in this
+# Socket LB is forced on, at the Cilium default (full, pods included --
+# operator's choice 2026-09-07). Per-packet LB is then compiled OUT of
+# bpf_lxc, so a pod that emits NON-socket traffic to a Service address (raw
+# sockets, kernel forwarding) is no longer translated. None known in this
 # estate; the rootless NetBird routing peer forwards through real sockets.
-kubeProxyReplacement: "false"
+#
+# ⚠️ Socket LB refuses to translate an ExternalIPs-type frontend whose address
+# is not the node's own (bpf_sock.c external-IP mitigation). A Gateway
+# `spec.addresses` becomes exactly that on its Service, which is why stage B2b
+# deletes them: until then pod -> LAN gateway address does not translate.
+#
+# Rollback: "false" here and `ansible-playbook playbooks/34-cilium.yml`.
+# Workstation only, no sudo; kube-proxy is still there to take over.
+kubeProxyReplacement: "true"
+
+# Forced on by kubeProxyReplacement=true inside the agent regardless of this
+# key (pkg/kpr). Set explicitly so the ConfigMap's `bpf-lb-sock` says what the
+# datapath actually does, instead of rendering "false" while it is on.
+socketLB:
+  enabled: true
 
 # NodePort/LoadBalancer frontends are created only for device addresses inside
 # these CIDRs: the LAN NIC (192.168.33.x -- node addresses, NOT the

@@ -650,15 +650,20 @@
     - not ansible_check_mode
     - cilium_stage == 'production'
 
+# Counts nodes that SERVE Cilium's CNI config, not nodes carrying the migration
+# label -- the label is written only by 35-cilium-migrate.yml and a node that
+# joined straight onto Cilium never gets it, which made this line say
+# "2/8 migrated, migration incomplete" on a fully migrated cluster.
 - name: Summary
   ansible.builtin.debug:
     msg: >-
       Cilium {{ cil_before.stdout | trim }} -> {{ cilium_chart_version }},
-      stage={{ cilium_stage }}. DaemonSet {{ cil_ds.stdout | default('?') }},
-      {{ cil_migrated.stdout | trim }}/{{ cil_nodes.stdout | trim }} nodes
-      migrated, {{ cil_flannel_after.stdout | default('?') | trim }} pods still
-      on flannel.
+      stage={{ cilium_stage }}, kube-proxy
+      {{ 'replaced' if (cilium_kpr_expected | default(false) | bool) else 'retained' }}.
+      DaemonSet {{ cil_ds.stdout | default('?') }},
+      {{ cil_cni_ok }}/{{ cil_nodes.stdout | trim }} nodes on Cilium CNI,
+      {{ cil_flannel_after.stdout | default('?') | trim }} pods still on flannel.
       {{ 'Migration incomplete — run playbooks/35-cilium-migrate.yml.'
-         if (cil_migrated.stdout | trim | int) < (cil_nodes.stdout | trim | int)
-         else 'All nodes migrated.' }}
+         if (cil_cni_ok | int) < (cil_nodes.stdout | trim | int)
+         else 'Every node is on Cilium.' }}
   when: not ansible_check_mode
