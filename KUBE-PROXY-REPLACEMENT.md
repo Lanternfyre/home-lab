@@ -102,11 +102,17 @@ translated at the pod, and in Cilium 1.20 that means `kubeProxyReplacement: true
 
 ## 3. The end state — no hardcoded addresses anywhere
 
-| where | what | stage that removes it |
+| where | what | removed |
 |---|---|---|
-| `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | B2b |
-| `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | B3 |
-| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3 (`domains: ["*.lab.techyon.dev"]`) |
+| `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | B2b, 2026-09-07 |
+| `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | B3, 2026-09-07 — `toServices` by Gateway name |
+| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3, 2026-09-07 — `domains: ["*.lab.techyon.dev"]` |
+
+**Reached.** No Gateway address is written anywhere in this repository. What
+still names a `192.168.32.x` address in git is the MetalLB pool itself, and the
+services that legitimately PIN one (`pihole-dns` at `.53`, the databases' LB
+Services): those are declared allocations, not values MetalLB happened to hand
+out.
 
 ---
 
@@ -147,8 +153,8 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 | **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin. Phone enrolment is the B2b gate | no | 2026-09-07 (chart 0.1.11, #155/#156) |
 | **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |
-| **B2b** | delete `spec.addresses` from the three Gateways | no | |
-| **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | |
+| **B2b** | delete `spec.addresses` from the three Gateways | no | 2026-09-07, #158 |
+| **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | 2026-09-07 (this change) |
 | **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | |
 
 Why this order:
