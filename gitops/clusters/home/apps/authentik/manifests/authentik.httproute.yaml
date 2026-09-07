@@ -22,7 +22,7 @@ metadata:
     # alone under `Infra` while goldilocks, headlamp and the rest were under
     # `Infrastructure`. There is no validation to catch it; the only signal
     # is the rendered page.
-    gethomepage.dev/group: Infrastructure
+    gethomepage.dev/group: Administration
     gethomepage.dev/icon: authentik.png
 spec:
   parentRefs:
