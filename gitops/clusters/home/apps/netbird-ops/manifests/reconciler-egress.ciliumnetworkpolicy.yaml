@@ -35,10 +35,24 @@ spec:
           rules:
             dns: [{ matchPattern: "*" }]
     # authentik, for the client_credentials token.
+    #
+    # ⚠️ BY FQDN, AND THE PUBLIC NAME. The token's `iss` is derived from the
+    # request Host and NetBird pins ONE issuer -- the same one every phone and
+    # browser gets -- so calling authentik.lab.techyon.dev mints a token that
+    # is rejected as `token invalid`. Measured; see chart-values.yaml.
+    #
+    # ⚠️ This path crosses Cloudflare, which is why the reconciler sets an
+    # explicit User-Agent: the default Python one is refused outright with a
+    # 403 "error code: 1010" that arrives from the token endpoint and reads as
+    # an auth failure. Keeping the request in-cluster with a hostAlias would
+    # avoid that, but every gateway address here is a DYNAMIC MetalLB
+    # allocation from 192.168.32.10-250 with no Gateway declaring
+    # spec.addresses -- so pinning one today is a silent breakage tomorrow.
     - toFQDNs:
         - matchName: "authentik.techyon.dev"
       toPorts:
         - ports: [{ port: "443", protocol: TCP }]
+
     # ⚠️ The PUBLIC NetBird endpoint, not the in-cluster Service. The API is
     # only routed through the edge Gateway, and using the public name keeps the
     # reconciler on the same path a real client takes -- so a broken gateway
