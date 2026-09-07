@@ -1,8 +1,8 @@
-# Cilium kube-proxy replacement — plan, and the road to zero hardcoded IPs
+# Cilium kube-proxy replacement — verified plan, and the road to zero hardcoded IPs
 
-**Status: PLANNED, not started.** Nothing in this document has been applied.
-Written 2026-09-07 as a handoff, so the work starts from a document rather than
-from a session's memory.
+**Status: IN PROGRESS, staged. Verified against the live cluster and against
+Cilium 1.20.0 / k3s v1.35.6 source on 2026-09-07.** The stage table in §5 is the
+resume point; each stage records the date it landed.
 
 The goal is not kube-proxy replacement for its own sake. It is that **service
 traffic should carry workload identity**, so policy can name what it means
@@ -26,210 +26,265 @@ gateways by LABEL rather than by address:
               values: [homelab, homelab-gated]
 ```
 
-It resolved correctly. The routing peer's policy map gained a real allow:
-
-```
-k8s:app.kubernetes.io/name=envoy
-k8s:gateway.envoyproxy.io/owning-gateway-name=homelab-gated
-k8s:gateway.envoyproxy.io/owning-gateway-namespace=gateway-envoy
-```
-
-**And traffic was still dropped:**
+It resolved correctly — the routing peer's policy map gained a real allow for the
+envoy pod identity — **and traffic was still dropped**:
 
 ```
 netbird/netbird-routing-peer <> gateway-envoy/envoy-gateway-envoy-homelab-gated-06cddf46:443 (world)
 policy-verdict:none EGRESS DENIED (TCP Flags: SYN)
 ```
 
-🔴 **Read that flow carefully: Hubble NAMES the destination as the Service,
-while the identity it carries is `world`.** The name in the log is cosmetic
-enrichment; the identity is what policy matches on. Confirmed alongside it:
-
-```
-192.168.32.19  ->  no ipcache entry at all  ->  falls back to `world`
-kube-proxy-replacement = false
-bpf-lb-sock            = false
-```
-
-**The mechanism.** Cilium enforces egress policy at the pod endpoint using the
-destination IP's security identity. The packet is addressed to the LoadBalancer
-*frontend*. kube-proxy's DNAT to the backend pod happens later, in iptables —
-by which point the packet has already been dropped. So a rule naming backends
-can never match, and `toCIDRSet` "works" only because it CREATES an ipcache
-entry for the frontend address.
+Hubble NAMES the destination as the Service while the identity it carries is
+`world`. The name is enrichment; the identity is what policy matches on.
 
 **This is not specific to NetBird.** Every policy in this estate that needs to
-reach a Service is forced to name an address instead of a workload. That is the
-actual problem.
+reach a LoadBalancer address is forced to name an address instead of a workload.
 
 ---
 
-## 2. The end state — no hardcoded addresses anywhere
+## 2. The actual mechanism (sharper than the first write-up)
 
-Today three places carry an address that nobody guarantees:
+The first version of this document said "policy is evaluated before kube-proxy's
+DNAT". True, but not the useful statement. From `bpf/bpf_lxc.c` (v1.20.0) and the
+live BPF maps:
 
-| where | what | why it is there |
+* `bpf_lxc.c:178` — `svc = lb4_lookup_service(&key, is_defined(ENABLE_NODEPORT))`.
+  Without NodePort the pod-side lookup never switches to the *internal* scope of an
+  `externalTrafficPolicy: Local` service.
+* `ENABLE_NODEPORT` is defined **only** under `kubeProxyReplacement: true`
+  (`pkg/datapath/linux/config/config.go`). `pkg/kpr/kpr.go` in 1.20 has exactly two
+  flags, `kube-proxy-replacement` and `bpf-lb-sock`. **There is no partial NodePort
+  mode any more** — `nodePort.enabled` / `externalIPs.enabled` are gone.
+* Measured on k8s-lab3 with KPR off: 312 frontends in the BPF LB map, **zero of
+  LoadBalancer type**. `192.168.32.16` (argocd) is absent entirely, so a pod's SYN
+  leaves untranslated and carries `world`:
+
+  ```
+  monitoring/grafana -> argocd/argocd-server:443 (world) to-stack FORWARDED
+  ```
+
+* 🔴 **PR #150 made it worse.** `spec.addresses` on a Gateway makes Envoy Gateway
+  set `spec.externalIPs` on the Service. Cilium *does* load ExternalIPs frontends
+  even without KPR — as `[ExternalIPs, Local, two-scopes]` with **only the
+  node-local backend**. Measured 2026-09-07 with `curl` from pods:
+
+  | from a pod on | → .19 (envoy on lab1) | → .18 (envoy on lab2) | → .11 (envoy on lab5) |
+  |---|---|---|---|
+  | lab1 | connects | **fails** | **fails** |
+  | lab3 | **fails** | **fails** | **fails** |
+
+  Pod → LAN-gateway address works **only from the node hosting that Envoy pod**.
+  `argocd.lab` resolves to .18 and `grafana.lab` to .19, so any pod using those
+  names is placement-dependent, and the routing peer (on lab3) cannot reach either.
+  Operator decision 2026-09-07: leave this until stage B2 rather than fix it
+  ahead; B2b removes the addresses.
+
+**Consequence:** the identity form needs LoadBalancer/ExternalIP frontends
+translated at the pod, and in Cilium 1.20 that means `kubeProxyReplacement: true`.
+
+### Would `socketLB` alone have been enough? No.
+
+* Socket LB translates at `connect()` against the **same** BPF map. Without KPR the
+  LoadBalancer frontends are not in it, so there is nothing to translate to.
+* Full socket LB compiles per-packet LB **out** of `bpf_lxc`
+  (`ENABLE_PER_PACKET_LB` needs `!ENABLE_SOCKET_LB_FULL || ENABLE_SOCKET_LB_HOST_ONLY
+  || ENABLE_L7_LB || ENABLE_SCTP`), so pods would *lose* the ClusterIP translation
+  they have today for anything not socket-originated.
+* Under KPR socket LB is forced on anyway (`kpr.go`). The rootless NetBird peer
+  forwards VPN traffic through real sockets (`client/firewall/uspfilter/forwarder/`
+  uses `net.Dialer.DialContext`), so it works under socket LB.
+* ⚠️ `bpf_sock.c:sock4_skip_xlate` refuses to translate an **ExternalIPs**-type
+  frontend whose address is not the node's own (external-IP MITM mitigation). That
+  is exactly what `spec.addresses` produces. So under full socket LB the identity
+  test for .18/.19 **cannot pass until the addresses are deleted** — hence B2b.
+
+---
+
+## 3. The end state — no hardcoded addresses anywhere
+
+| where | what | stage that removes it |
 |---|---|---|
-| `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | added so the CIDR below is at least *honest* |
-| `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | the only form that matches, per §1 |
-| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | NetBird routes |
-
-⚠️ **All three are crutches, and this plan removes all three.** They exist only
-because policy cannot name a Service today.
-
-After the work:
-
-* the CNP names Gateways by label (`toServices`) — no address
-* the Gateways stop declaring `spec.addresses` — MetalLB may allocate freely
-  again, because nothing references the result
-* NetBird routes use `domains: ["*.lab.techyon.dev"]` instead of CIDRs —
-  verified available in the NetBird API (`domains`, "dynamically resolved,
-  conflicts with network")
+| `apps/envoy-gateway/manifests/*.gateway.yaml` | `spec.addresses` on 3 Gateways | B2b |
+| `apps/netbird/manifests/netbird-egress.ciliumnetworkpolicy.yaml` | `toCIDRSet` .18/.19 | B3 |
+| `apps/netbird-ops/chart-values.yaml` | routes `192.168.32.18/32`, `.19/32` | B3 (`domains: ["*.lab.techyon.dev"]`) |
 
 ---
 
-## 3. What changes
+## 4. Two findings that came out of verifying, and precede everything
+
+### 4a. ArgoCD was on the public internet through the edge node
+
+Probed 2026-09-07 from outside the cluster: `167.86.81.59:32497` and `:31066` —
+`argocd-server`'s LoadBalancer NodePorts, `externalTrafficPolicy: Cluster` —
+**answered**. kube-proxy on the edge DNATs a NodePort in `prerouting` and forwards
+it over VXLAN; `edge_firewall` has an `input` hook with policy drop and **no
+`forward` hook**, so it never sees the packet. `mealie` (31447) was the same class.
+eTP=Local NodePorts were filtered only because the edge holds no local endpoint.
+
+Under KPR this gets *harder* to close, not easier: BPF NodePort runs at tc
+ingress, **before nftables**. It has to be closed at the source (stage 0) and
+kept closed by `nodePort.addresses` (stage B1).
+
+### 4b. What the doc had right, verified
+
+| claim | verdict |
+|---|---|
+| kube-proxy runs in-process | ✅ `127.0.0.1:10249`/`:10256` on every node sampled, ~885 `KUBE-*` nat rules per node, no pods |
+| `k8sServiceHost: 127.0.0.1`, `k8sServicePort: 6444` | ✅ but as DaemonSet/operator **env** `KUBERNETES_SERVICE_HOST`, not a ConfigMap key. Listening on server, agent and edge |
+| k3s CLI args may override `config.yaml` | inert: ExecStart is literally `k3s server` / `k3s agent` on all 8 |
+| MetalLB owns L2 + IPAM, Cilium owns neither | ✅ MetalLB 0.15.3 L2, 7 speakers (not the edge); `enable-lb-ipam=false`, no `CiliumL2AnnouncementPolicy` |
+| "no ipcache entry for .19" | stale — it maps to a CIDR identity now (the `toCIDRSet` rule). The datapath problem is §2 |
+
+---
+
+## 5. Stages, with a gate between each
+
+Do **not** batch these. Each is separately reversible; the combination is not.
+
+| stage | what | sudo? | landed |
+|---|---|---|---|
+| **0** | close the public NodePort door: release `argocd-server` + `mealie` NodePorts (MANUAL-STEPS §0c form), `NODEPORT` check in `audit-edge-exposure.py` | no | |
+| **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, phone re-enrols | no (phone in hand) | |
+| **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | |
+| **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | |
+| **B2b** | delete `spec.addresses` from the three Gateways | no | |
+| **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | |
+| **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | |
+
+Why this order:
+
+* **A before B.** Small, authorised, and the reconciler Job fails on every
+  `netbird-ops` sync today (403). Its end-to-end proof (phone → `grafana.lab`) is
+  deferred to the B2b gate because of §2's #150 finding.
+* **B2 before B4, and the payoff between them.** The payoff does not need
+  kube-proxy removed: with `kubeProxyReplacement: true` and kube-proxy still present
+  (a supported overlap) the pod datapath already translates before policy. B4 is
+  hygiene that needs sudo and a window; it must not hold the payoff hostage.
+* 🔴 **B4's order is forced by k3s, not by preference.** `disable-kube-proxy` is a
+  *server* flag; agents fetch it at startup from `/v1-k3s/config`
+  (`pkg/agent/config/config.go`, `pkg/daemons/agent/agent.go`). An agent restarted
+  before every server has it can fetch `false` from a stale server. So: all three
+  servers first (`20-config-converge.yml --limit k3s_servers`), then agents
+  (`--limit k3s_agents`, which includes the edge). The playbook's reverse-inventory
+  default would restart agents first — wrong for this change. The agent branch of
+  `config.yaml.j2` must never render the key: agents reject unknown keys and refuse
+  to start.
+
+---
+
+## 6. What changes
 
 | component | change | blast radius |
 |---|---|---|
-| k3s | `disable-kube-proxy: true` | **restarts k3s on all 8 nodes** — kube-proxy runs IN-PROCESS in k3s, there is no DaemonSet to drain |
-| Cilium | `kubeProxyReplacement: "true"` in `gitops/cilium-values-production.yaml` | DaemonSet roll on all 8 |
-| already correct | `k8sServiceHost: 127.0.0.1`, `k8sServicePort: 6444` | **load-bearing** — see below |
-| revisit | `bpf.hostLegacyRouting: true` | set deliberately; re-examine AFTER, never in the same change |
-
-🔴 **`k8sServiceHost`/`k8sServicePort` are what make this survivable.** Without
-kube-proxy, nothing can reach the apiserver through its ClusterIP until Cilium
-is running — and Cilium needs the apiserver to start. The existing
-`127.0.0.1:6444` (the k3s agent load balancer) breaks that circularity. **Verify
-it is still set before touching anything.** If it were empty, this change
-bricks the cluster.
-
-⚠️ **k3s CLI args in the systemd unit take precedence over `config.yaml`** (see
-CLAUDE.md). Confirm `disable-kube-proxy` actually reaches the process — check
-the running args, not the rendered file.
+| Cilium (B1) | `nodePort.addresses: ["192.168.33.0/24", "10.250.0.0/24"]` | none yet. Never the edge's public IP, never the VIP `192.168.32.2` (a secondary on lab2's `eno1`), never `flannel.1` |
+| Cilium (B2a) | `kubeProxyReplacement: "true"` in `gitops/cilium-values-production.yaml` | DaemonSet roll on all 8 |
+| Cilium | socket LB: Cilium default (full, pods included) — operator's choice | per-packet LB is compiled out of `bpf_lxc`; a pod emitting non-socket traffic to a Service IP is no longer translated. None known here |
+| Ansible (B1) | `roles/cilium` post-verify asserts what the values file says, not `False` | apply would otherwise fail its own verify |
+| k3s (B4) | `disable-kube-proxy: true`, **server branch only** | restarts k3s on all 8, serial |
+| unchanged, deliberately | `bpf.hostLegacyRouting: true`, iptables masquerade, tunnel vxlan/8473, `enableLBIPAM: false`, MetalLB config | one change at a time |
 
 ---
 
-## 4. The risky interaction: MetalLB is L2
+## 7. Verification — behaviour, never file contents
 
-```
-l2advertisement.metallb.io/l2adv-lb-pool-32   ["lb-pool-32"]
-enableLBIPAM: false          # Cilium is NOT doing LB IPAM
-```
+### B2a gate (kube-proxy still running)
 
-MetalLB assigns the address and answers ARP for it; the *datapath* for that
-frontend moves from kube-proxy's iptables to Cilium's LB. These are meant to
-coexist, and this is the part of the change with the least margin for
-assumption.
+1. ConfigMap `kube-proxy-replacement=true`, `bpf-lb-sock=true`.
+2. `cilium-dbg status --verbose` "KubeProxyReplacement Details": on **lab2** the
+   NodePort address must be `192.168.33.2`, not the VIP; on the **edge** `eth0`
+   must carry no NodePort address and `wg0 10.250.0.1` must.
+3. `cilium-dbg bpf lb list | grep 192.168.32.16` on lab3 → LoadBalancer frontend
+   with both argocd backends.
+4. Identity on a LoadBalancer frontend: grafana (lab3) `curl` .16 connects and
+   Hubble shows the argocd-server pod **identity**, not `world`. (.18/.19 stay
+   blocked until B2b — the external-IP mitigation, §2.)
+5. apiserver from a pod via `10.43.0.1`; CoreDNS from a pod over UDP **and** TCP;
+   node DNS via `scripts/diagnose-node-dns.sh` (nodes resolve through the `.53` LB
+   address — host-namespace socket LB on an eTP=Local service, the least obvious
+   path).
+6. The MetalLB protocol below, before/after.
+7. Edge: 7171/7172 TCP and 7173 UDP answer from the internet; Hubble on lab4 shows
+   `remote-node → ot-demo/ot-login:7171`; `cilium-health` 8/8; no NodePort answers
+   on `167.86.81.59`.
+8. ArgoCD via `192.168.32.16` and via `argocd.lab.techyon.dev`.
+9. `hubble observe -t drop` on lab1/lab3/edge: no new service-related drops.
+10. `scripts/audit-edge-exposure.py` exits 0.
 
-⚠️ **Measure it, do not reason about it.** A LoadBalancer that still ARPs but no
-longer forwards looks identical from outside to one that is simply slow.
+### B2b gate
 
----
+1. The three Services lose `externalIPs`, keep their ingress address (MetalLB
+   re-allocates only on Service deletion); external-dns unchanged.
+2. `cilium-dbg bpf lb list | grep 192.168.32.19` on lab3 → **LoadBalancer** type,
+   backend `10.245.1.53:10443`.
+3. **The §1 line:** grafana (lab3) `curl` .19/.18/.11 all connect, and Hubble shows
+   the Envoy pod **identity**. That single line is the whole point of the exercise.
+4. From the phone via NetBird, `https://grafana.lab.techyon.dev` loads.
 
-## 5. Sequence, with a gate between each step
+### "Verify MetalLB L2 still works" — made concrete
 
-Do **not** batch these. Each step is separately reversible; the combination is
-not.
+MetalLB answers ARP for a LB address from one elected home node (eTP=Local → only
+a node holding a local endpoint). The frame lands on that node's NIC. Today
+kube-proxy DNATs in iptables; after B2a Cilium's `from-netdev` BPF DNATs first.
+MetalLB is not touched. The failure to detect: ARP still answered, SYN never
+forwarded — indistinguishable from "slow" without the rows below. From the
+workstation (`192.168.33.8`), before and after:
 
-1. **Pre-flight (read-only).** Record `kubectl get svc -A` with allocated IPs,
-   `cilium-dbg status`, and a Hubble sample showing `world` identities on
-   service traffic — that sample is the before-picture the whole change is
-   judged against.
-2. **Cilium first, kube-proxy still running.** `kubeProxyReplacement: "true"`
-   while kube-proxy is present is a supported overlap; Cilium takes over and
-   kube-proxy's rules become redundant rather than conflicting. This is the
-   reversible half — verify §6 fully here.
-3. **Then disable kube-proxy in k3s**, one node first, and re-run §6 on that
-   node before the rest.
-4. **Only then** the follow-ups in §7.
+| check | how | pass |
+|---|---|---|
+| owner unchanged | `ping -c1 <LB>; ip neigh show <LB>` → MAC → node | same as baseline (.19 lab1, .18/.16 lab2, .53 lab7) |
+| forwards, not just ARPs | `curl -sk -o /dev/null -m5 -w '%{http_code} %{time_connect}'` for .11 .13 .14 .16 .18 .19; `nc -z` .10/.15:5432; `dig @192.168.32.53` UDP and `+tcp` | connect ≤ baseline ×2, no timeouts |
+| BPF owns the flow | owner node: `cilium-dbg bpf ct list global \| grep <LB>` after a request | an entry with the workstation address |
+| kube-proxy no longer sees it | owner node: `iptables -t nat -L KUBE-SERVICES -v -n \| grep <LB>` pkts | flat while traffic flows (rises today) |
+| eTP=Local keeps the client IP | Envoy access log / pihole query log | `192.168.33.8`, not a node address |
+| eTP=Cluster remote backend | `.16` (owner lab2, backends lab4/lab5) | connects; SNAT to node IP as today |
+| shared address | `.53` TCP + UDP | both answer |
+| Hubble on the owner | `hubble observe --to-ip <LB>` | FORWARDED, no DROPPED |
 
-⚠️ `kubeProxyReplacement` is cluster-wide in Cilium: step 2 cannot be done for
-one node. Step 3 can.
+### B4 gate, per node
 
----
-
-## 6. Verification — behaviour, never file contents
-
-* apiserver reachable **from inside a pod** via the `kubernetes` ClusterIP
-* ClusterIP, NodePort and LoadBalancer each proven with real traffic
-* MetalLB still answers ARP for `lb-pool-32`, and the frontend still forwards
-* 🔴 **the edge node's published game ports** (`ot-demo` 7171/7172/7173) — the
-  edge is a k3s agent too and its DNAT path is the least like the others
-* ArgoCD reachable, because it is the tool you would need to fix anything
-* CoreDNS resolving from a pod
-* Hubble shows a **pod identity** where §1 showed `world`. That single line is
-  the whole point of the exercise
-* `scripts/audit-edge-exposure.py` exits 0
-
----
-
-## 7. Follow-ups this unlocks — the actual payoff
-
-Land these only after §6 passes:
-
-1. **Restore the `toServices` rule** — home-lab PR #149 has it written; it was
-   reverted by #150 only because the datapath could not support it.
-2. **Delete `spec.addresses`** from the three Gateways. They exist solely so the
-   CIDR rule is honest; once no rule names an address, MetalLB can allocate
-   freely again.
-3. **NetBird routes by domain**: `domains: ["*.lab.techyon.dev"]` in
-   `apps/netbird-ops/chart-values.yaml` instead of the two `/32`s.
-
-At that point no gateway address is written down anywhere.
+`ss -ltn` shows no `127.0.0.1:10249`/`10256`; a pod on that node reaches
+`10.43.0.1` and a LB address; node DNS resolves. Then flush the ~885 stale rules
+(`iptables-save | grep -v KUBE | iptables-restore`, root) and re-run the gate.
+nft-native tables (`edge_firewall`, `wg_guard`) are untouched by that.
 
 ---
 
 ## 8. Rollback
 
-🔴 **Rollback is NOT `kubectl`.** If service networking is broken, ArgoCD is
-broken too, and so is the path you would normally use to revert.
+🔴 **Rollback of B4 is NOT `kubectl`.** If service networking is broken, ArgoCD is
+broken too. Have SSH to a control-plane node open and confirmed before B4.
 
-* re-enable kube-proxy: revert `k3s_config` and run the k3s play, per node, over
-  SSH
-* revert `kubeProxyReplacement` in `gitops/cilium-values-production.yaml` and
-  apply Cilium via `ansible-playbook playbooks/34-cilium.yml`
-* both need an operator at a keyboard with `--ask-become-pass`
-
-Have SSH to at least one control-plane node open and confirmed working BEFORE
-starting step 3.
+* B2a: flip the value back, `ansible-playbook playbooks/34-cilium.yml` —
+  workstation only, no sudo. kube-proxy is still there, so nothing is lost.
+* B2b: `git revert` restores the addresses, and the #150 regression with them.
+* B4: `k3s_disable_kube_proxy: false`, `20-config-converge.yml` servers then
+  agents, `--ask-become-pass`.
 
 ---
 
-## 9. State of the NetBird work this came out of
-
-Not part of this change, but mid-flight, and the next session needs it.
+## 9. State of the NetBird work
 
 **Working:** management/signal/relay/routing-peer on 0.78.1; gRPC over h2c
-through the edge proven from the public internet; dashboard login; Android peer
-enrolled; the 15s Envoy stream cuts fixed; VPN traffic passing.
+through the edge proven from the public internet; Android peer enrolled; the 15s
+Envoy stream cuts fixed.
 
-**Built, not yet exercised:** the reconciler (chart `0.1.9`, released as the
-`netbird-ops` app). Its authentik identity works end to end — a
-`client_credentials` token with correct `iss`, `aud`, `sub` and the
-`netbird/wt_account_domain` claims.
+**Built, blocked on stage A:** the reconciler (chart `0.1.9`, the `netbird-ops`
+app, an ArgoCD PostSync hook Job). Its authentik identity works end to end. It
+authenticated into an account **of its own** because the existing account predates
+the domain-routing claims, so against the real account it is a regular user and
+gets **403** on `/api/setup-keys` and `/api/routes` — still measured live on
+2026-09-07, every sync.
 
-🔴 **The one blocking fact.** The reconciler authenticated into an account **of
-its own**, not the existing one:
-
-```
-peers visible to the service identity : 0     (the real account has 2)
-users in that account                 : only netbird-reconciler
-```
-
-The existing account was created before the domain-routing claims existed, so
-`GetAccountIDByPrivateDomain("techyon.dev")` finds nothing to join and
-`addNewPrivateAccount` makes a new one. Against the current account the
-reconciler is a regular user and gets **403** on `/api/setup-keys` and
-`/api/routes` — measured.
-
-**The agreed fix, authorised by the operator, not yet done:** wipe the
-management PVC (`reclaim=Delete`, `local-path` — clean, no Trident leak, and the
-CLAUDE.md Retain warning does not apply). On a fresh account the reconciler
-authenticates first, `addNewPrivateAccount` makes it the **owner**, and it then
-creates the setup key, writes it to `netbird/netbird-setup-key`, creates the
-routes, and promotes `adminEmails` on the pass after their first login. The
-routing peer re-enrols on the new key; the phone must be re-enrolled by hand.
+**The fix, authorised by the operator:** wipe the management PVC (`local-path`,
+`reclaim=Delete`, on lab7 — no Trident leak, the CLAUDE.md Retain warning does not
+apply). On a fresh account the reconciler authenticates first, becomes **owner**,
+creates the setup key, writes `netbird/netbird-setup-key`, creates the routes and
+promotes `adminEmails` after their first login. The routing peer (emptyDir state,
+`NB_SETUP_KEY` read at pod start) re-enrols when its pod is deleted; the phone
+re-enrols by hand.
 
 ⚠️ Order matters: the reconciler must authenticate BEFORE any human logs in, or
 the human owns the account and the reconciler is a regular user again.
+
+⚠️ Until B2b, the routing peer on any node but lab1 cannot reach .19 (§2), so
+"the phone loads grafana.lab" is a B2b check, not a stage-A check.
