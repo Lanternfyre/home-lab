@@ -36,6 +36,10 @@ blueprints:
     - authentik-blueprint-immich
     - authentik-blueprint-argocd
     - authentik-blueprint-kubernetes
+    # The NetBird reconciler's authentik identity: a service account plus the
+    # app-password Token it presents to client_credentials. Secret-backed
+    # because the token key is the credential itself.
+    - authentik-blueprint-netbird-reconciler
 
 authentik:
   postgresql:
