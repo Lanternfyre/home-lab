@@ -1,0 +1,83 @@
+# 🔴 GATED APPS DIE WITH ERR_HTTP2_PROTOCOL_ERROR / HTTP 431 ONCE THE OIDC
+# COOKIES CROSS 60KB. This raises the request-header ceiling on the gated
+# HTTPS listener so a normal authenticated session fits with margin.
+#
+# ── What actually breaks (established live 2026-09-07, not from docs) ────────
+# `home.lab` returned ERR_HTTP2_PROTOCOL_ERROR and `rabbitmq.lab` returned
+# HTTP 431 while other gated hosts still worked. Neither app was down:
+#   * pods Running, HTTPRoutes Accepted;
+#   * `curl https://<host>/` with NO cookies returns 302 (the gate redirect) on
+#     every host.
+# The failure is request-header SIZE. Reproduced against this very listener:
+#   curl -H "Cookie: j=<60KB>" https://home.lab...  -> 302   (accepted)
+#   curl -H "Cookie: j=<62KB>" https://home.lab...  -> reset (rejected)
+# i.e. Envoy's default `max_request_headers_kb: 60` is the wall. Over HTTP/2
+# the reset surfaces in the browser as ERR_HTTP2_PROTOCOL_ERROR; on some paths
+# it is a plain 431. One knob fixes both, because the HCM derives the HTTP/2
+# SETTINGS_MAX_HEADER_LIST_SIZE from this same field.
+#
+# ── Why the cookies are that big ────────────────────────────────────────────
+# The gate (SecurityPolicy `google-workspace-only`) runs the Envoy oauth2
+# filter, which stores THREE encrypted token cookies per host -- `IdToken`
+# (a claims-heavy authentik ID token, carrying the `groups` array the gate
+# authorizes on), `AccessToken`, and `RefreshToken-<suffix>` -- plus the small
+# HMAC/expires/nonce cookies. This is the documented Envoy limitation
+# envoyproxy/envoy#21819 ("large tokens easily blow the default max-header
+# size"), not a bug in this cluster. The cookie-name suffix is
+# `Digest32(SecurityPolicy.UID)` (FNV-1a-32; verified it equals the live
+# `85e1c9d8`), so it is STABLE across reconciles -- this is footprint, not
+# runaway accumulation. Raising the ceiling once is therefore a real fix, not a
+# band-aid on unbounded growth.
+#
+# A browser already over the limit is unblocked immediately by clearing site
+# data for `*.lab.techyon.dev` (or hitting `/logout` per host); this patch
+# stops it recurring.
+#
+# ── Why an EnvoyPatchPolicy and not something supported ─────────────────────
+# Envoy Gateway v1.8.3 exposes NO header-size field. ClientTrafficPolicy's
+# `headers` block covers rate-limit/envoy-header toggles only, and
+# `connection.bufferLimit` is a byte buffer, not the header-count limit. The
+# HCM's `max_request_headers_kb` is only reachable by patching the generated
+# listener. `enableEnvoyPatchPolicy: true` is already set cluster-wide
+# (envoy-gateway-config), so no EnvoyProxy/GatewayClass change is needed.
+#
+# ── The path is INDEX-BASED, and names are looked up, never guessed ──────────
+# Verified from the live config dump that `gateway-envoy/homelab-gated/https`
+# has exactly one filter chain whose one filter is the HCM:
+#   kubectl -n gateway-envoy port-forward \
+#     deploy/envoy-gateway-envoy-homelab-gated-06cddf46 19000:19000 &
+#   curl -s localhost:19000/config_dump?resource=dynamic_listeners \
+#     | ...  # filter_chains[0].filters[0] = http_connection_manager
+# ⚠️ port-forward, NOT `exec ... curl`: the Envoy image is distroless (no curl,
+# no shell). If EG ever splits this listener into per-SNI filter chains, this
+# single `/filter_chains/0/...` path must gain one op per chain. The status
+# block is the tripwire.
+#
+# ── Verify it took ──────────────────────────────────────────────────────────
+#   kubectl -n gateway-envoy get envoypatchpolicy gated-header-size \
+#     -o jsonpath='{.status.ancestors[*].conditions[?(@.type=="Programmed")]}'
+# ⚠️ `.status.ancestors[*].conditions`, NOT `.status.conditions` -- this is a
+# policy object; querying the wrong path returns "" and exits 0, which looks
+# exactly like failure.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyPatchPolicy
+metadata:
+  name: gated-header-size
+  namespace: gateway-envoy
+spec:
+  targetRef:
+    group: gateway.networking.k8s.io
+    kind: Gateway
+    name: homelab-gated
+  type: JSONPatch
+  jsonPatches:
+    - type: "type.googleapis.com/envoy.config.listener.v3.Listener"
+      # Name from the live config dump, never guessed.
+      name: gateway-envoy/homelab-gated/https
+      operation:
+        op: add
+        # 60 (Envoy default) -> 128. Comfortably clears three encrypted OIDC
+        # cookies plus churn; still modest (Envoy's hard cap is 8192) and the
+        # gate serves only admins, so the per-request header buffer is cheap.
+        path: "/filter_chains/0/filters/0/typed_config/max_request_headers_kb"
+        value: 128
