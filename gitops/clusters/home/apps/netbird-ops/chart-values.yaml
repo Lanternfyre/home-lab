@@ -105,27 +105,12 @@ reconciler:
     # Routes API allows 32 per route.
     routes:
       - network_id: lab-gateway
+        # 🧪 EXPERIMENT 2026-09-07: one name only. With all 20 names the Android
+        # client (0.71) cycled connected -> connecting every ~18 s (login, sync,
+        # relay connect, disconnect) and never installed a route. One name tells
+        # whether the DNS-route feature or the list length is what it chokes on.
         domains:
-          - argocd.lab.techyon.dev
-          - authentik.lab.techyon.dev
-          - faro.lab.techyon.dev
-          - goldilocks.lab.techyon.dev
           - grafana.lab.techyon.dev
-          - headlamp.lab.techyon.dev
-          - home.lab.techyon.dev
-          - mealie.lab.techyon.dev
-          - opensearch.lab.techyon.dev
-          - otel.lab.techyon.dev
-          - photos.lab.techyon.dev
-          - pihole.lab.techyon.dev
-          - prometheus.lab.techyon.dev
-          - pyroscope-ingest.lab.techyon.dev
-          - pyroscope.lab.techyon.dev
-          - rabbitmq.lab.techyon.dev
-          - reports.lab.techyon.dev
-          - s3.lab.techyon.dev
-          - silo.lab.techyon.dev
-          - vpn.lab.techyon.dev
         description: "the *.lab.techyon.dev names, resolved on the client"
         masquerade: true
         metric: 9999
