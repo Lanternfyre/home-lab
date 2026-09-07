@@ -40,6 +40,15 @@ spec:
   postgresql:
     parameters:
       max_connections: "100"
+      # Reap a vanished client in ~90 s instead of the kernel's 2 h. Measured
+      # 2026-09-07: the Cilium kube-proxy-replacement roll reset every
+      # established pod connection; clients reconnected, the server never saw
+      # a FIN, and 75 idle zombie backends sat against max_connections until
+      # authentik could not get a slot and crash-looped. These three are
+      # reload-level settings (no restart).
+      tcp_keepalives_idle: "60"
+      tcp_keepalives_interval: "10"
+      tcp_keepalives_count: "3"
       shared_buffers: "256MB"
     shared_preload_libraries:
       - "vchord.so"
