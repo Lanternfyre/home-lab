@@ -155,7 +155,7 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |
 | **B2b** | delete `spec.addresses` from the three Gateways | no | 2026-09-07, #158 |
 | **B3** | the payoff: `toServices` back, `toCIDRSet` out, NetBird routes by `domains` | no | 2026-09-07, #160 + the port fix below |
-| **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | |
+| **B4** | `disable-kube-proxy` in k3s, servers then agents, stale `KUBE-*` rules flushed | **yes** | 2026-09-07, #161 + #164 — see the two findings below |
 
 Why this order:
 
@@ -177,6 +177,30 @@ Why this order:
   to start.
 
 ---
+
+### 🔴 Hard-won, B4: the first server restart since a token rotation is the last one that works
+
+k8s-3, the first server restarted for B4, died on k3s's reconcile guard
+(`cred/passwd newer than datastore`) and stayed down from 12:44 to 13:09. Not
+kube-proxy at all: `k3s token rotate` (2026-09-06) only re-encrypts the copy of
+the bootstrap data in etcd, each server's next start rewrites its own `passwd`
+with the new tokens, and the restart after that is refused. Removing the file
+buys one start. The durable fix is `k3s certificate rotate-ca --path=<EMPTY
+dir>` on a running server, which re-saves the on-disk data to etcd; the
+rotation playbook now does that as phase 5b. Full account in
+`CLUSTER-TOKEN.md` → "What 2026-09-07 taught us".
+
+Compounded by a repo bug: `roles/k3s_config` dropped the `token-file` /
+`agent-token-file` lines from `config.yaml` on every converge that carried no
+secret, so step 1 of this stage silently removed the agent-token split from all
+three servers' config and k8s-3 restarted without it. Fixed in #164; the servers
+were re-rendered and k8s-3 restarted once more before k8s-2 and k8s-1.
+
+Order and gates held exactly as designed: k8s-3 → k8s-2 → k8s-1 → edge → k8s-7
+→ k8s-6 → k8s-5 → k8s-4, each gated (no kube-proxy listeners, Ready, every pod
+Ready, KPR True, health 8/8, host DNS via `.53`, its MetalLB addresses, the edge
+ports from outside). A single server failing left two healthy, which is the
+whole reason for serial.
 
 ### 🔴 Hard-won, B3: a `toServices` rule's `toPorts` is the BACKEND port
 

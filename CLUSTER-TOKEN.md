@@ -214,11 +214,58 @@ running server never re-reads its credential.
 
 ### Afterwards
 
+- 🔴 **Re-save the bootstrap data from disk** (phase 5b of the playbook, or by
+  hand on one server: `k3s certificate rotate-ca --path=<EMPTY dir>`, which must
+  print `certificates saved to datastore`). See "What 2026-09-07 taught us"
+  below for why every server's next restart dies without it.
 - Replace the plaintext token in `gitops/argo-install.md` with a pointer to the
   1Password item, and update MANUAL-STEPS §8.
 - Note honestly: the old token remains in git history and cannot be removed
   from a public repo in any way that matters. **Rotation is what makes that
   moot** — it is the reason to rotate, not a side effect.
+
+---
+
+## What 2026-09-07 taught us
+
+🔴 **A rotation plants a landmine under every server's NEXT restart, and the
+runbook above did not know.** `k3s token rotate` only re-encrypts the copy of
+the bootstrap data held in etcd; the `cred/passwd` inside it keeps the OLD
+server token and the pre-split node password. Each server's first restart after
+the rotation rewrites its own `cred/passwd` with the new tokens (k3s's
+`genUsers` runs at every start), so from then on disk and datastore disagree,
+and k3s's reconcile guard refuses the restart after that:
+
+```
+level=fatal msg="/var/lib/rancher/k3s/server/cred/passwd newer than datastore
+and could cause a cluster outage. Remove the file(s) from disk and restart to
+be recreated from datastore."
+```
+
+"Remove the file" buys exactly one start: k3s recreates it from the stale copy
+and `genUsers` diverges it again. Measured during stage B4 of
+`KUBE-PROXY-REPLACEMENT.md`: k8s-3 was the first server to restart since the
+2026-09-06 rotation and stayed down (12:44 to 13:09) until the datastore was
+re-saved. A power cut taking two servers down would have been an outage with
+no obvious way back.
+
+The durable fix is the supported re-save: `k3s certificate rotate-ca` with an
+**empty** staging directory. The server fills every field from its current
+on-disk data, skips validation because nothing changed, and saves that to etcd
+with override (`pkg/server/handlers/cert.go`: `defaultBootstrap` →
+`cluster.Save(override)`). One running server is enough; after phase 5 every
+server holds the same tokens. The playbook now does this as phase 5b.
+
+🔴 **And a second landmine, from this repo:** `roles/k3s_config` rendered
+`token-file` / `agent-token-file` only while the secret VALUES were being
+written, i.e. only by the rotation play. Every plain `site.yml` since the
+rotation rendered `config.yaml` without them, and k3s without
+`agent-token-file` defaults the agent token to the SERVER token. k8s-3
+restarted into such a config, lost the split, and its `passwd` could then never
+match the datastore. Fixed in #164: the lines render whenever the credential
+files exist on the node. Verify with
+`sudo grep -E '^token-file|^agent-token-file' /etc/rancher/k3s/config.yaml` on
+every server after ANY converge.
 
 ---
 
