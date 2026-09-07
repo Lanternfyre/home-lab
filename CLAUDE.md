@@ -73,6 +73,13 @@ Every app directory generates **two** Applications: `<name>` (Helm) and
   run `k3s-agent.service`, have no etcd, no local kubeconfig and no
   `/var/lib/rancher/k3s/server/`, so anything shelling `k3s kubectl` must
   delegate to a server.
+- **A Cilium datapath-mode change resets every established pod connection.**
+  Flipping `kubeProxyReplacement` (or socket LB) regenerates pod programs
+  without the reverse NAT their conntrack entries relied on; clients reconnect,
+  servers keep zombies. PostgreSQL ran out of slots in minutes. Treat it like a
+  rolling reboot of every client, never as a config change.
+- **A `toServices` rule's `toPorts` names the BACKEND port.** Policy sees the
+  connection after socket LB rewrote it. Envoy Gateway's `:443` is `10443`.
 - **Assert values and behaviour, never file presence.** Three separate bugs
   here were "the file exists and has never worked".
 

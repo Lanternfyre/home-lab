@@ -7,7 +7,7 @@ Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
-Last updated: 2026-09-06 (edge node live, join token rotated, tunnel guard applied)
+Last updated: 2026-09-07 (kube-proxy replaced by Cilium, NetBird account rebuilt, no Gateway address in git)
 
 ---
 
@@ -78,28 +78,28 @@ What that currently means: `databases/postgres-ha` (ReportPortal + authentik),
 
 ### Immediately next
 
-**Resume point, 2026-09-06.** Everything below this block is history and is
-labelled with the date it landed. Read this block first; do not resume from the
-first `🔄` heading you find, which is how this section misled readers before.
+**Resume point, 2026-09-07.** Everything below this block is history and is
+labelled with the date it landed. Read this block first.
 
-The consolidated plan covering what is left lives at
-[`HARDENING.md`](HARDENING.md). In order:
+The staged kube-proxy replacement lives in
+[`KUBE-PROXY-REPLACEMENT.md`](KUBE-PROXY-REPLACEMENT.md); its stage table is
+the status. Where it stands:
 
-1. ~~Prove `wg_guard` from the edge~~ — ✅ done 2026-09-06. etcd 2379/2380 and
-   kubelet 10250 refuse on all 7 home nodes, 6443 still answers on the three
-   servers, `cilium-health` 8/8.
-2. **This doc truth pass** (in flight).
-3. **The edge exposure contract** — a Kyverno policy requiring what a published
-   workload must *be*, plus `scripts/audit-edge-exposure.py` for the
-   cross-resource facts admission cannot see.
-4. **Detection** — a PrometheusRule on node count. Nothing fires on a node
-   appearing today.
-5. **Close the pod-network gap** — the edge node currently reaches every
-   namespace over VXLAN. Needs `enableNodeSelectorLabels` in Cilium and a
-   clusterwide `fromNodes` deny, measured with Hubble first.
-6. **The VPN** — NetBird, control plane on the edge host, routing peer in-cluster.
-7. **Retire the two decorative cloudflared `tcp://` entries** and close etcd
-   2379/2380 to the LAN.
+1. ~~Stage 0 — public NodePort door~~ ✅ #153. Every LoadBalancer NodePort
+   released, `pihole-dhcp` gone, `audit-edge-exposure.py --probe` is the guard.
+2. ~~Stage A — NetBird account rebuilt, reconciler is owner~~ ✅ chart 0.1.12.
+3. ~~B1/B2a — Cilium `kubeProxyReplacement: "true"`~~ ✅ #154, #157 (helm rev 8).
+4. ~~B2b — no declared Gateway addresses~~ ✅ #158.
+5. ~~B3 — `toServices` by Gateway name, VPN routes by `domains`~~ ✅ #160, #162.
+   The reconciler applies the route switch on its next successful sync.
+6. **B4 — `disable-kube-proxy` in k3s.** PR #161 is open and carries the
+   runbook; needs the operator and sudo. Servers before agents.
+7. **Open from B2a:** `postgres-ha` sat at 98/100 connections with 75 zombie
+   backends after the datapath flip and `authentik-server` crash-looped on it.
+   One `pg_terminate_backend` statement on the primary clears it (operator's
+   call, it terminates sessions); keepalives are already shortened (#159).
+8. Then the phone re-enrols in NetBird and `grafana.lab` over the VPN is the
+   last proof.
 
 Deferred by decision, not forgotten: **backups** (see the warning above) and
 **H4 — SA tokens and RBAC**.
@@ -1823,6 +1823,31 @@ The real path is **`/dashboard/<namespace>`** — bare `/` 301-redirects to
 ---
 
 ## Hard-won findings — do not re-derive these
+
+**A Cilium datapath-mode switch is a connection-reset event, and PostgreSQL keeps
+the corpses (2026-09-07).** Flipping `kubeProxyReplacement` regenerated every
+pod's BPF program without the per-packet reverse NAT its existing conntrack
+entries relied on; every established pod→Service TCP session died client-side
+and reconnected via socket LB, while the servers never saw a FIN. `postgres-ha`
+held 75 idle zombie backends against `max_connections=100` and authentik
+crash-looped on the exhausted slots. `tcp_keepalives_idle` was 0 (kernel 7200 s).
+Plan any datapath-mode change like a rolling reboot of every client, keep
+`roles/cilium`'s "pods still Ready" assert, and keep CNPG keepalives short (#159).
+
+**A `toServices` rule's `toPorts` is the BACKEND port (2026-09-07).** Policy runs
+after socket LB has rewritten the connection to the pod, so it sees the pod's
+port. Envoy Gateway binds privileged listeners +10000, so a Gateway's `:443` is
+`10443` in policy. Measured: the identity matched and `port: "443"` still denied.
+
+**A declared Gateway address is an `externalIPs` frontend, and without kube-proxy
+replacement Cilium loads it with only the node-local backend (2026-09-07).** #150's
+`spec.addresses` made pod → LAN-gateway address work only from the node hosting
+that Envoy pod. Removed in #158; nothing in git names a Gateway address now.
+
+**kube-proxy on the edge forwarded every `externalTrafficPolicy: Cluster` NodePort
+to the internet (2026-09-07).** `argocd-server:32497/31066` answered on the public
+address; `edge_firewall` filters `input` only and a DNAT'd NodePort is forwarded.
+Under BPF NodePort no firewall can see it at all. Closed at the source (#153).
 
 **CI saturates k8s-lab5 because the node with the most CPU has the worst disk,
 and the drive throttles at 87 °C.** Diagnosed 2026-09-06 from a
