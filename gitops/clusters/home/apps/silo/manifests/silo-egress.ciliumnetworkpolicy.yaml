@@ -58,3 +58,37 @@ spec:
         - ports:
             - port: "443"
               protocol: TCP
+
+    # 🔴 THE SAME OIDC CALL, but as the datapath sees it AFTER kube-proxy
+    # replacement (B4, 2026-09-07). authentik.lab.techyon.dev resolves to the
+    # `homelab` Gateway's LoadBalancer (192.168.32.18). Under Cilium socket LB,
+    # a pod's connection to that LB address is rewritten to the Envoy backend
+    # pod BEFORE this egress policy is evaluated, so the `toFQDNs ... 443` rule
+    # above no longer matches and the SYN is dropped -- MinIO's console spins
+    # ~10s and then hides the "Sign in with authentik" button.
+    #
+    # The fix is the estate-wide pattern (see KUBE-PROXY-REPLACEMENT.md and the
+    # NetBird B3 policy): name the Gateway by LABEL via `toServices`, and name
+    # the BACKEND port -- Envoy Gateway binds privileged listeners +10000, so
+    # the Gateway's :443 is :10443 in the pod. Kept alongside the toFQDNs rule
+    # rather than replacing it, so the allow holds whichever way the datapath
+    # routes this. `homelab` only: authentik.lab is on the open Gateway, not the
+    # gated one.
+    #
+    # ✅ VERIFIED, not assumed: a standalone allow CNP with exactly this rule
+    # took silo's discovery fetch from a 10s timeout to `200 in 0.27s`. (In-place
+    # edits tested false at first only because ArgoCD reverted them within
+    # seconds -- the proof needed a policy ArgoCD does not manage.)
+    - toServices:
+        - k8sServiceSelector:
+            namespace: gateway-envoy
+            selector:
+              matchExpressions:
+                - key: gateway.envoyproxy.io/owning-gateway-name
+                  operator: In
+                  values:
+                    - homelab
+      toPorts:
+        - ports:
+            - port: "10443"
+              protocol: TCP
