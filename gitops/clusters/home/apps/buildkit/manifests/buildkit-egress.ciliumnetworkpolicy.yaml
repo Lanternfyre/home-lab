@@ -108,6 +108,37 @@ spec:
         # Python, for the airflow image
         - matchName: pypi.org
         - matchName: files.pythonhosted.org
+        # ── Added 2026-09-11 for the claude-workspace image ────────────────
+        # Found exactly the way this file's header says these are found: the
+        # build did not fail, it HUNG, and the log ended with
+        #   curl: (28) Failed to connect to dl.k8s.io port 443 after 300445 ms
+        # 300 seconds is curl's timeout, not a slow mirror. Every name below is
+        # from a DROPPED build, not from reading the Dockerfile -- and each was
+        # checked for a redirect first, because allowing a front-door name and
+        # not its CDN is the production.cloudfront.docker.com trap one row up.
+        #
+        # ⚠️ THIS WIDENS A SHARED DAEMON. Every image built on this cluster can
+        # now reach these five hosts, not just claude-workspace. That is the
+        # cost of one buildkitd, and it is why the list is five names rather
+        # than a wildcard.
+        #
+        # kubectl. Verified NOT to redirect -- dl.k8s.io answers 200 directly,
+        # so cdn.dl.k8s.io is not needed and is deliberately not listed.
+        - matchName: dl.k8s.io
+        # rustup: the installer is served from sh.rustup.rs, but the TOOLCHAIN
+        # it then downloads comes from static.rust-lang.org. Allowing only the
+        # first gets you a script that runs and then hangs -- which reads as a
+        # broken toolchain rather than a missing egress rule.
+        - matchName: sh.rustup.rs
+        - matchName: static.rust-lang.org
+        # npm, for `npm install -g @anthropic-ai/claude-code`. Tarballs are
+        # served from the registry host itself (checked: the `dist.tarball` URL
+        # is registry.npmjs.org), so there is no separate CDN name.
+        - matchName: registry.npmjs.org
+        # ⚠️ NOT ADDED, and worth saying so: dot.net and
+        # builds.dotnet.microsoft.com are already above, and dot.net redirects
+        # to exactly that host -- traced, not assumed. The .NET SDK install in
+        # claude-workspace needs nothing new.
       toPorts:
         - ports:
             - port: "443"
