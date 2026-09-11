@@ -26,3 +26,10 @@ data:
     Lanternfyre/docker-compendium
     Lanternfyre/helm-compendium
     Lanternfyre/github-actions-compendium
+    # ⚠️ Necronia is ~856 MiB and is cloned in FULL, not shallow -- convco reads
+    # tags and history to compute a version, so a `--depth 1` checkout would
+    # silently restart every release at 0.1.0. Expect its first clone to take
+    # minutes. That is fine: seed-repos runs in the background and does not
+    # hold up readiness or the console.
+    Lanternfyre/Necronia
+    Lanternfyre/Necronia2.0
