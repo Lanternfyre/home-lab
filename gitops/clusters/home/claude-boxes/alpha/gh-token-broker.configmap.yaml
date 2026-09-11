@@ -80,9 +80,24 @@ data:
       # `repository_selection: all`, so an UNSCOPED token carries contents:write
       # to EVERY repo in the org. An absent/empty array means "everything" --
       # so a missing repo list is a silent WIDENING, not a no-op. Refuse.
+      # 🔴 TWO DIFFERENT OUTCOMES THAT MUST NOT BE CONFLATED.
+      #
+      # "this owner has no repos in the list" is a CONFIGURATION CHOICE -- the
+      # box simply is not scoped to that org -- and the right response is to
+      # skip it silently-ish and carry on. Returning failure here made the
+      # main loop treat a correctly-configured box as broken: `ok` never
+      # reached 2, so it retried every 120s forever and logged a refusal each
+      # time, burning an API call and drowning real failures in noise.
+      #
+      # "minting failed" is different and DOES return 1, below.
+      #
+      # What must never happen is minting with an EMPTY repositories array:
+      # both installations are `repository_selection: all`, so that silently
+      # grants contents:write to every repo in the org. Skipping is the safe
+      # branch; widening is not.
       if ! repos="$(repos_json_for "$owner")"; then
-        log "no repos for ${owner} in ${REPO_LIST}; refusing to mint an org-wide token"
-        return 1
+        log "skip ${owner}: no repos for it in ${REPO_LIST} (not an error)"
+        return 2
       fi
       body="{\"repositories\":[${repos}]}"
 
@@ -110,13 +125,23 @@ data:
       log "minted ${owner} ($(printf '%s' "$repos" | tr -cd ',' | wc -c | awk '{print $1+1}') repos)"
     }
 
-    mkdir -p "$OUT"; chmod 0750 "$OUT"
+    # ⚠️ NO chmod ON $OUT. It is an emptyDir MOUNT POINT owned by root, and a
+    # non-root container cannot chmod it -- the attempt logged
+    #   chmod: changing permissions of '/var/run/gh-token': Operation not permitted
+    # on every start. The permission that actually matters is on the token
+    # FILES, and `umask 077` at write time already gives them 0600.
+    mkdir -p "$OUT" 2>/dev/null || true
     log "starting; period=${PERIOD}s app=${APP_ID}"
 
     while :; do
-      ok=0
-      mint_installation lanternfyre "$(cat /etc/gh-app/installation-lanternfyre)" && ok=$((ok+1))
-      mint_installation t3chy0n     "$(cat /etc/gh-app/installation-t3chy0n)"     && ok=$((ok+1))
+      failed=0
+      for pair in "lanternfyre:/etc/gh-app/installation-lanternfyre" \
+                  "t3chy0n:/etc/gh-app/installation-t3chy0n"; do
+        owner="${pair%%:*}"; idfile="${pair#*:}"
+        mint_installation "$owner" "$(cat "$idfile")"
+        # 0 = minted, 2 = deliberately skipped, anything else = real failure.
+        [[ $? -eq 1 ]] && failed=1
+      done
 
       # 🔴 FAIL-CLOSED, AND THE TWO HALVES MEAN DIFFERENT THINGS.
       #
@@ -132,5 +157,5 @@ data:
       # fail-closed applied where it buys nothing. GitHub expires the token on
       # its own clock either way; keeping the file only decides whether the
       # remaining validity is usable.
-      if [[ "$ok" -eq 2 ]]; then sleep "$PERIOD"; else sleep 120; fi
+      if [[ "$failed" -eq 0 ]]; then sleep "$PERIOD"; else sleep 120; fi
     done
