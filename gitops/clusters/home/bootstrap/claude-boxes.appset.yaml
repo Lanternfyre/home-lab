@@ -1,0 +1,74 @@
+# One Application per directory under claude-boxes/.
+#
+# 🟢 A SECOND BOX IS A COPY OF A DIRECTORY. `cp -r claude-boxes/alpha
+# claude-boxes/bravo`, add bootstrap/namespaces/claude-box-bravo.yaml, merge.
+# Nothing in this file changes and no new Application is written by hand.
+#
+# ── Why a `directories` generator and not the two app ApplicationSets ────────
+# home-appset.yaml and home-extra-manifests-appset.yaml both key off a per-app
+# `app.yaml` carrying Helm coordinates (repoURL/chart/targetRevision), and both
+# build a Helm Application from it. These boxes are plain manifests with no
+# chart, so an app.yaml would produce a Helm Application pointing at nothing.
+# The chartless precedent in this repo is a standalone Application
+# (bootstrap/cloudflare-tunnel.application.yaml); this is that, generated.
+#
+# 🔴 NO CreateNamespace=true, DELIBERATELY. A namespace created by this
+# ApplicationSet would carry no Pod Security Admission labels, and an unlabelled
+# namespace defaults to `privileged` -- a silent downgrade on the one pod in
+# this estate that runs an agent with shell access and a cluster token. The
+# namespace is declared in bootstrap/namespaces/ and owned by home-root, which
+# is the convention that directory's README exists to enforce. A box whose
+# namespace file is missing stays Progressing and tells you so; that is the
+# intended failure.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: claude-boxes
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+
+  generators:
+    - git:
+        repoURL: https://github.com/Lanternfyre/home-lab.git
+        revision: master
+        directories:
+          - path: gitops/clusters/home/claude-boxes/*
+
+  template:
+    metadata:
+      name: "claude-box-{{ .path.basename }}"
+      finalizers:
+        - resources-finalizer.argocd.argoproj.io
+      annotations:
+        # Same reasoning as the two app ApplicationSets: the diff goes through
+        # a server-side apply dry run, so controller-defaulted and
+        # webhook-written fields are not reported as permanent drift.
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
+    spec:
+      project: default
+      source:
+        repoURL: https://github.com/Lanternfyre/home-lab.git
+        targetRevision: master
+        path: "{{ .path.path }}"
+        directory:
+          recurse: true
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: "claude-box-{{ .path.basename }}"
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - ServerSideApply=true
+        # ⚠️ NOTE THE INDENTATION -- retry nests inside syncPolicy. Sat as a
+        # sibling in home-appset.yaml for months, where the CRD silently pruned
+        # it and all 27 Helm Applications ran with no retry policy at all.
+        retry:
+          limit: 10
+          backoff:
+            duration: 15s
+            factor: 2
+            maxDuration: 10m

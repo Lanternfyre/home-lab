@@ -1,0 +1,39 @@
+# claude-box-alpha
+#
+# Apps in this namespace: one Claude Code workspace box (the `alpha` directory
+# under gitops/clusters/home/claude-boxes/). It runs on k8s-edge1, the public
+# VPS -- the one node in this fleet that is not trusted infrastructure.
+#
+# Measured against the pod spec this namespace is built for: uid 1000, all
+# capabilities dropped, allowPrivilegeEscalation false, seccomp RuntimeDefault,
+# no host namespaces, no hostPath. That is `restricted`, and unlike most
+# namespaces here it is restricted BY CONSTRUCTION rather than by measurement --
+# the image and the pod were written to this level on purpose, because the
+# workload is an agent with a shell.
+#
+# 🔴 A CONSEQUENCE WORTH KNOWING BEFORE IT SURPRISES SOMEONE. Under
+# `restricted`, seccomp RuntimeDefault filters clone(CLONE_NEWUSER), so Claude
+# Code's own bundled bubblewrap sandbox cannot create a user namespace and is
+# disabled in the image's managed-settings.json. That is the design, not a
+# regression: this deployment is the Kubernetes port of `claude-box`, and here
+# the POD plus the CiliumNetworkPolicy egress allowlist ARE the sandbox.
+# Do not add capabilities to "fix" it.
+#
+# ⚠️ This namespace must NEVER carry homelab.techyon.dev/edge-publish: "true".
+# It would look like the right label for a workload on the edge node, and it is
+# the opposite: `edge-published-pod-constraints` forbids
+# automountServiceAccountToken, which kills the read-only cluster token this box
+# is designed around, and requires readOnlyRootFilesystem, which a development
+# box cannot satisfy. apps/netbird-ops/chart-values.yaml records being forced
+# out of a published namespace for exactly the first half of that.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: claude-box-alpha
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

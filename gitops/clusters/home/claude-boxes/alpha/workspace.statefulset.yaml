@@ -1,0 +1,283 @@
+# The Claude Code workspace box, `alpha`.
+#
+# ── Why a StatefulSet and not a Deployment ──────────────────────────────────
+# Three reasons, in order of weight:
+#
+#  1. `updateStrategy: OnDelete` has no Deployment equivalent. A Deployment
+#     rolls the pod on ANY spec change -- an image bump, a resource tweak, an
+#     ArgoCD selfHeal correction -- and each one kills the tmux server, and with
+#     it a live /login, a running agent turn, and every unsaved buffer. With
+#     OnDelete, Argo reports Synced, the new spec waits, and the OPERATOR picks
+#     the moment. For a workload whose entire value is session continuity, that
+#     inverts control the right way.
+#  2. RWO does not protect you here. local-path volumes are ReadWriteOnce, and
+#     RWO permits multiple pods ON THE SAME NODE. A Deployment's default
+#     RollingUpdate would happily start a second pod on k8s-edge1 sharing
+#     /home/agent -- two tmux servers, two sshd, two processes writing
+#     ~/.claude.json. You would have to remember `strategy: Recreate`.
+#     At-most-one-per-ordinal is a property here, not a setting to forget.
+#  3. `claude-box-alpha-0` is the name the operator types for the next year.
+#     A Deployment gives `claude-workspace-7f9c4d8b6-x2kqp`.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: claude-box-alpha
+  namespace: claude-box-alpha
+spec:
+  replicas: 1
+  serviceName: claude-box-alpha
+  selector:
+    matchLabels: {app.kubernetes.io/name: claude-box-alpha}
+
+  # 🔴 The operator decides when the session dies. See reason 1 above.
+  # After merging a spec change: `kubectl -n claude-box-alpha delete pod
+  # claude-box-alpha-0` when you are ready to lose the scrollback.
+  updateStrategy:
+    type: OnDelete
+
+  # ArgoCD owns the StatefulSet; the controller owns the claim. Without this a
+  # `whenDeleted: Delete` default would let a prune of the STS cascade into the
+  # volume -- the same class of accident protected-volumes.yaml layer 3 exists
+  # to stop, in the one place that applies to a claim ArgoCD does not manage.
+  persistentVolumeClaimRetentionPolicy:
+    whenDeleted: Retain
+    whenScaled: Retain
+
+  volumeClaimTemplates:
+    - metadata:
+        name: home
+      spec:
+        accessModes: [ReadWriteOnce]
+        # 🔴 local-path, reclaimPolicy DELETE, IN VIOLATION of CLAUDE.md's
+        # "PVs are reclaimPolicy: Retain" invariant. Not an oversight and not
+        # fixable here: `kubectl get csinode k8s-edge1` returns an EMPTY driver
+        # list, and apps/kyverno/manifests/no-storage-on-edge.validatingpolicy
+        # .yaml keeps it that way on purpose -- the QNAP CSI node plugin mounts
+        # trident-encryption-keys and runs hostNetwork, and this node has a
+        # public IP. local-path is the only class available here.
+        #
+        # The exception is survivable because everything on the volume is
+        # reconstructible, and the list is short enough to state:
+        #   ~/.claude/.credentials.json + ~/.claude.json  -> re-run /login, ~2 min
+        #   ~/work/*                                      -> re-cloned by seed-repos
+        #   ~/.npm, ~/.cache                              -> caches
+        # The ONLY real loss is UNPUSHED work in a checkout. That is bounded by
+        # convention -- the box holds a contents:write token and is expected to
+        # push -- not by storage. Register it under `unprotected:` in
+        # gitops/clusters/home/protected-volumes.yaml or audit-protected-
+        # volumes.py FAILS on a claim that appears in neither list.
+        #
+        # ⚠️ A local-path PV carries nodeAffinity pinning it to k8s-edge1. If
+        # that node goes away the pod does NOT reschedule -- it sits Pending
+        # with "volume node affinity conflict" forever. Moving this box is
+        # "push, delete the PVC, edit the placement block, re-login", never
+        # "edit the nodeSelector".
+        storageClassName: local-path
+        resources: {requests: {storage: 40Gi}}
+
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: claude-box-alpha}
+    spec:
+      # ── 🟢 WHERE THE BOX RUNS. EDIT THESE TWO BLOCKS TOGETHER. ────────────
+      # Both are required and neither is sufficient: the taint repels, the
+      # label attracts. Same pair as apps/envoy-gateway-edge/manifests/
+      # homelab-edge.gateway.yaml:125.
+      # ⚠️ Changing these ALONE strands the pod -- see the PVC note above.
+      nodeSelector:
+        infrastructure.techyon.dev/location: edge
+      tolerations:
+        - key: infrastructure.techyon.dev/edge
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+
+      # GHCR packages are private and an imagePullSecret is namespaced.
+      imagePullSecrets:
+        - name: ghcr-docker
+
+      serviceAccountName: claude-box-alpha
+      # 🔴 false EVEN THOUGH THIS POD DOES GET A TOKEN. The default mount is
+      # ambient: it lands at the well-known path and every client library --
+      # kubectl included -- auto-detects it. The projected token below is
+      # mounted at a NON-default path with KUBECONFIG pointing at it, so
+      # cluster access is something this file grants explicitly rather than
+      # something any process in the pod picks up by accident.
+      automountServiceAccountToken: false
+
+      # 🔴 LOAD-BEARING, AND IT LOOKS LIKE A NO-OP. `false` is the default, and
+      # it is stated so that turning it on (as people do to debug) has to be a
+      # deliberate EDIT rather than an omission. With it true the workspace
+      # container can read the App PEM through /proc/<broker-pid>/root and the
+      # entire broker separation evaporates.
+      shareProcessNamespace: false
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        # 🔴 Without fsGroup the pod cannot write its own home: local-path
+        # creates the host directory root-owned, and uid 1000 gets EACCES on
+        # the first write. OnRootMismatch skips a recursive chown of a 40 GiB
+        # volume on every restart once the top-level ownership already matches.
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile: {type: RuntimeDefault}
+
+      # ── The token broker, as a NATIVE SIDECAR ────────────────────────────
+      # An initContainer with `restartPolicy: Always` starts BEFORE the main
+      # containers and keeps running. That ordering is the whole reason to use
+      # one: the first token exists before Claude Code does. As an ordinary
+      # sidecar the workspace races the first mint and the first `git push`
+      # after every restart fails.
+      initContainers:
+        - name: gh-token-broker
+          # The SAME image as the workspace. It carries curl, jq and openssl,
+          # which is all the mint needs, and it is already on the node -- so a
+          # dedicated image would cost a second build, a second release and a
+          # second pull to save nothing.
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.0
+          restartPolicy: Always
+          command: ["/bin/bash", "/etc/broker/broker.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # 🔴 THE PEM. THIS CONTAINER ONLY. Not in the workspace container's
+            # mount list, and mount namespaces are per-container.
+            - {name: gh-app, mountPath: /etc/gh-app, readOnly: true}
+            - {name: gh-token, mountPath: /var/run/gh-token}
+            - {name: workspace-config, mountPath: /etc/claude-workspace/config, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+            limits: {memory: 256Mi}
+          # Restarts a wedged broker WITHOUT touching the workspace. Older than
+          # 55 min means re-minting has stopped; a restart re-runs the loop and
+          # mints immediately.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - test $(( $(date +%s) - $(stat -c %Y /var/run/gh-token/lanternfyre.token) )) -lt 3300
+            initialDelaySeconds: 90
+            periodSeconds: 60
+
+      containers:
+        - name: workspace
+          # ⚠️ A PINNED CONVCO TAG, NEVER :latest. The shared pipeline moves
+          # :latest on every master build, so :latest plus IfNotPresent is
+          # "whatever this node happened to cache".
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.0
+          ports:
+            - {name: console, containerPort: 7681}
+            - {name: ssh, containerPort: 2222}
+          env:
+            - name: TTYD_CREDENTIAL
+              valueFrom:
+                secretKeyRef: {name: console-auth, key: ttyd-credential}
+            - name: KUBECONFIG
+              value: /etc/kube-ro/config
+            - name: GH_TOKEN_DIR
+              value: /var/run/gh-token
+          # ⚠️ Named env entries, never `envFrom` of a whole Secret. This is
+          # claude-box's `--clearenv` plus a name-only allowlist, expressed in
+          # a PodSpec: what reaches the agent's environment is a list someone
+          # wrote down, not whatever a Secret happens to contain today.
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+            # ⚠️ NOT readOnlyRootFilesystem. This is a development box: npm and
+            # pip write caches, the operator installs things mid-task. That
+            # constraint belongs to the edge-PUBLISHED contract, which this
+            # namespace deliberately does not enter.
+            readOnlyRootFilesystem: false
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: run-agent, mountPath: /run/agent}
+            # ⚠️ EACH MOUNT ITS OWN SUBDIRECTORY. A volume mount REPLACES the
+            # directory it lands on, so the ssh Secret and the repo ConfigMap
+            # cannot both mount at /etc/claude-workspace -- whichever mounted
+            # second would hide the first, silently.
+            - {name: workspace-config, mountPath: /etc/claude-workspace/config, readOnly: true}
+            - {name: console-auth, mountPath: /etc/claude-workspace/ssh, readOnly: true}
+            # Read-only: the workspace consumes tokens, the broker produces them.
+            - {name: gh-token, mountPath: /var/run/gh-token, readOnly: true}
+            - {name: kube-ro, mountPath: /etc/kube-ro, readOnly: true}
+          resources:
+            requests: {cpu: 500m, memory: 2Gi}
+            limits:
+              # 🔴 NO cpu LIMIT -- repo standing rule (CFS throttling). Worse
+              # here than elsewhere: throttling an interactive TUI produces
+              # input lag that reads as a network problem.
+              memory: 8Gi
+
+          # 🔴 THERE IS NO LIVENESS PROBE, AND THAT IS THE DESIGN.
+          # A liveness probe restarts a wedged process. Here a restart destroys
+          # the tmux server -- the one piece of state this box exists to keep --
+          # so the probe would be a mechanism for converting a transient blip
+          # into exactly the outcome the feature prevents. Every failure it
+          # could catch already has a better answer: the container dying is
+          # handled by restartPolicy, and a dead tmux server cannot be restored
+          # by a restart because the state is already gone.
+          #
+          # Readiness is `exec`, NOT httpGet, and that is also deliberate. An
+          # exec probe runs through the CRI and never touches the pod network,
+          # which sidesteps the measured trap that a kubelet probe to a pod on
+          # k8s-edge1 arrives as `reserved:world` rather than `host` (see
+          # apps/mealie/manifests/mealie-ingress.ciliumnetworkpolicy.yaml, and
+          # reproduced on the edge node 2026-09-11). Nothing in the ingress
+          # rules below has to admit a probe at all.
+          #
+          # Failing readiness closes the browser and ssh doors by pulling the
+          # pod from the Service endpoints -- while `kubectl exec` keeps
+          # working, because it does not go through a Service. That is exactly
+          # the door you want open when the other two are broken.
+          startupProbe:
+            exec: {command: [/usr/local/bin/console-ready]}
+            periodSeconds: 5
+            failureThreshold: 36     # 3 min for first boot + repo seeding
+          readinessProbe:
+            exec: {command: [/usr/local/bin/console-ready]}
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+      terminationGracePeriodSeconds: 60
+
+      volumes:
+        - name: gh-app
+          secret: {secretName: gh-app, defaultMode: 0400}
+        - name: console-auth
+          secret: {secretName: console-auth, defaultMode: 0400}
+        - name: workspace-config
+          configMap: {name: workspace-repos}
+        - name: gh-token
+          emptyDir:
+            # 🔴 medium: Memory -- tmpfs. Without it this is a directory on the
+            # EDGE NODE'S LOCAL DISK, and a GitHub write token gets written to
+            # the disk of a public VPS every 45 minutes, leaving copies in free
+            # blocks that outlive the pod.
+            # ⚠️ tmpfs counts against the pod's memory limit, so sizeLimit is
+            # not decoration: without it a runaway writer can OOM the pod by
+            # filling a "disk".
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: run-agent
+          emptyDir: {medium: Memory, sizeLimit: 8Mi}
+        - name: tmp
+          emptyDir: {medium: Memory, sizeLimit: 32Mi}
+        - name: kube-ro
+          projected:
+            sources:
+              # A BOUND token: 1 h, kubelet-rotated, and invalid the moment the
+              # pod is gone. Not the legacy non-expiring Secret.
+              - serviceAccountToken: {path: token, expirationSeconds: 3600}
+              - configMap:
+                  name: kube-root-ca.crt
+                  items: [{key: ca.crt, path: ca.crt}]
+              - configMap:
+                  name: claude-box-alpha-kubeconfig
+                  items: [{key: config, path: config}]

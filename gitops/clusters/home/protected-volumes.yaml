@@ -332,6 +332,29 @@ unprotected:
     size: 20Gi
     reason: Profiles, 720h retention by config. Discardable by design.
 
+  - namespace: claude-box-alpha
+    claim: home-claude-box-alpha-0
+    size: 40Gi
+    reason: >-
+      The agent box's $HOME, and the ONLY Delete-reclaim claim in this file that
+      holds something a human typed. It cannot be protected: k8s-edge1 has zero
+      registered CSI drivers and no-storage-on-edge.validatingpolicy.yaml keeps
+      it that way on purpose, so local-path (Delete) is the only class available
+      on that node. Listing it here is the deliberate exception the storage
+      invariant asks for, written where the REGISTRY check can see it.
+
+      Every item on the volume is reconstructible, and the list is short enough
+      to state rather than gesture at:
+        the Anthropic OAuth credential -> re-run /login, about two minutes
+        ~/work/*                       -> re-cloned by seed-repos.sh at boot
+        ~/.npm, ~/.cache               -> caches
+      The residual loss is UNPUSHED work in a checkout. That is bounded by
+      convention -- the box holds a contents:write token and is expected to push
+      -- not by storage, and saying so is the point of this entry.
+
+      Recovery and the move procedure are in
+      gitops/clusters/home/claude-boxes/README.md.
+
   # Redis has NO volumes at all any more -- apps/redis/chart-values.yaml sets
   # `persistence.enabled: false`, deliberately: the queue holds Immich's BullMQ
   # jobs, which are re-run rather than restored, and a volume that does not
