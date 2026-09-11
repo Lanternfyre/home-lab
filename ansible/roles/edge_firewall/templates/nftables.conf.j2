@@ -55,6 +55,45 @@ table inet edge_filter {
     # upgrade instead of during a change.
     iifname "{{ edge_fw_tunnel_iface }}" accept
 
+    # ── 🔴 THE CNI INTERFACES. WITHOUT THIS, POD DNS ON THIS NODE HANGS. ───
+    #
+    # The header above says this file is INPUT ONLY because "Cilium and
+    # kube-proxy own the forward path". That is true and it is not the whole
+    # story: some pod traffic does not take the forward path at all. When a
+    # CiliumNetworkPolicy carries an L7 rule -- `rules.dns`, which every
+    # `toFQDNs` policy needs -- Cilium REDIRECTS the pod's packet to a proxy
+    # listening in the HOST namespace. That packet arrives from the pod's veth
+    # (`lxc*`) and is destined for this host, so it hits THIS CHAIN, matches
+    # nothing, and dies on `policy drop`.
+    #
+    # MEASURED 2026-09-11, with the first ordinary pod ever scheduled here:
+    #   * the pod's `getent hosts api.github.com` timed out after 20s
+    #   * Hubble said `policy-verdict:L3-L4 EGRESS ALLOWED` then
+    #     `to-proxy FORWARDED` -- Cilium was doing its job
+    #   * the query reached CoreDNS on a home node and CoreDNS ANSWERED
+    #   * and this chain's drop counter rose by 44 packets per DNS attempt
+    # Adding the two rules below, and nothing else, made it resolve instantly.
+    #
+    # ⚠️ It is not only DNS. Anything that terminates on the host from a pod
+    # takes this path: any future L7 policy, and the health-checker probing a
+    # local endpoint. The symptom is always a HANG, never a refusal, because a
+    # dropped packet on a policy-drop chain says nothing to anyone.
+    #
+    # ⚠️ Why this never bit before: until now the only pods on this node were
+    # `hostNetwork` (the edge Envoy, node-exporter) or had no policy-selected
+    # L7 path (smartctl-exporter). hostNetwork pods ARE the host and never
+    # traverse a veth. The first non-hostNetwork pod with an L7 DNS policy is
+    # what found it.
+    #
+    # This is the same trust statement as the tunnel rule above: traffic on
+    # these interfaces originates from pods on THIS node, which are already
+    # inside Cilium's policy domain and individually governed by their own
+    # CiliumNetworkPolicy. That -- not this chain -- is the control that decides
+    # what a pod may reach. This chain exists to keep the INTERNET out, and the
+    # internet does not arrive on `lxc*`.
+    iifname "lxc*" accept
+    iifname { "cilium_host", "cilium_net", "cilium_vxlan" } accept
+
     # ── ICMP: the useful kinds only, and NOT echo on the public side ───
     #
     # Dropping ICMP wholesale is a classic self-inflicted wound: it breaks
