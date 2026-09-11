@@ -144,6 +144,11 @@ spec:
             capabilities: {drop: ["ALL"]}
             readOnlyRootFilesystem: true
           volumeMounts:
+            # The mint script itself. Without this the container starts and
+            # immediately dies with "/etc/broker/broker.sh: No such file or
+            # directory" -- a ConfigMap that exists and is never mounted is
+            # indistinguishable from one that was never written.
+            - {name: broker-script, mountPath: /etc/broker, readOnly: true}
             # 🔴 THE PEM. THIS CONTAINER ONLY. Not in the workspace container's
             # mount list, and mount namespaces are per-container.
             - {name: gh-app, mountPath: /etc/gh-app, readOnly: true}
@@ -254,6 +259,11 @@ spec:
           secret: {secretName: console-auth, defaultMode: 0400}
         - name: workspace-config
           configMap: {name: workspace-repos}
+        # ⚠️ Mounted ONLY into the broker container. The workspace has no reason
+        # to read the mint script, and the read-only cluster role excludes
+        # configmaps, so the box cannot fetch it through the API either.
+        - name: broker-script
+          configMap: {name: gh-token-broker, defaultMode: 0555}
         - name: gh-token
           emptyDir:
             # 🔴 medium: Memory -- tmpfs. Without it this is a directory on the
