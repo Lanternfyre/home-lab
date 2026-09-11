@@ -1,0 +1,69 @@
+# The browser console for the agent box.
+#
+# 🔴 `homelab-gated`, NOT `homelab`, and this is the security decision for the
+# whole feature rather than a routing preference. ttyd is an interactive shell
+# sitting beside an Anthropic OAuth credential, a GitHub token with
+# contents:write on seven repositories, and a read-only cluster token. On the
+# plain Gateway that is a root-equivalent shell for anything that reaches the
+# LAN or the VPN, with an 8-character basic-auth password as the only control.
+#
+# Choosing the Gateway IS the authorization decision here -- see the header of
+# apps/goldilocks/manifests/goldilocks.httproute.yaml, which makes the same
+# point: `parentRefs: homelab-gated` is a one-line difference that is
+# impossible to get subtly wrong.
+#
+# ⚠️ ttyd keeps its OWN `-c user:password` underneath, and the entrypoint
+# refuses to start without it. That is not redundancy: it is what still holds
+# if this route is ever attached to the wrong Gateway by mistake, which would
+# otherwise present as a working page rather than as an error.
+#
+# ⚠️ TWO THINGS HERE ARE UNPROVEN UNTIL SOMEONE LOADS THE PAGE.
+#   1. ttyd is a WEBSOCKET, and the oauth2 filter has to authenticate the
+#      upgrade GET and then get out of the way. If it challenges `/ws` with a
+#      302 instead, the terminal never connects.
+#   2. This estate has already been bitten by oauth2 cookies exceeding Envoy's
+#      60 KB header limit on gated apps -- it surfaces as
+#      ERR_HTTP2_PROTOCOL_ERROR or a 431, not as a login failure.
+# If either bites, the fallback is `homelab` plus the ttyd credential, and the
+# reason gets written here rather than silently applied.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: claude-box-console
+  namespace: claude-box-alpha
+  annotations:
+    # ⚠️ Homepage discovers services from THESE ANNOTATIONS, and dropping them
+    # is silent -- goldilocks vanished from the dashboard once with nothing
+    # anywhere reporting an error. `group` creates the section: there is no
+    # central layout to register it in, so "Agents" exists because this line
+    # says so.
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: box1
+    gethomepage.dev/description: Claude Code agent workspace
+    gethomepage.dev/group: Agents
+    gethomepage.dev/icon: si-anthropic
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - box1.lab.techyon.dev
+  rules:
+    # 🔴 `0s` DISABLES THE TIMEOUT, AND WITHOUT IT THE CONSOLE IS UNUSABLE.
+    # Envoy's DEFAULT route timeout is 15 seconds. This repo has already paid
+    # for that on a different long-lived stream -- see
+    # apps/netbird/manifests/netbird-edge.httproute.yaml, where a management
+    # gRPC stream was cut on a 15s metronome and the client reconnected
+    # SILENTLY, so nothing looked broken while every update died. A ttyd
+    # websocket is the same shape, except an idle terminal has no traffic to
+    # reconnect on.
+    #
+    # ⚠️ A zero-valued duration means NO TIMEOUT in Gateway API. Deleting this
+    # does not restore a sensible default -- it restores the 15s cut.
+    - timeouts:
+        request: 0s
+        backendRequest: 0s
+      backendRefs:
+        - name: claude-box-alpha-console
+          port: 7681

@@ -28,21 +28,50 @@ re-reads the file on every git invocation so rotation is invisible.
 clones what is missing at container start and **never touches an existing
 checkout**. Nothing about the repos is in the image.
 
-## Where it runs, and the one invariant that is broken
+## Where it runs
 
-`k8s-edge1`, the public VPS. `kubectl get csinode k8s-edge1` returns an empty
-driver list — Trident is Kyverno-blocked there on purpose — so the home volume
-is `local-path` with `reclaimPolicy: Delete`, **in violation of CLAUDE.md's
-Retain invariant**. The exception is survivable because everything on the
-volume is reconstructible; the only real loss is unpushed work, which is bounded
-by the box holding a `contents: write` token and being expected to push.
+A home agent node, scheduler's choice. No `nodeSelector`: the volume is
+`qnap-iscsi`, so it follows the pod, and pinning would only create a way for a
+drain to strand it. The anti-control-plane affinity is not about capacity --
+`k8s-lab1/2/3` carry no taints, and this box clones ~1 GiB of repositories and
+runs builds, which on a server node would put that I/O on the same filesystem
+as the etcd WAL.
 
-Register the claim under `unprotected:` in `protected-volumes.yaml` or
-`audit-protected-volumes.py` fails on a claim in neither list.
+### It used to run on the edge node, and that cost two exceptions
 
-⚠️ A `local-path` PV pins itself to the node by nodeAffinity. Moving the box is
-*push, delete the PVC, edit the placement block, re-login* — never just editing
-`nodeSelector`, which strands the pod `Pending` forever.
+Both are now closed, and the trace is kept rather than deleted:
+
+* **Storage.** `k8s-edge1` has zero registered CSI drivers by design --
+  `no-storage-on-edge.validatingpolicy.yaml` keeps the QNAP node plugin off a
+  public machine -- so `local-path` was the only class available and
+  `reclaimPolicy: Delete` violated CLAUDE.md's Retain invariant. The claim sat
+  in `unprotected:` as a written-down exception. On a home node it is
+  `qnap-iscsi`, Retain, and lives in `protected:` like everything else.
+* **A firewall bug nobody had hit.** The edge's `edge_filter` INPUT chain had
+  no rule for the CNI interfaces, so any pod traffic terminating on the host --
+  which is what an L7 `rules.dns` redirect is, and therefore every `toFQDNs`
+  policy -- was dropped silently. Fixed in #182; it applied to anything ever
+  scheduled there, not just this box.
+
+⚠️ **Moving back is not a `nodeSelector` edit.** The volume is the constraint,
+not the scheduler: see "Recovery" below.
+
+## The console
+
+`https://box1.lab.techyon.dev`, on the **gated** Gateway.
+
+🔴 That choice is the security decision for the whole feature. ttyd is an
+interactive shell next to an Anthropic OAuth credential, a GitHub token with
+`contents:write` on seven repositories, and a read-only cluster token. On the
+plain Gateway that is a root-equivalent shell for anything reaching the LAN or
+the VPN. ttyd keeps its own `-c user:password` underneath regardless -- that is
+what still holds if the route is ever attached to the wrong Gateway, which
+would otherwise present as a working page rather than an error.
+
+It appears on the homepage dashboard under **Agents**, from the
+`gethomepage.dev/*` annotations on the HTTPRoute. There is no central layout to
+register a group in: the section exists because the annotation says so, and
+dropping the annotations makes it vanish silently.
 
 ## Before it can start
 
@@ -68,28 +97,51 @@ kubectl -n claude-box-alpha get secret gh-app -o jsonpath='{.data.private-key}' 
 
 ```sh
 kubectl exec -it -n claude-box-alpha claude-box-alpha-0 -- attach
-claude
-/login          # prints a URL; the browser shows a CODE to paste back.
-                # No loopback callback, which is why a TTY in a pod suffices.
 ```
 
-Then prove the feature actually works — it takes 30 seconds and it is the
-acceptance test:
+Window 0 already runs Claude -- `--continue`, which resumes the most recent
+conversation **in the current directory** (window 0 starts in
+`/home/agent/work`; each repo keeps its own history). On a box with no login
+yet, run `/login`: the browser shows a CODE to paste back, with no loopback
+callback, which is why a TTY in a pod is sufficient.
+
+Then prove the feature actually works -- 30 seconds, and it is the acceptance
+test:
 
 1. in the session: `echo hello-from-exec`
-2. open the browser console → the **same** scrollback
-3. ssh in → the same again
+2. open `https://box1.lab.techyon.dev` -> the **same** scrollback
+3. ssh in -> the same again
 
 Three different scrollbacks means `AGENT_TMUX_SOCKET` is not reaching one of
 the doors.
+
+## Recovery, and moving the box
+
+The volume is the constraint. `qnap-iscsi` detaches and re-attaches wherever
+the pod lands, so a node drain is now a non-event -- but a move BETWEEN storage
+classes still means a new volume, and the login lives on the old one.
+
+```sh
+# push anything unpushed FIRST -- it is the only thing on the volume that is
+# not reconstructible
+kubectl exec -n claude-box-alpha claude-box-alpha-0 -- \
+  bash -lc 'for d in ~/work/*/; do git -C "$d" status --porcelain; done'
+
+kubectl -n claude-box-alpha delete pod claude-box-alpha-0   # OnDelete: deliberate
+kubectl -n claude-box-alpha delete pvc home-claude-box-alpha-0
+# edit the storage class / placement, commit, let Argo sync, then re-login
+```
+
+What comes back by itself: the checkouts (seed-repos), `~/.claude` skills and
+commands, the npm and uv caches. What does not: the Anthropic login (~2 min to
+redo) and anything unpushed.
 
 ## Gates still open
 
 | what | why it is not settled |
 |---|---|
-| `toEntities: [kube-apiserver]` from a pod on the edge node | every precedent in this repo is from a home node. Prove with `kubectl get ns` from inside the box plus a Hubble verdict |
-| ttyd through the gated Gateway's oauth2 filter | ttyd is a websocket, and oauth2 cookies have blown Envoy's 60 KB header limit here before. Fallback is `homelab` + ttyd's own `-c` credential, which is set either way |
-| ssh reachability | the VPN routes only the two Gateway `/32`s — a ClusterIP is not reachable. Either a TCP listener on `homelab` (LAN-wide too) or a pinned ClusterIP plus a NetBird route |
+| ttyd through the gated Gateway's oauth2 filter | ttyd is a websocket, and the filter has to authenticate the upgrade GET then get out of the way. This estate has also seen oauth2 cookies exceed Envoy's 60 KB header limit on gated apps -- it surfaces as `ERR_HTTP2_PROTOCOL_ERROR` or a 431, not a login failure. Fallback is `homelab` plus the ttyd credential, written down rather than silently applied |
+| ssh reachability | the VPN routes only the two Gateway `/32`s, so a ClusterIP is not reachable. Either a TCP listener on `homelab` (LAN-wide too) or a pinned ClusterIP plus a NetBird route -- three coupled files |
 
 ## Deliberately not done
 

@@ -309,6 +309,29 @@ protected:
     warning: >-
       Same mechanism and the same scale-up caveat as opensearch above.
 
+  - namespace: claude-box-alpha
+    claim: home-claude-box-alpha-0
+    size: 40Gi
+    storageClass: qnap-iscsi
+    what: >-
+      The agent box's $HOME: the Anthropic OAuth credential, the operator's
+      shell history and installed skills, and working checkouts of seven
+      repositories.
+
+      Moved here from `unprotected:` on 2026-09-12, when the box left the edge
+      node. It sat there for exactly one reason: k8s-edge1 has zero registered
+      CSI drivers BY DESIGN -- no-storage-on-edge.validatingpolicy.yaml keeps
+      the QNAP node plugin off a public machine -- so local-path was the only
+      class available and reclaimPolicy Delete could not be avoided. On a home
+      node qnap-iscsi is Retain and the exception is simply gone. It is worth
+      recording that the exception ended rather than deleting the trace of it.
+    backup: >-
+      NONE, like everything else in this file. Most of it is reconstructible --
+      the login by re-running /login, the checkouts by seed-repos -- but
+      UNPUSHED work is not, and this is the one volume in the estate a human
+      types into directly. The mitigation is convention, not storage: the box
+      holds a contents:write token and is expected to push.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning
@@ -331,29 +354,6 @@ unprotected:
     claim: data-pyroscope-0
     size: 20Gi
     reason: Profiles, 720h retention by config. Discardable by design.
-
-  - namespace: claude-box-alpha
-    claim: home-claude-box-alpha-0
-    size: 40Gi
-    reason: >-
-      The agent box's $HOME, and the ONLY Delete-reclaim claim in this file that
-      holds something a human typed. It cannot be protected: k8s-edge1 has zero
-      registered CSI drivers and no-storage-on-edge.validatingpolicy.yaml keeps
-      it that way on purpose, so local-path (Delete) is the only class available
-      on that node. Listing it here is the deliberate exception the storage
-      invariant asks for, written where the REGISTRY check can see it.
-
-      Every item on the volume is reconstructible, and the list is short enough
-      to state rather than gesture at:
-        the Anthropic OAuth credential -> re-run /login, about two minutes
-        ~/work/*                       -> re-cloned by seed-repos.sh at boot
-        ~/.npm, ~/.cache               -> caches
-      The residual loss is UNPUSHED work in a checkout. That is bounded by
-      convention -- the box holds a contents:write token and is expected to push
-      -- not by storage, and saying so is the point of this entry.
-
-      Recovery and the move procedure are in
-      gitops/clusters/home/claude-boxes/README.md.
 
   # Redis has NO volumes at all any more -- apps/redis/chart-values.yaml sets
   # `persistence.enabled: false`, deliberately: the queue holds Immich's BullMQ
