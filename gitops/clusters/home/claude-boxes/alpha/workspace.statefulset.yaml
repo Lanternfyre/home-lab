@@ -136,7 +136,7 @@ spec:
           # which is all the mint needs, and it is already on the node -- so a
           # dedicated image would cost a second build, a second release and a
           # second pull to save nothing.
-          image: ghcr.io/lanternfyre/claude-workspace:0.1.1
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.3
           restartPolicy: Always
           command: ["/bin/bash", "/etc/broker/broker.sh"]
           securityContext:
@@ -175,7 +175,7 @@ spec:
           # ⚠️ A PINNED CONVCO TAG, NEVER :latest. The shared pipeline moves
           # :latest on every master build, so :latest plus IfNotPresent is
           # "whatever this node happened to cache".
-          image: ghcr.io/lanternfyre/claude-workspace:0.1.1
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.3
           ports:
             - {name: console, containerPort: 7681}
             - {name: ssh, containerPort: 2222}
