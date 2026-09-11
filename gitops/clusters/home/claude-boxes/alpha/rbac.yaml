@@ -363,6 +363,29 @@ rules:
   - apiGroups: ["argoproj.io"]
     resources: [applications, applicationsets, appprojects]
     verbs: [get, list, watch]
+
+  # ── core `nodes`, which `view` does NOT grant ───────────────────────────
+  # Added because this repo's own first instruction requires it. CLAUDE.md, on
+  # the topology: "Verify with `kubectl get nodes` rather than trusting any
+  # line here." A box whose job is working on THIS repo and which cannot run
+  # that command has to trust the prose instead -- and the prose carries two
+  # naming schemes and a revised topology it warns you about in the same
+  # breath. Measured 2026-09-11: without this rule the API returns 403 for
+  # /api/v1/nodes, so `kubectl get nodes` fails.
+  #
+  # ⚠️ It IS a disclosure, and a bigger one than it looks: a Node object
+  # carries capacity, labels, taints, addresses and the full list of images
+  # cached on that machine. On the edge node -- which is where this box runs --
+  # that is a map of the fleet handed to the least trusted place in it. It is
+  # accepted because none of it is a credential, most of it is already in this
+  # repository, and the alternative is an agent reasoning about node topology
+  # from documentation the repository itself tells you not to trust.
+  #
+  # `metrics.k8s.io/nodes` above is a DIFFERENT resource and does not imply
+  # this one: it backs `kubectl top nodes`, not `kubectl get nodes`.
+  - apiGroups: [""]
+    resources: [nodes]
+    verbs: [get, list, watch]
 ---
 apiVersion: v1
 kind: ServiceAccount
