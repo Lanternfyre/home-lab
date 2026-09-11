@@ -1,0 +1,28 @@
+# 🟢 WHICH REPOS THIS BOX WORKS ON. Edit this list, then restart the pod.
+#
+# Read on every start by /usr/local/bin/seed-repos.sh, which clones what is
+# MISSING into /home/agent/work/<name> and NEVER touches an existing checkout --
+# no fetch, no pull, no reset, no branch change. The box is long-lived and will
+# have uncommitted work in these directories; a helpful `git pull` at boot is
+# exactly how that gets destroyed.
+#
+# ⚠️ DO NOT annotate the StatefulSet for `reloader` on this ConfigMap. An
+# automatic restart when the list changes would kill a live tmux session --
+# the one piece of state this whole box exists to keep. Restart deliberately.
+#
+# Adding a repo costs nothing else: the minted installation token already
+# covers every repo in the Lanternfyre and t3chy0n orgs, so there is nothing
+# to re-grant.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workspace-repos
+  namespace: claude-box-alpha
+data:
+  repos: |
+    # One `owner/repo` per line. Blank lines and `#` comments ignored.
+    Lanternfyre/home-lab
+    Lanternfyre/claude-workbench
+    Lanternfyre/docker-compendium
+    Lanternfyre/helm-compendium
+    Lanternfyre/github-actions-compendium

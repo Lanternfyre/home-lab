@@ -1,0 +1,388 @@
+# H4 -- and this is the first thing to land under that heading, which
+# HARDENING.md records as "open, and honestly so. There is no plan."
+#
+# A cluster-wide READ-ONLY identity for an interactive agent running on the one
+# node in this fleet that is not trusted infrastructure.
+#
+# ── Why not the built-in `view` ─────────────────────────────────────────────
+# Three reasons, in order of how much they matter:
+#
+#  1. 🔴 `view` IS AGGREGATED. Eight live ClusterRoles carry
+#     `rbac.authorization.k8s.io/aggregate-to-view=true` in this cluster --
+#     cert-manager, external-secrets, four Kyverno roles and two system ones.
+#     A chart upgrade that adds a ninth SILENTLY WIDENS `view`, and therefore
+#     would silently widen what an agent on a public VPS can read. This role
+#     has no aggregationRule. Every widening has to be a commit.
+#  2. `view` grants `configmaps` cluster-wide. ConfigMaps are where this estate
+#     keeps things that are not secret but are certainly not public -- and,
+#     generally, whatever the next chart decides to put there. Excluded.
+#  3. `view` grants `pods/log` cluster-wide. Logs are where secrets go to be
+#     accidentally printed; a read-only token that can read every pod's logs in
+#     every namespace is a credential-harvesting primitive with extra steps.
+#     Excluded.
+#
+# ✅ VERIFIED so nobody re-derives it: `view` grants NO access to core
+# `secrets` -- `kubectl auth can-i get secrets --as=<sa>` returns `no`. The
+# operator's requirement was "must not read secrets at all"; secrets were never
+# in `view`, and configmaps + pods/log are the delta that makes that true in
+# spirit as well as in letter.
+#
+# ── 🔴 external-secrets.io IS DROPPED, AND IT IS IN `view` ──────────────────
+# An ExternalSecret spec is a MAP OF THE SECRET STORE: it names the 1Password
+# vault, the exact item and the exact field label for every credential in this
+# cluster -- including this box's own GitHub App PEM. None of that is a secret
+# VALUE; all of it is a shopping list, and a shopping list is the thing an
+# attacker on the edge node is short of. `generators.external-secrets.io` goes
+# for the same reason and one worse: it contains `githubaccesstokens`, a
+# generator for exactly the credential class the broker exists to keep off this
+# box.
+#
+# ── The rules below were DERIVED, not typed ────────────────────────────────
+# Generated from the live `view` ClusterRole on 2026-09-11 by dropping those
+# two API groups and the two resources above. Regenerate the same way after a
+# chart bump rather than hand-editing, and diff the result.
+#
+# ── Residual risk, stated rather than implied ──────────────────────────────
+# `pods` + `services` + `endpointslices` + `ciliumnetworkpolicies` is every
+# address, every port and every allow-rule in the cluster: an attacker who
+# takes the edge node gets the complete target list, and the complete list of
+# what is not defended, without probing anything. `view` on `pods` also returns
+# `spec.containers[].env[].value`, so any chart that sets a credential as a
+# literal rather than a secretKeyRef is readable. This is the single largest
+# concession in the design and the first thing to revisit if the threat model
+# changes.
+#
+# ── How to revoke it ───────────────────────────────────────────────────────
+# 🔴 `kubectl delete clusterrolebinding` DOES NOT REVOKE ANYTHING. ArgoCD
+# syncs with selfHeal: true and it is back within minutes -- CLAUDE.md's first
+# invariant in a new costume. The real emergency stop is
+#   kubectl -n claude-box-alpha delete serviceaccount claude-box-alpha
+# which invalidates every outstanding projected token immediately, because a
+# bound token carries the SA's UID and the API server rejects it once the SA is
+# gone. (ArgoCD recreates the SA with a NEW UID, which does not revalidate the
+# old tokens.) The durable fix is reverting the commit.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: claude-box-reader
+  annotations:
+    homelab.techyon.dev/why: >-
+      Cluster-wide read for the Claude Code workspace boxes. The live `view`
+      role minus configmaps, minus pods/log, minus external-secrets.io, plus
+      gateway.networking.k8s.io / cilium.io / argoproj.io. NOT aggregated.
+rules:
+  - apiGroups:
+    - cert-manager.io
+    resources:
+    - certificaterequests
+    - certificates
+    - issuers
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - acme.cert-manager.io
+    resources:
+    - challenges
+    - orders
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - kyverno.io
+    resources:
+    - cleanuppolicies
+    - clustercleanuppolicies
+    - clusterpolicies
+    - policies
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - wgpolicyk8s.io
+    resources:
+    - clusterpolicyreports
+    - policyreports
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - reports.kyverno.io
+    resources:
+    - clusterephemeralreports
+    - ephemeralreports
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - kyverno.io
+    resources:
+    - updaterequests
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ''
+    resources:
+    - endpoints
+    - persistentvolumeclaims
+    - persistentvolumeclaims/status
+    - pods
+    - replicationcontrollers
+    - replicationcontrollers/scale
+    - serviceaccounts
+    - services
+    - services/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ''
+    resources:
+    - bindings
+    - events
+    - limitranges
+    - namespaces/status
+    - pods/status
+    - replicationcontrollers/status
+    - resourcequotas
+    - resourcequotas/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - ''
+    resources:
+    - namespaces
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - discovery.k8s.io
+    resources:
+    - endpointslices
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - apps
+    resources:
+    - controllerrevisions
+    - daemonsets
+    - daemonsets/status
+    - deployments
+    - deployments/scale
+    - deployments/status
+    - replicasets
+    - replicasets/scale
+    - replicasets/status
+    - statefulsets
+    - statefulsets/scale
+    - statefulsets/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - autoscaling
+    resources:
+    - horizontalpodautoscalers
+    - horizontalpodautoscalers/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - batch
+    resources:
+    - cronjobs
+    - cronjobs/status
+    - jobs
+    - jobs/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - extensions
+    resources:
+    - daemonsets
+    - daemonsets/status
+    - deployments
+    - deployments/scale
+    - deployments/status
+    - ingresses
+    - ingresses/status
+    - networkpolicies
+    - replicasets
+    - replicasets/scale
+    - replicasets/status
+    - replicationcontrollers/scale
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - policy
+    resources:
+    - poddisruptionbudgets
+    - poddisruptionbudgets/status
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - networking.k8s.io
+    resources:
+    - ingresses
+    - ingresses/status
+    - networkpolicies
+    verbs:
+    - get
+    - list
+    - watch
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims
+    verbs:
+    - get
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims
+    verbs:
+    - list
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims
+    verbs:
+    - watch
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims/status
+    verbs:
+    - get
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims/status
+    verbs:
+    - list
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaims/status
+    verbs:
+    - watch
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaimtemplates
+    verbs:
+    - get
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaimtemplates
+    verbs:
+    - list
+  - apiGroups:
+    - resource.k8s.io
+    resources:
+    - resourceclaimtemplates
+    verbs:
+    - watch
+  - apiGroups:
+    - events.k8s.io
+    resources:
+    - events
+    verbs:
+    - get
+  - apiGroups:
+    - events.k8s.io
+    resources:
+    - events
+    verbs:
+    - list
+  - apiGroups:
+    - events.k8s.io
+    resources:
+    - events
+    verbs:
+    - watch
+  - apiGroups:
+    - metrics.k8s.io
+    resources:
+    - nodes
+    - pods
+    verbs:
+    - get
+    - list
+    - watch
+
+  # ── ADDED BEYOND `view`, each earning its place ─────────────────────────
+  # ⚠️ NO `resources: ["*"]` ANYWHERE. A wildcard on cilium.io would silently
+  # acquire every CRD a future Cilium chart introduces. Enumerate, and let the
+  # next addition be a commit.
+  #
+  # gateway.networking.k8s.io -- the agent edits HTTPRoutes in this repo.
+  # Reading live status is how it tells "Accepted: False" from "I wrote the
+  # YAML wrong".
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: [gatewayclasses, gateways, gateways/status, httproutes,
+                httproutes/status, grpcroutes, tcproutes, tcproutes/status,
+                udproutes, tlsroutes, referencegrants]
+    verbs: [get, list, watch]
+
+  # cilium.io -- this session is itself the evidence: reading back a live CNP
+  # and a Hubble identity is how you find out a rule matched nothing.
+  # ⚠️ This also exposes CiliumIdentity, i.e. the cluster's full identity map.
+  # A real disclosure, accepted: a policy the agent cannot read is one it
+  # cannot debug.
+  - apiGroups: ["cilium.io"]
+    resources: [ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies,
+                ciliumendpoints, ciliumidentities, ciliumnodes,
+                ciliumcidrgroups, ciliumloadbalancerippools]
+    verbs: [get, list, watch]
+
+  # argoproj.io -- the agent proposes GitOps changes; watching them land is the
+  # feedback loop.
+  - apiGroups: ["argoproj.io"]
+    resources: [applications, applicationsets, appprojects]
+    verbs: [get, list, watch]
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: claude-box-alpha
+  namespace: claude-box-alpha
+# The pod mounts a PROJECTED token at a non-default path instead. See the
+# StatefulSet: this `false` is what stops every client library in the image
+# auto-detecting an ambient credential.
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: claude-box-alpha-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: claude-box-reader
+subjects:
+  - kind: ServiceAccount
+    name: claude-box-alpha
+    namespace: claude-box-alpha
