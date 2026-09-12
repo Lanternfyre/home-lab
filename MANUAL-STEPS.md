@@ -1125,7 +1125,7 @@ auq runs in-cluster on two un-gated LAN hostnames:
 | | |
 |---|---|
 | `auq.lab.techyon.dev` | the broker |
-| `metro.lab.techyon.dev` | the Expo dev server, for loading the mobile app |
+| `auq-mobile.lab.techyon.dev` | the Expo dev server, for loading the mobile app |
 
 Pairing needs a 6-character code with a **5-minute, single-use TTL**, and the
 endpoint that mints one (`POST /api/pairing-codes`) sits *inside* the auth

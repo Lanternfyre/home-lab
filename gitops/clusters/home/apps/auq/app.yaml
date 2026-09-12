@@ -14,6 +14,6 @@
 #Notice chart name has to be a part of repoURL for oci
 repoURL: "ghcr.io/lanternfyre/charts"
 chart: "auq"
-targetRevision: "0.1.0"
+targetRevision: "0.1.1"
 releaseName: "auq"
 namespace: "auq"
