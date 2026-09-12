@@ -1,9 +1,16 @@
 # Claude Code workspace boxes
 
 A long-lived Claude Code box that lives in the cluster instead of on a laptop.
-One directory per box; `bootstrap/claude-boxes.appset.yaml` turns each into an
-ArgoCD Application. **A second box is `cp -r alpha bravo` plus a namespace file
-in `bootstrap/namespaces/`** — nothing else changes.
+One directory per box, holding an `app.yaml` (the chart version) and a
+`chart-values.yaml`; `bootstrap/claude-boxes.appset.yaml` renders each from the
+**`claude-box` chart** (helm-compendium, `oci://ghcr.io/lanternfyre/charts`),
+with release name and namespace `claude-box-<dir>`. **A second box is
+`cp -r alpha bravo`, `rbac.clusterRole.create: false` in its values, plus a
+namespace file in `bootstrap/namespaces/`** — nothing else changes.
+
+The objects, the probes, the network policy and the reasoning behind each
+literal now live in the chart's templates and `values.yaml`; this directory
+carries only what differs per box.
 
 This is the Kubernetes port of the operator's own `claude-box`
 (`~/.claude/scripts/workbench/sandbox/`). That is a bubblewrap sandbox with a
@@ -21,10 +28,10 @@ create it would give every Claude process sshd's stripped environment.
 
 **No durable GitHub secret in the box.** The App PEM is mounted into the broker
 sidecar only. It mints ~1h installation tokens into a memory-backed emptyDir,
-scoped to the repos in `repos.configmap.yaml`, and a git credential helper
+scoped to the repos in `chart-values.yaml` (`repos:`), and a git credential helper
 re-reads the file on every git invocation so rotation is invisible.
 
-**Repos are values.** `repos.configmap.yaml` is the list; `seed-repos.sh`
+**Repos are values.** `repos:` in `chart-values.yaml` is the list; `seed-repos.sh`
 clones what is missing at container start and **never touches an existing
 checkout**. Nothing about the repos is in the image.
 

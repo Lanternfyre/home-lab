@@ -1,16 +1,22 @@
-# One Application per directory under claude-boxes/.
+# One Application per directory under claude-boxes/, rendered from the
+# claude-box chart (helm-compendium, published to ghcr.io/lanternfyre/charts).
 #
 # 🟢 A SECOND BOX IS A COPY OF A DIRECTORY. `cp -r claude-boxes/alpha
-# claude-boxes/bravo`, add bootstrap/namespaces/claude-box-bravo.yaml, merge.
-# Nothing in this file changes and no new Application is written by hand.
+# claude-boxes/bravo`, set `rbac.clusterRole.create: false` in its
+# chart-values.yaml (the ClusterRole is shared and alpha owns it), add
+# bootstrap/namespaces/claude-box-bravo.yaml, merge. Nothing in this file
+# changes. ⚠️ auq's own ingress policy names claude-box-alpha literally -- a
+# second box that enables auq needs an edit there too.
 #
-# ── Why a `directories` generator and not the two app ApplicationSets ────────
-# home-appset.yaml and home-extra-manifests-appset.yaml both key off a per-app
-# `app.yaml` carrying Helm coordinates (repoURL/chart/targetRevision), and both
-# build a Helm Application from it. These boxes are plain manifests with no
-# chart, so an app.yaml would produce a Helm Application pointing at nothing.
-# The chartless precedent in this repo is a standalone Application
-# (bootstrap/cloudflare-tunnel.application.yaml); this is that, generated.
+# ── Why this is not home-appset.yaml ─────────────────────────────────────────
+# The boxes used to be plain manifests, which is why this file existed at all.
+# They are a chart now, and home-appset.yaml could render one -- but it sets
+# CreateNamespace=true, and this file deliberately refuses that (below).
+#
+# 🔴 THE RELEASE NAME AND THE NAMESPACE ARE DERIVED HERE, from the directory,
+# never read from app.yaml. Every object name, the StatefulSet's immutable
+# selector and the claim `home-claude-box-<dir>-0` hang off the release name; a
+# value a typo could change is a way to orphan a box's $HOME.
 #
 # 🔴 NO CreateNamespace=true, DELIBERATELY. A namespace created by this
 # ApplicationSet would carry no Pod Security Admission labels, and an unlabelled
@@ -29,15 +35,31 @@ spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
 
+  # ⚠️ MIGRATION WINDOW (manifests -> chart). If the generator ever yields no
+  # Application for a box -- a bad app.yaml, a half-applied change -- the
+  # controller deletes that Application, and its resources finalizer would
+  # cascade into the StatefulSet and kill the live tmux session. This keeps the
+  # objects when that happens. (`applicationsSync: create-update` would be the
+  # obvious guard, but it is IGNORED unless the controller enables policy
+  # override. This one does not: `argocd-cmd-params-cm` carries no
+  # `applicationsetcontroller.enable.policy.override` key, checked 2026-09-13.)
+  # The claim is protected either way.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+
   generators:
     - git:
         repoURL: https://github.com/Lanternfyre/home-lab.git
         revision: master
-        directories:
-          - path: gitops/clusters/home/claude-boxes/*
+        files:
+          - path: gitops/clusters/home/claude-boxes/*/app.yaml
 
   template:
     metadata:
+      # For a files generator `.path.basename` is the DIRECTORY holding
+      # app.yaml, so this is the same `claude-box-alpha` the directories
+      # generator produced -- the Application is updated in place, not
+      # replaced, and every tracking-id annotation stays valid.
       name: "claude-box-{{ .path.basename }}"
       finalizers:
         - resources-finalizer.argocd.argoproj.io
@@ -48,18 +70,32 @@ spec:
         argocd.argoproj.io/compare-options: ServerSideDiff=true
     spec:
       project: default
-      source:
-        repoURL: https://github.com/Lanternfyre/home-lab.git
-        targetRevision: master
-        path: "{{ .path.path }}"
-        directory:
-          recurse: true
+      sources:
+        - repoURL: "{{ .repoURL }}"
+          chart: "{{ .chart }}"
+          targetRevision: "{{ .targetRevision }}"
+          helm:
+            releaseName: "claude-box-{{ .path.basename }}"
+            valueFiles:
+              - "$values/{{ .path.path }}/chart-values.yaml"
+            # 🔴 false, unlike home-appset.yaml. A box rendered WITHOUT its
+            # values is the chart defaults: repo REPLACE-ME, a fake hostname,
+            # and the default probe -- a new pod template and a rescoped token
+            # on a live session. Fail the render instead.
+            ignoreMissingValueFiles: false
+        - repoURL: https://github.com/Lanternfyre/home-lab.git
+          targetRevision: master
+          ref: values
       destination:
         server: https://kubernetes.default.svc
         namespace: "claude-box-{{ .path.basename }}"
       syncPolicy:
         automated:
-          prune: true
+          # ⚠️ MIGRATION WINDOW: false until the chart-rendered box is proven
+          # identical to the manifests it replaces. A mis-rendered object then
+          # shows as OutOfSync instead of being pruned. Restored to true in the
+          # follow-up PR, one review cycle later.
+          prune: false
           selfHeal: true
         syncOptions:
           - ServerSideApply=true

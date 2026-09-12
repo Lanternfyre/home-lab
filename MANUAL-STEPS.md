@@ -1183,6 +1183,18 @@ export AUQ_BEARER_TOKEN=<the token from step 2>
 auq watch
 ```
 
+🔴 **A cluster box does NOT get step 3.** No `export AUQ_BEARER_TOKEN`, and no
+auq env at all. An env var in the workspace container is readable by the agent,
+so the token would be the agent's. For a box:
+
+- in step 2, set `device_name` to the box (`claude-box-alpha`);
+- put the token straight into a 1Password item;
+- point the chart's `auqProxy.onePasswordItem` at that item.
+
+The `auq-proxy` sidecar is the only container that mounts it. It listens on
+`127.0.0.1:5577`, auq-mcp's default URL, and forwards only the two calls
+auq-mcp makes (helm-compendium `claude-box/files/auq-proxy.mjs`).
+
 ⚠️ **Step 2's response is the only time you see that token.** It is stored
 hashed; there is no "show me the token again" endpoint. Lost means re-pair.
 Put it in 1Password as you read it.
@@ -1200,7 +1212,7 @@ off the OpenAPI spec:
 a **stdio** server — Claude spawns it as a child process — and the binary is not
 in `claude-workspace`, because its `build.rs` panics without an `openapi.json`
 at the repo root. The network path is already open (the `auq` namespace rule in
-`claude-boxes/alpha/containment.ciliumnetworkpolicy.yaml`) and the ConfigMap
+claude-box chart's `containment-ciliumnetworkpolicy.yaml`) and the ConfigMap
 entry is written and commented out; only the binary is missing.
 
 **Two more things only you can do:**

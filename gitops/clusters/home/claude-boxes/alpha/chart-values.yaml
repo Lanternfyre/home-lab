@@ -1,0 +1,38 @@
+# alpha's values for the claude-box chart.
+#
+# 🔴 THE MIGRATION CONTRACT. Rendered as release `claude-box-alpha`, these values
+# produce every object alpha ran as plain manifests, under the same names, with
+# the same pod template -- so moving onto the chart mints no new
+# ControllerRevision and the tmux session survives. helm-compendium pins this in
+# claude-box/tests/values/alpha.yaml + names_test.yaml.
+# ⚠️ Change one, change the other.
+
+# One `owner/repo` per entry: what seed-repos clones AND what the broker's token
+# covers. An edit rescopes the token within 45 minutes, with no restart.
+repos:
+  - Lanternfyre/home-lab
+  - Lanternfyre/claude-workbench
+  - Lanternfyre/docker-compendium
+  - Lanternfyre/helm-compendium
+  - Lanternfyre/github-actions-compendium
+  # ⚠️ Necronia is ~856 MiB and is cloned in FULL, not shallow -- convco reads
+  # tags and history to compute a version, so a `--depth 1` checkout would
+  # silently restart every release at 0.1.0. Expect its first clone to take
+  # minutes. That is fine: seed-repos runs in the background and does not
+  # hold up readiness or the console.
+  - Lanternfyre/Necronia
+  - Lanternfyre/Necronia2.0
+
+console:
+  hostname: box1.lab.techyon.dev
+  homepageName: box1
+
+# Today's single-owner probe, pinned THROUGH the migration so the pod template
+# does not change. Removed, deliberately, in the same commit that enables auq --
+# one pod delete for both.
+broker:
+  livenessProbe:
+    command:
+      - sh
+      - -c
+      - test $(( $(date +%s) - $(stat -c %Y /var/run/gh-token/lanternfyre.token) )) -lt 3300
