@@ -1,0 +1,82 @@
+# The MCP servers this box may use.
+#
+# Consumed by the image's `claude` shim (docker-compendium
+# claude-workspace/claude-shim.sh) as `--mcp-config /etc/claude-code/mcp/mcp.json
+# --strict-mcp-config` on EVERY invocation -- interactive, scripted, and
+# `kubectl exec`.
+#
+# 🔴 WHY A ConfigMap AND NOT ~/.claude.json. Claude Code OWNS ~/.claude.json at
+# runtime: the OAuth account, per-project trust decisions and history live in
+# it. Mounting a read-only ConfigMap over that file would break login
+# persistence, and the operator's `/login` is the one credential on this box
+# with no minting analogue -- losing it costs a manual re-auth. Passing the
+# config on the command line leaves the file alone entirely.
+#
+# 🔴 `--strict-mcp-config` MAKES THIS FILE AUTHORITATIVE, NOT ADDITIVE. Without
+# it Claude Code ALSO loads servers from ~/.claude.json and from each project's
+# .mcp.json -- so a server deleted here would keep running from a stale copy on
+# the PVC, and this file would quietly stop describing reality.
+#
+# ⚠️ `reloader` is in this cluster. Do NOT annotate the StatefulSet to watch
+# this ConfigMap: a restart destroys the tmux session, which is the whole point
+# of the box. Edit, then restart deliberately. The shim reads the file per
+# invocation, so an already-running `claude` keeps the old set until it exits --
+# a NEW `claude` in the same session picks the change up without a restart.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: claude-box-alpha-mcp
+  namespace: claude-box-alpha
+  labels:
+    app.kubernetes.io/name: claude-box
+    app.kubernetes.io/instance: alpha
+data:
+  # ── What is here, and what is deliberately NOT ──────────────────────────
+  #
+  # github -- the in-cluster proxy, github-mcp-server 1.27.1 behind mcp-proxy.
+  #
+  #   TRANSPORT IS `http` (streamable HTTP) ON /mcp, AND THAT WAS MEASURED, NOT
+  #   ASSUMED. The proxy serves BOTH transports, so either would have "worked":
+  #   POST /mcp initialize returns a real serverInfo, and GET /sse returns an
+  #   `event: endpoint` with a session id. `/` is 404, so a URL without the
+  #   path fails. SSE is the deprecated transport in the MCP spec; /mcp is the
+  #   current one and needs no second connection for the write half.
+  #
+  #   CLUSTER-LOCAL URL, not
+  #   https://github-mcp.lab.techyon.dev: the LAN hostname leaves for a Gateway
+  #   the containment CNP does not admit, and under kube-proxy replacement
+  #   policy would see the Gateway's BACKEND port (10443) rather than 443. The
+  #   ClusterIP is admitted on 8080 by the `mcp` rule in
+  #   containment.ciliumnetworkpolicy.yaml.
+  #
+  #   🔴 NO CREDENTIAL HERE, AND THAT IS NOT AN OVERSIGHT. The proxy's basic
+  #   auth is an ingress-nginx annotation on its PUBLIC hostname; the ClusterIP
+  #   is unauthenticated. It injects GH_CLAUDE_CODE_TARJEI -- the operator's
+  #   classic PAT, repo + read:org -- so anything reaching :8080 wields the
+  #   operator's full GitHub identity. Stated in the CNP too. Closing it means
+  #   an ingress CNP on the `mcp` namespace, tracked separately.
+  #
+  # ⚠️ auq is ABSENT, and it is the one the box most wants. auq-mcp is a stdio
+  #   server: Claude spawns it as a CHILD PROCESS, so the binary must exist in
+  #   this image, and it does not -- auq-mcp's build.rs panics without an
+  #   openapi.json at the repo root, so it is not built by the image today.
+  #   Adding the server name here without the binary would not degrade
+  #   gracefully; it would fail at spawn on every `claude` start. The egress
+  #   half is already in place (the `auq` namespace rule on 5577), so this is
+  #   the only missing piece.
+  #
+  # ⚠️ context7 and serena are ABSENT because the CNP would drop them, silently
+  #   and as a HANG rather than an error. context7 is remote
+  #   (mcp.context7.com), and serena is `uvx`-launched, which needs pypi and
+  #   files.pythonhosted.org -- all three are un-allowlisted. That list "grows
+  #   slowly, from a DROPPED verdict rather than in advance"; adding a server
+  #   here means adding its host there in the same change.
+  mcp.json: |
+    {
+      "mcpServers": {
+        "github": {
+          "type": "http",
+          "url": "http://github-mcp-proxy.mcp.svc.cluster.local:8080/mcp"
+        }
+      }
+    }
