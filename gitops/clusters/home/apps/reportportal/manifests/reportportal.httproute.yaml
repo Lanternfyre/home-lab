@@ -59,6 +59,7 @@ metadata:
   annotations:
     gethomepage.dev/description: Test results + history
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "component=reportportal-index"
     gethomepage.dev/group: CI/CD
     # ⚠️ reportportal.png does not exist in the dashboard-icons set — verified
     # 404 on both mirrors — and a missing icon fails SILENTLY, rendering a blank

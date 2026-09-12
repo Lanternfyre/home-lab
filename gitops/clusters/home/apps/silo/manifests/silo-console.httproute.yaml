@@ -21,6 +21,7 @@ metadata:
     # annotations (gateway: true in homepage-widgets.config.yaml), NOT from
     # services.yaml.
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app=silo"
     gethomepage.dev/name: Silo
     gethomepage.dev/description: S3 object store — CI reports and baselines
     gethomepage.dev/group: Infrastructure

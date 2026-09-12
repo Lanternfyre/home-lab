@@ -38,6 +38,7 @@ metadata:
     # central layout to register it in, so "Agents" exists because this line
     # says so.
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/name=claude-box-alpha"
     gethomepage.dev/name: box1
     gethomepage.dev/description: Claude Code agent workspace
     gethomepage.dev/group: Agents
