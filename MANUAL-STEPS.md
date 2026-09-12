@@ -1200,7 +1200,7 @@ off the OpenAPI spec:
 a **stdio** server — Claude spawns it as a child process — and the binary is not
 in `claude-workspace`, because its `build.rs` panics without an `openapi.json`
 at the repo root. The network path is already open (the `auq` namespace rule in
-`claude-boxes/alpha/containment.ciliumnetworkpolicy.yaml`) and the ConfigMap
+claude-box chart's `containment-ciliumnetworkpolicy.yaml`) and the ConfigMap
 entry is written and commented out; only the binary is missing.
 
 **Two more things only you can do:**
