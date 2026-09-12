@@ -1,0 +1,35 @@
+# The Metro dev server, for the phone's dev-client APK.
+#
+# Un-gated for the same structural reason auq is: the dev client is not a
+# browser and cannot complete an OIDC sign-in. Reachable from the LAN and over
+# NetBird, which is the whole audience.
+#
+# 🔴 THIS HOSTNAME MUST MATCH `mobile.packagerHostname` IN chart-values.yaml.
+# Metro embeds an absolute URL built from that value into the bundle it serves.
+# If the two disagree the page loads, the bundle downloads, and the app then
+# reaches for a host that does not answer -- which presents as a hang, not as a
+# 404.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: metro
+  namespace: auq
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: metro
+    gethomepage.dev/description: Expo dev server for the auq mobile client
+    gethomepage.dev/group: Agents
+    gethomepage.dev/icon: mdi-cellphone-link
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - metro.lab.techyon.dev
+  rules:
+    # Metro holds a websocket for hot reload and streams bundles that take
+    # minutes to build on a cold cache. Envoy's 15s default would cut both.
+    - timeouts: {request: 0s}
+      backendRefs:
+        - {name: auq-auq-mobile, port: 8081}

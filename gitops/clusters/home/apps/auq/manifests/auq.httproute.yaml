@@ -1,0 +1,86 @@
+# auq on the OPEN `homelab` Gateway. Read this before moving it to the gated one.
+#
+# 🔴 IT MUST NOT GO ON `homelab-gated`, AND NOT FOR ONE REASON BUT FOUR:
+#
+#  1. POST /api/devices/pair is the phone's FIRST and ONLY pre-token call, and
+#     the 6-character pairing code IS the credential. The gated Gateway's
+#     SecurityPolicy would 302 it to authentik -- and a React Native fetch()
+#     cannot complete an interactive browser sign-in, so pairing would not fail
+#     with an error, it would fail as a redirect the app cannot follow.
+#  2. GET /api/events is SSE. The Rust and RN clients are not browsers and
+#     carry no cookie jar.
+#  3. `auq` (the TUI) and `auq-mcp` are plain HTTP clients with no OIDC support
+#     at all.
+#  4. The gate's oauth2 cookies have already blown Envoy's 60 KB header limit
+#     on this cluster, and SSE holds a connection open where that is worst.
+#
+# The security story is auq's OWN: per-device opaque bearer tokens, 32 random
+# bytes stored as SHA-256, checked on every path except /api/health and
+# /api/devices/pair. Same shape as mealie, which is on this Gateway because it
+# authenticates itself.
+#
+# 🟡 If gating is ever insisted on: an Envoy SecurityPolicy targeting an
+# HTTPRoute overrides the Gateway-level one, so the escape hatch is a
+# route-scoped policy carving out /api/devices/pair, /api/events and
+# /api/questions/await. That is three exceptions in a gate, i.e. a gate around
+# the read endpoints only. Written down as a REJECTED option, not an
+# unconsidered one.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: auq
+  namespace: auq
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: auq
+    gethomepage.dev/description: Agent question broker
+    gethomepage.dev/group: Agents
+    gethomepage.dev/icon: mdi-comment-question
+spec:
+  parentRefs:
+    - name: homelab
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - auq.lab.techyon.dev
+  rules:
+    # ── SSE ────────────────────────────────────────────────────────────────
+    # 🔴 `0s` DISABLES THE TIMEOUT. Envoy's DEFAULT route timeout is 15
+    # SECONDS, and this repo has already measured that cut on a long-lived
+    # stream (netbird-edge): the client reconnected SILENTLY, so nothing looked
+    # broken while every update died. /api/events is an unbounded stream whose
+    # own source comments record "no heartbeat / keepalive pings" and no
+    # Last-Event-ID resume -- so a cut is not a reconnect, it is silently
+    # missed events.
+    #
+    # ⚠️ A zero-valued duration means NO TIMEOUT in Gateway API. Deleting this
+    # restores the 15s cut, not a sensible default.
+    - matches:
+        - {path: {type: PathPrefix, value: /api/events}}
+      timeouts: {request: 0s}
+      backendRefs:
+        - {name: auq-auq-server, port: 5577}
+
+    # ── Long-poll ──────────────────────────────────────────────────────────
+    # Smaller than it looks: auq-server REJECTS timeout_ms > 90_000 outright,
+    # and both auq-mcp and `auq await` send 30_000. The 300s figure people
+    # quote is a CLIENT-SIDE loop over many short requests. So the longest
+    # single request here is 90s -- six times Envoy's default, hence the rule,
+    # nowhere near an unbounded stream.
+    - matches:
+        - {path: {type: PathPrefix, value: /api/questions/await}}
+      timeouts: {request: 0s}
+      backendRefs:
+        - {name: auq-auq-server, port: 5577}
+
+    # ── Everything else ────────────────────────────────────────────────────
+    # Explicit 60s rather than inheriting 15s. Pairing and answer POSTs come
+    # from a phone on cellular, where 15s is tight and the failure reads as
+    # "auq is down".
+    #
+    # ⚠️ NOT 0s. A catch-all with no timeout is a slow-loris foot-gun on a
+    # LAN-reachable endpoint; the two rules above are scoped precisely so this
+    # one does not have to be.
+    - timeouts: {request: 60s}
+      backendRefs:
+        - {name: auq-auq-server, port: 5577}

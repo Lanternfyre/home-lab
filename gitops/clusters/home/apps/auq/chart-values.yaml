@@ -1,0 +1,69 @@
+# auq -- the question broker, and the Metro dev server for its mobile client.
+#
+# 🟢 EDIT THE IMAGE TAGS HERE WHEN claude-workbench CUTS A RELEASE. They are
+# NOT derived from the chart version: convco versions charts/auq and
+# tools/auq-* independently, so a chart bump does not imply an image bump and
+# vice versa. The chart falls back to its own appVersion if a tag is blank,
+# which is never the right answer -- it just renders, then fails at pull time.
+
+image:
+  registry: ghcr.io
+  owner: lanternfyre
+  pullPolicy: IfNotPresent
+  # GHCR packages are private and an imagePullSecret is namespaced, so this
+  # namespace needs its own -- rendered by manifests/ghcr-docker.external-secret.yaml.
+  pullSecrets:
+    - name: ghcr-docker
+
+server:
+  enabled: true
+  image:
+    repository: auq-server
+    tag: "0.1.0"
+
+  # Sole owner of a SQLite file; see the chart's own comment. Recreate rather
+  # than RollingUpdate so a deploy never has two pods wanting one RWO volume.
+  replicas: 1
+  strategy: Recreate
+
+  persistence:
+    enabled: true
+    # qnap-iscsi, not local-path: Retain rather than Delete, and the volume
+    # re-attaches wherever the pod lands instead of pinning it to one node.
+    storageClass: qnap-iscsi
+    size: 2Gi
+    dbPath: /data/questions.db
+
+  # 🔴 Production for what it switches OFF (BYPASS_AUTH is ignored outside
+  # Development, and /api/_internal/auth-probe is not mapped), with the
+  # loopback bypass forced back ON -- because appsettings.Production.json turns
+  # it off and that is a BOOTSTRAP DEADLOCK: POST /api/devices/pair is open,
+  # but POST /api/pairing-codes, which MINTS the code, deliberately is not.
+  # With bypass off and no devices yet, nothing in the universe can mint the
+  # first pairing code.
+  #
+  # The exposure is bounded: the bypass fires only on IPAddress.IsLoopback, and
+  # inside this pod's netns that is the pod itself plus a `kubectl
+  # port-forward` session -- which already requires pods/portforward RBAC.
+  env:
+    ASPNETCORE_ENVIRONMENT: Production
+    Auth__LoopbackBypass: "true"
+
+# ── The Metro dev server ─────────────────────────────────────────────────────
+# Serves the JS bundle to the dev-client APK already installed on the phone.
+# It does not build or distribute an APK -- that needs EAS or an Android SDK
+# image, and is deliberately out of scope.
+mobile:
+  enabled: true
+  image:
+    repository: auq-mobile
+    tag: "0.1.0"
+
+  # 🔴 THE HOSTNAME THE PHONE DIALS, and the single setting that decides
+  # whether any of this works. Metro embeds an ABSOLUTE url in the bundle it
+  # serves; if this is wrong the dev client connects, pulls a bundle full of
+  # unreachable URLs, and hangs with nothing naming the cause. The chart
+  # refuses to render without it.
+  #
+  # ⚠️ No scheme and no port -- Metro builds those itself.
+  packagerHostname: "metro.lab.techyon.dev"

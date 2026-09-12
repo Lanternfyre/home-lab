@@ -1,0 +1,23 @@
+# auq
+#
+# Apps in this namespace: the auq question broker (HTTP server + SQLite) and
+# the Metro dev server that feeds the mobile client its JavaScript bundle.
+#
+# Measured against the pod specs the chart renders: both run non-root, drop all
+# capabilities, set allowPrivilegeEscalation false and seccomp RuntimeDefault,
+# and use no host namespaces or hostPath. That is `restricted`.
+#
+# ⚠️ Metro does NOT get readOnlyRootFilesystem -- it writes a transform cache,
+# and a cold cache on every request turns the first bundle into minutes. That
+# is a container setting, not a PSA level, so it does not change this file.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: auq
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35

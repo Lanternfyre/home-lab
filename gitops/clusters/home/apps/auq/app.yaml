@@ -1,0 +1,19 @@
+# The auq question broker.
+#
+# 🟢 THE CHART LIVES WITH THE APPLICATION. It is published from
+# Lanternfyre/claude-workbench alongside auq-server's source and its Dockerfile,
+# not from helm-compendium -- the first app on the "artifacts close to the app"
+# pattern, so one merge to that repo's main releases code, image and chart
+# together.
+#
+# ⚠️ Chart and image versions do NOT track each other. convco scopes by folder,
+# so `charts/auq` and `tools/auq-server` have independent version streams. The
+# image tags are pinned explicitly in chart-values.yaml; the chart's appVersion
+# is not a usable default and the chart says so.
+#
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/lanternfyre/charts"
+chart: "auq"
+targetRevision: "0.1.0"
+releaseName: "auq"
+namespace: "auq"

@@ -1,0 +1,95 @@
+# H1 -- who may reach auq, and what auq may reach.
+#
+# ⚠️ endpointSelector is {} so this covers BOTH components in the namespace.
+# They have different needs and the union is small enough that splitting it
+# would cost more clarity than it buys.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: auq-containment
+  namespace: auq
+spec:
+  description: >-
+    Ingress and egress allow-lists for the auq broker and the Metro dev server.
+    Default-deny both directions, stated explicitly.
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # 🔴 THE NODE-ADMIT RULE, AND `world` IS CORRECT HERE.
+    # Both pods use httpGet probes, and on the ingress path a node's
+    # cilium_host address resolves as `reserved:world`, not `host` -- measured
+    # on a home node in apps/mealie/manifests/mealie-ingress.ciliumnetworkpolicy
+    # .yaml, and again on k8s-edge1 in 2026-09. Without `world` the probes are
+    # denied and the pods crash-loop with "context deadline exceeded", which
+    # reads as a broken app.
+    #
+    # ⚠️ A `fromCIDR` list of cilium_host addresses fails too, and SILENTLY:
+    # Cilium CIDR rules do not apply to addresses inside the pod CIDR.
+    - fromEntities: [host, remote-node, world]
+
+    # The LAN Gateway's Envoy. Both hostnames are on `homelab`, un-gated, for
+    # reasons the HTTPRoutes explain at length -- neither the phone nor the
+    # Rust clients can complete an OIDC sign-in.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+            gateway.envoyproxy.io/owning-gateway-name: homelab
+
+    # 🔴 THE AGENT BOX, EAST-WEST. auq-mcp inside the box dials the ClusterIP
+    # directly and never goes through Envoy -- toFQDNs at a .lab host would not
+    # work anyway, since the DNS-proxy path behind it only covers egress
+    # LEAVING the cluster.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-alpha
+
+    # Prometheus. Nothing scrapes auq today; allowed so that adding a
+    # ServiceMonitor later is not a silent metrics gap.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+
+  egress:
+    # DNS, with L7 inspection -- without `rules.dns` the DNS proxy is not
+    # engaged for these endpoints, nothing is learned, and every toFQDNs rule
+    # below matches nothing. That presents as a HANG, not as NXDOMAIN.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ── Push notifications ────────────────────────────────────────────────
+    # ⚠️ Declaring ANY egress rule puts these pods into default-deny egress, so
+    # the push path has to be named even though it is not working yet: mobile
+    # push registration is broken UPSTREAM (nothing calls updatePushToken and
+    # extra.eas.projectId is absent). Allowed now so that fixing it upstream
+    # does not turn into a silent drop here, which would be debugged in the
+    # wrong repository.
+    - toFQDNs:
+        - matchName: exp.host
+        - matchName: api.pushover.net
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+
+    # ── Metro's package fetches ───────────────────────────────────────────
+    # `expo start` resolves and occasionally fetches from the npm registry at
+    # runtime -- a cold start after a dependency change will reach for it.
+    # Without this the dev server appears to hang on first bundle.
+    - toFQDNs:
+        - matchName: registry.npmjs.org
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+
+    # ⚠️ NO `toEntities: [world]`, deliberately -- the standing rule this
+    # estate applies to every published namespace. If a future need is real,
+    # name the host.
