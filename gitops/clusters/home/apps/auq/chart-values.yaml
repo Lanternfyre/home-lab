@@ -57,7 +57,7 @@ mobile:
   enabled: true
   image:
     repository: auq-mobile
-    tag: "0.1.0"
+    tag: "0.1.1"
 
   # 🔴 THE HOSTNAME THE PHONE DIALS, and the single setting that decides
   # whether any of this works. Metro embeds an ABSOLUTE url in the bundle it
