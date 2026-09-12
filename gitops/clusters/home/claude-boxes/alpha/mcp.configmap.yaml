@@ -31,7 +31,18 @@ metadata:
     app.kubernetes.io/name: claude-box
     app.kubernetes.io/instance: alpha
 data:
-  # ── What is here, and what is deliberately NOT ──────────────────────────
+  # ── The roster ─────────────────────────────────────────────────────────
+  # Matches what the operator develops with on the laptop. Four of the five are
+  # STDIO servers: Claude spawns them as child processes, so each binary must
+  # exist in the image (docker-compendium claude-workspace), pinned there and
+  # updatable in place with `devtools-update`.
+  #
+  # 🔴 EVERY LAUNCH COMMAND BELOW WAS RUN, not copied from a README. A real MCP
+  # initialize handshake as uid 1000 returned:
+  #     glider    Glider.Server 11.0.0.0
+  #     semble    semble 1.30.0
+  #     context7  Context7 4.1.0
+  #     serena    Serena 1.28.1
   #
   # github -- the in-cluster proxy, github-mcp-server 1.27.1 behind mcp-proxy.
   #
@@ -42,12 +53,10 @@ data:
   #   path fails. SSE is the deprecated transport in the MCP spec; /mcp is the
   #   current one and needs no second connection for the write half.
   #
-  #   CLUSTER-LOCAL URL, not
-  #   https://github-mcp.lab.techyon.dev: the LAN hostname leaves for a Gateway
-  #   the containment CNP does not admit, and under kube-proxy replacement
-  #   policy would see the Gateway's BACKEND port (10443) rather than 443. The
-  #   ClusterIP is admitted on 8080 by the `mcp` rule in
-  #   containment.ciliumnetworkpolicy.yaml.
+  #   CLUSTER-LOCAL URL, not https://github-mcp.lab.techyon.dev. The LAN
+  #   hostname leaves for a Gateway this namespace's CNP does not admit, and
+  #   under kube-proxy replacement policy would see the Gateway's BACKEND port
+  #   (10443) rather than 443. The ClusterIP is admitted on 8080.
   #
   #   🔴 NO CREDENTIAL HERE, AND THAT IS NOT AN OVERSIGHT. The proxy's basic
   #   auth is an ingress-nginx annotation on its PUBLIC hostname; the ClusterIP
@@ -56,27 +65,74 @@ data:
   #   operator's full GitHub identity. Stated in the CNP too. Closing it means
   #   an ingress CNP on the `mcp` namespace, tracked separately.
   #
-  # ⚠️ auq is ABSENT, and it is the one the box most wants. auq-mcp is a stdio
-  #   server: Claude spawns it as a CHILD PROCESS, so the binary must exist in
-  #   this image, and it does not -- auq-mcp's build.rs panics without an
-  #   openapi.json at the repo root, so it is not built by the image today.
-  #   Adding the server name here without the binary would not degrade
-  #   gracefully; it would fail at spawn on every `claude` start. The egress
-  #   half is already in place (the `auq` namespace rule on 5577), so this is
-  #   the only missing piece.
+  # roslyn -- glider, C# semantic analysis over Roslyn.
   #
-  # ⚠️ context7 and serena are ABSENT because the CNP would drop them, silently
-  #   and as a HANG rather than an error. context7 is remote
-  #   (mcp.context7.com), and serena is `uvx`-launched, which needs pypi and
-  #   files.pythonhosted.org -- all three are un-allowlisted. That list "grows
-  #   slowly, from a DROPPED verdict rather than in advance"; adding a server
-  #   here means adding its host there in the same change.
+  #   ⚠️ --no-telemetry IS LOAD-BEARING HERE, not a preference. glider phones
+  #   home on start, that host is not in the egress allow-list, and a denied
+  #   toFQDNs is a DROPPED PACKET rather than a refusal -- so the failure mode
+  #   is a server that hangs on startup, which Claude reports as a server that
+  #   would not connect. Cheaper to not make the call.
+  #
+  # serena -- launched through the `serena-mcp` wrapper, NOT directly.
+  #
+  #   🔴 DO NOT INLINE `serena start-mcp-server --context claude-code-workbench`
+  #   HERE. That context is CUSTOM: it ships in claude-workbench, not in serena,
+  #   and it is what restores `activate_project` (single_project: false) --
+  #   worth having on a seven-repo box. But claude-workbench is private and
+  #   cloned at RUNTIME, so the file may not exist yet, and serena does not
+  #   degrade when a context is missing: it raises FileNotFoundError and exits.
+  #   The wrapper prefers the workbench context, falls back to the stock
+  #   `claude-code` one, and says which on stderr.
+  #
+  # semble -- code search. Nothing to configure.
+  #
+  # context7 -- library documentation. A LOCAL stdio process that proxies to the
+  #   context7 API, so the box makes that call itself; context7.com is in the
+  #   egress allow-list for exactly this. Without it the server connects and
+  #   every query hangs.
+  #
+  # ⚠️ TWO OF THE OPERATOR'S SERVERS ARE ABSENT, each for a measured reason:
+  #
+  #   auq     -- stdio, so the binary must be in the image, and it is not:
+  #              auq-mcp is Rust in the PRIVATE claude-workbench repo and the
+  #              image builds with no credential. Listing it without the binary
+  #              would fail at spawn on every `claude` start rather than
+  #              degrade. The egress half is already open (the `auq` namespace
+  #              rule in containment.ciliumnetworkpolicy.yaml); publishing
+  #              auq-mcp as its own OCI image is the remaining piece.
+  #
+  #   ndepend -- its licence is a hash of the network MAC, and reproducing it
+  #              needs CAP_NET_ADMIN, which is POD-WIDE. A server-side dry run
+  #              against this cluster shows NET_ADMIN rejected under PSA
+  #              `restricted` AND under `baseline`; only `privileged` accepts
+  #              it, and this is a box an agent has a shell in. A separate pod
+  #              sidesteps the capability but cannot see /home/agent/work,
+  #              which is the code NDepend exists to analyse. The unlock is a
+  #              licence that does not hash the MAC -- a question for NDepend,
+  #              not a Kubernetes problem.
   mcp.json: |
     {
       "mcpServers": {
         "github": {
           "type": "http",
           "url": "http://github-mcp-proxy.mcp.svc.cluster.local:8080/mcp"
+        },
+        "roslyn": {
+          "type": "stdio",
+          "command": "glider",
+          "args": ["--no-telemetry"]
+        },
+        "serena": {
+          "type": "stdio",
+          "command": "serena-mcp"
+        },
+        "semble": {
+          "type": "stdio",
+          "command": "semble"
+        },
+        "context7": {
+          "type": "stdio",
+          "command": "context7-mcp"
         }
       }
     }

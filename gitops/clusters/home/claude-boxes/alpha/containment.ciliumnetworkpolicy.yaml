@@ -274,12 +274,61 @@ spec:
     # policy.
     - toFQDNs:
         - matchName: registry.npmjs.org
-        # - matchName: pypi.org
-        # - matchName: files.pythonhosted.org
+        # ── Uncommented 2026-09-12, from a NEED and not in advance ──────────
+        # `devtools-update` re-installs the box's MCP servers in place, which is
+        # what makes pinning them in the image tolerable: newer versions without
+        # a rebuild, an image bump, or a pod restart that would destroy the tmux
+        # session. Each name below is the registry for exactly one of them:
+        #   pypi.org + files.pythonhosted.org   serena, semble  (uv)
+        #   nuget.org + *.nuget.org             roslyn/glider   (dotnet tool)
+        #   registry.npmjs.org                  context7        (npm, above)
+        #
+        # ⚠️ files.pythonhosted.org IS NOT OPTIONAL. pypi.org serves only the
+        # index; the wheels come from pythonhosted, so pypi alone gets you a
+        # resolve that then hangs on download -- which reads as a slow network.
+        #
+        # ⚠️ Cilium's `*` spans exactly ONE label, so "*.nuget.org" covers
+        # api.nuget.org and globalcdn.nuget.org but nothing deeper. Both forms
+        # are listed because the CDN name is what actually serves the package.
+        - matchName: pypi.org
+        - matchName: files.pythonhosted.org
+        - matchName: nuget.org
+        - matchPattern: "*.nuget.org"
+        # context7's MCP server is a LOCAL stdio process that proxies to the
+        # context7 API, so the box itself makes this call -- without it the
+        # server connects fine and every query hangs.
+        - matchName: context7.com
+        - matchPattern: "*.context7.com"
+        # Rust stays commented: nothing in the box builds Rust today. auq-mcp
+        # will, and it is planned as a COPY --from of its own image rather than
+        # an in-box cargo build, so these may never be needed. Uncomment from a
+        # DROPPED verdict, not in anticipation.
         # - matchName: crates.io
         # - matchPattern: "*.crates.io"
         # - matchName: static.rust-lang.org
-        # - matchName: api.nuget.org
+        #
+        # ── serena's language servers, and why they are NOT pre-allowed ─────
+        # 🔴 READ THIS BEFORE DEBUGGING "serena is slow" OR "serena hangs on a
+        # C# file". serena downloads a language server PER LANGUAGE, lazily, on
+        # first use -- it does not ship them. Confirmed by reading solidlsp in
+        # the installed package: 78 references to github.com, plus these.
+        #
+        # Most are already covered: github.com and *.githubusercontent.com are
+        # allowed above (Go, Rust, TS, and most others), pypi serves the Python
+        # one, npm the TypeScript one. The C# server is the gap, and it is a
+        # gap that presents as a HANG rather than an error:
+        #
+        #   roslynomnisharp.blob.core.windows.net
+        #
+        # ⚠️ It needs matchNAME. Cilium's `*` spans exactly ONE label, so
+        # "*.blob.core.windows.net" does NOT match a four-label host.
+        #
+        # Left commented on purpose: glider already provides C# semantic
+        # analysis in this box, so serena's C# server is probably redundant
+        # here -- and every name on this list is a host an agent with a shell
+        # may fetch EXECUTABLE CODE from, which is the whole reason the list
+        # grows from a DROPPED verdict rather than from anticipation.
+        # - matchName: roslynomnisharp.blob.core.windows.net
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
 
