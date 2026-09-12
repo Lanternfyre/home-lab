@@ -5,7 +5,7 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-09-06
+Last updated: 2026-09-12
 
 ---
 
@@ -1115,3 +1115,53 @@ REACH (its egress policy) — never who may talk to it. See `HARDENING.md`.
 server, and every listener needs four edits: a Gateway listener, a route, the
 namespace label, and an `edge_fw_service_*` entry.
 `scripts/audit-edge-exposure.py` checks that those four agree.
+
+---
+
+## 🟡 auq — pair the phone, and why `kubectl exec` cannot do it (2026-09-12)
+
+auq runs in-cluster on two un-gated LAN hostnames:
+
+| | |
+|---|---|
+| `auq.lab.techyon.dev` | the broker |
+| `metro.lab.techyon.dev` | the Expo dev server, for loading the mobile app |
+
+Pairing needs a 6-character code with a **5-minute, single-use TTL**, and the
+endpoint that mints one (`POST /api/pairing-codes`) sits *inside* the auth
+branch on purpose — only `POST /api/devices/pair`, which *consumes* a code, is
+open. So the very first code has to come from a caller the server already
+trusts, and with zero devices registered the only such caller is loopback.
+`Auth__LoopbackBypass: "true"` is set in `chart-values.yaml` for exactly this.
+
+🔴 **`kubectl exec` will not work here.** The auq-server image is chiselled —
+no shell, no `curl`, nothing to exec *into*. Loopback means loopback **inside
+the pod's network namespace**, and `port-forward` is the way to get there: it
+terminates in that netns, so the server sees `127.0.0.1` and the bypass
+applies.
+
+```bash
+kubectl -n auq port-forward deploy/auq-auq-server 5577:5577 &
+curl -s -X POST http://127.0.0.1:5577/api/pairing-codes
+kill %1
+```
+
+Then enter the code in the mobile app within five minutes. After the first
+device exists, `auq pair` from the laptop mints subsequent codes normally and
+none of this is needed again.
+
+**Two more things only you can do:**
+
+1. **The mobile app's server URL** — `expo.extra.AUQ_SERVER_URL` needs a custom
+   dev build. Expo Go cannot handle the `auq://` deep links.
+2. **Push is broken upstream, and it is not this deployment's fault** — nothing
+   calls `updatePushToken` and `extra.eas.projectId` is missing. Fixing it
+   needs `eas init`, which is yours. Tracked as claude-workbench #1098 / #1139.
+   Questions still arrive; only the notification does not.
+
+⚠️ **Both hostnames are un-gated by design, not by oversight.** The gated
+Gateway would 302 the pairing POST to authentik, and a React Native `fetch()`
+cannot complete an interactive browser sign-in — so pairing would not fail with
+an error, it would fail as a redirect the app cannot follow. The security
+boundary is auq's own per-device bearer tokens. Reasoning in full at the top of
+`gitops/clusters/home/apps/auq/manifests/auq.httproute.yaml`.
