@@ -135,6 +135,24 @@ spec:
         # served from the registry host itself (checked: the `dist.tarball` URL
         # is registry.npmjs.org), so there is no separate CDN name.
         - matchName: registry.npmjs.org
+        # ── NuGet, for the auq-server image (claude-workbench) ─────────────
+        # 🔴 mcr.microsoft.com above covers the .NET BASE IMAGES only. A build
+        # that runs `dotnet restore` -- or `dotnet tool install --global
+        # dotnet-ef` -- fetches packages from nuget.org, which has never been
+        # on this list because no .NET image had ever been built on this
+        # daemon.
+        #
+        # Adding it BEFORE the first build rather than after, because the
+        # failure mode is the expensive one: a missing toFQDNs entry does not
+        # error, it HANGS at "Determining projects to restore..." until the job
+        # timeout, and reads as a slow mirror. That is the same trap dl.k8s.io
+        # sprang three commits ago.
+        #
+        # ⚠️ Cilium's `*` spans exactly ONE label, so this covers api.nuget.org
+        # and globalcdn.nuget.org but not a deeper name. Extend from
+        # `hubble observe --verdict DROPPED`, not from guesswork.
+        - matchName: nuget.org
+        - matchPattern: "*.nuget.org"
         # ⚠️ NOT ADDED, and worth saying so: dot.net and
         # builds.dotnet.microsoft.com are already above, and dot.net redirects
         # to exactly that host -- traced, not assumed. The .NET SDK install in
