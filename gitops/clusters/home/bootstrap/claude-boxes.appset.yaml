@@ -41,7 +41,9 @@ spec:
   # cascade into the StatefulSet and kill the live tmux session. This keeps the
   # objects when that happens. (`applicationsSync: create-update` would be the
   # obvious guard, but it is IGNORED unless the controller enables policy
-  # override, and this one does not.) The claim is protected either way.
+  # override. This one does not: `argocd-cmd-params-cm` carries no
+  # `applicationsetcontroller.enable.policy.override` key, checked 2026-09-13.)
+  # The claim is protected either way.
   syncPolicy:
     preserveResourcesOnDeletion: true
 
