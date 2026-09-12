@@ -205,6 +205,43 @@ spec:
       idToken: "IdToken"
       accessToken: "AccessToken"
 
+    # ── Why this is 2m and not the 10m default ───────────────────────────────
+    # 🔴 THE CSRF COOKIES ARE THE THING THAT GROWS. Envoy's oauth2 filter mints
+    # a fresh PAIR of them on EVERY authorization redirect, and the per-attempt
+    # nonce is in the cookie NAME -- so they do not replace each other, they
+    # pile up. MEASURED against this Gateway on 2026-09-12, five plain GETs of
+    # https://home.lab.techyon.dev/ :
+    #
+    #     CodeVerifier.735db5406da59984   OauthNonce-85e1c9d8.735db5406da59984
+    #     CodeVerifier.9a7ca2b6ab27862a   OauthNonce-85e1c9d8.9a7ca2b6ab27862a
+    #     CodeVerifier.ab41bdb74000610c   OauthNonce-85e1c9d8.ab41bdb74000610c
+    #     CodeVerifier.eefe6897f0ec7af5   OauthNonce-85e1c9d8.eefe6897f0ec7af5
+    #     CodeVerifier.ff754b5b27ec0117   OauthNonce-85e1c9d8.ff754b5b27ec0117
+    #
+    # Five requests, TEN new cookie names, every one `path=/` and `Max-Age=600`,
+    # every one sent back on every subsequent request to that host. That is the
+    # answer to "how does a cookie grow on every request" -- it is not one
+    # cookie growing, it is a new cookie per redirect with a 10-minute life.
+    #
+    # Unique names are deliberate upstream: the nonce is what ties the callback
+    # to its own attempt, so two tabs logging in at once cannot clobber each
+    # other. Bounded in normal use -- one redirect, one login. It goes
+    # pathological when something POLLS while logged out: homepage refreshes
+    # its status tiles every few seconds, so an expired session in a background
+    # tab mints two cookies per poll until the header cap is hit and the
+    # browser reports ERR_HTTP2_PROTOCOL_ERROR.
+    #
+    # TTL is the only lever Envoy Gateway exposes for it, and it is exactly the
+    # lifetime of those cookies. 2m still covers a slow human login (password
+    # manager, MFA, a first-time consent screen) while cutting the accumulation
+    # window 5x. SHORTENING IT IS MORE SECURE, not less -- it narrows the
+    # window in which a stolen state parameter can be replayed.
+    #
+    # ⚠️ THIS IS A MITIGATION, NOT A CURE. It divides the rate by five; it does
+    # not change the shape. The cure is upstream (a bounded cookie count) or
+    # not polling a gated host from a logged-out tab.
+    csrfTokenTTL: 2m
+
   # ⚠️ `oidc` alone does NOT verify the ID token signature (envoy gateway
   # #5414, open). Without this block the cookie is trusted on its face and the
   # claim check below is decorative.
