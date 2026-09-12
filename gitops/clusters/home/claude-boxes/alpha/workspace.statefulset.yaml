@@ -10,9 +10,9 @@
 #     OnDelete, Argo reports Synced, the new spec waits, and the OPERATOR picks
 #     the moment. For a workload whose entire value is session continuity, that
 #     inverts control the right way.
-#  2. RWO does not protect you here. local-path volumes are ReadWriteOnce, and
-#     RWO permits multiple pods ON THE SAME NODE. A Deployment's default
-#     RollingUpdate would happily start a second pod on k8s-edge1 sharing
+#  2. RWO does not protect you here. The volume is ReadWriteOnce, and RWO
+#     permits multiple pods ON THE SAME NODE. A Deployment's default
+#     RollingUpdate would happily start a second pod on the same node sharing
 #     /home/agent -- two tmux servers, two sshd, two processes writing
 #     ~/.claude.json. You would have to remember `strategy: Recreate`.
 #     At-most-one-per-ordinal is a property here, not a setting to forget.
@@ -46,51 +46,61 @@ spec:
   volumeClaimTemplates:
     - metadata:
         name: home
+        labels:
+          # Read by scripts/audit-protected-volumes.py and the ArgoCD delete
+          # guards. This claim now holds the Anthropic login AND any unpushed
+          # work, on a Retain volume that can outlive the claim -- which is
+          # exactly what the protect layers are for.
+          homelab.techyon.dev/protect: "true"
+        annotations:
+          argocd.argoproj.io/sync-options: Prune=false,Delete=false
       spec:
         accessModes: [ReadWriteOnce]
-        # 🔴 local-path, reclaimPolicy DELETE, IN VIOLATION of CLAUDE.md's
-        # "PVs are reclaimPolicy: Retain" invariant. Not an oversight and not
-        # fixable here: `kubectl get csinode k8s-edge1` returns an EMPTY driver
-        # list, and apps/kyverno/manifests/no-storage-on-edge.validatingpolicy
-        # .yaml keeps it that way on purpose -- the QNAP CSI node plugin mounts
-        # trident-encryption-keys and runs hostNetwork, and this node has a
-        # public IP. local-path is the only class available here.
+        # 🟢 qnap-iscsi, and this is what MOVING OFF THE EDGE BUYS.
+        # While the box lived on k8s-edge1 this had to be `local-path`: that
+        # node has zero registered CSI drivers, by design -- the QNAP node
+        # plugin mounts trident-encryption-keys and runs hostNetwork, and
+        # no-storage-on-edge.validatingpolicy.yaml keeps it off a public
+        # machine. local-path meant reclaimPolicy DELETE, in violation of
+        # CLAUDE.md's Retain invariant, and a PV pinned by nodeAffinity to one
+        # machine.
         #
-        # The exception is survivable because everything on the volume is
-        # reconstructible, and the list is short enough to state:
-        #   ~/.claude/.credentials.json + ~/.claude.json  -> re-run /login, ~2 min
-        #   ~/work/*                                      -> re-cloned by seed-repos
-        #   ~/.npm, ~/.cache                              -> caches
-        # The ONLY real loss is UNPUSHED work in a checkout. That is bounded by
-        # convention -- the box holds a contents:write token and is expected to
-        # push -- not by storage. Register it under `unprotected:` in
-        # gitops/clusters/home/protected-volumes.yaml or audit-protected-
-        # volumes.py FAILS on a claim that appears in neither list.
-        #
-        # ⚠️ A local-path PV carries nodeAffinity pinning it to k8s-edge1. If
-        # that node goes away the pod does NOT reschedule -- it sits Pending
-        # with "volume node affinity conflict" forever. Moving this box is
-        # "push, delete the PVC, edit the placement block, re-login", never
-        # "edit the nodeSelector".
-        storageClassName: local-path
+        # On a home node both problems disappear: qnap-iscsi is Retain, and an
+        # iSCSI volume re-attaches wherever the pod lands, so a drained node no
+        # longer strands the box `Pending` with a volume node affinity
+        # conflict. The claim moves from `unprotected:` to `protected:` in
+        # protected-volumes.yaml in the same change.
+        storageClassName: qnap-iscsi
         resources: {requests: {storage: 40Gi}}
 
   template:
     metadata:
       labels: {app.kubernetes.io/name: claude-box-alpha}
     spec:
-      # ── 🟢 WHERE THE BOX RUNS. EDIT THESE TWO BLOCKS TOGETHER. ────────────
-      # Both are required and neither is sufficient: the taint repels, the
-      # label attracts. Same pair as apps/envoy-gateway-edge/manifests/
-      # homelab-edge.gateway.yaml:125.
-      # ⚠️ Changing these ALONE strands the pod -- see the PVC note above.
-      nodeSelector:
-        infrastructure.techyon.dev/location: edge
-      tolerations:
-        - key: infrastructure.techyon.dev/edge
-          operator: Equal
-          value: "true"
-          effect: NoSchedule
+      # ── 🟢 WHERE THE BOX RUNS ────────────────────────────────────────────
+      # A home agent node. No nodeSelector: with qnap-iscsi the volume follows
+      # the pod, so pinning it to one machine would only create a way for a
+      # drain to strand it.
+      #
+      # ⚠️ The anti-control-plane affinity is NOT optional and is not about
+      # capacity. k8s-lab1/2/3 carry no taints, so "anywhere" includes the etcd
+      # servers -- and this box clones ~1 GiB of repositories and runs builds,
+      # which on a server node puts that I/O on the same filesystem as the etcd
+      # WAL. Same reasoning as apps/arc-lanternfyre/chart-values.yaml.
+      #
+      # ⚠️ MOVED OFF k8s-edge1 2026-09-12. What that changed, beyond storage:
+      # the edge_filter nftables bug (home-lab#182) no longer applies, the
+      # `reserved:world` kubelet-probe quirk is a home-node concern rather than
+      # an edge one, and `edge-node-containment` now protects this namespace
+      # FROM the edge instead of ignoring it. None of those need action here;
+      # they are listed so a future move back is not a surprise.
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-role.kubernetes.io/control-plane
+                    operator: DoesNotExist
 
       # GHCR packages are private and an imagePullSecret is namespaced.
       imagePullSecrets:
