@@ -59,11 +59,28 @@ mobile:
     repository: auq-mobile
     tag: "0.1.1"
 
-  # 🔴 THE HOSTNAME THE PHONE DIALS, and the single setting that decides
-  # whether any of this works. Metro embeds an ABSOLUTE url in the bundle it
-  # serves; if this is wrong the dev client connects, pulls a bundle full of
-  # unreachable URLs, and hangs with nothing naming the cause. The chart
-  # refuses to render without it.
+  # 🔴 THE HOSTNAME THE PHONE DIALS. Must equal the hostname on
+  # manifests/auq-mobile.httproute.yaml -- Metro advertises an ABSOLUTE URL
+  # built from this, and if it is wrong the dev client hangs with nothing
+  # naming the cause. The chart refuses to render without it.
   #
-  # ⚠️ No scheme and no port -- Metro builds those itself.
-  packagerHostname: "metro.lab.techyon.dev"
+  # ⚠️ No scheme and no port -- Metro appends its own, which is exactly the
+  # problem packagerProxyUrl below exists to solve.
+  packagerHostname: "auq-mobile.lab.techyon.dev"
+
+  # 🔴 REQUIRED HERE, BECAUSE A GATEWAY SITS IN FRONT. packagerHostname sets
+  # only the host; Expo appends its own listen port, so with it alone the
+  # manifest advertises https://<host>:8081/index.ts.bundle while this Gateway
+  # serves 443. MEASURED 2026-09-12 against the live route:
+  #
+  #   curl https://<host>/status       -> 200 in 14ms
+  #   curl https://<host>:8081/status  -> 000, no listener
+  #
+  # The dev client fetches the manifest over 443 without complaint, then follows
+  # that bundle URL into nothing -- a hang, not a 404. This makes the advertised
+  # URL match the route.
+  #
+  # ⚠️ Scheme INCLUDED, no trailing slash. It would be empty for direct :8081
+  # access (port-forward, a laptop on the LAN); there the appended port is
+  # right and setting this would break it.
+  packagerProxyUrl: "https://auq-mobile.lab.techyon.dev"
