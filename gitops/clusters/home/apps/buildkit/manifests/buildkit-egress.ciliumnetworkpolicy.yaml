@@ -157,6 +157,18 @@ spec:
         # builds.dotnet.microsoft.com are already above, and dot.net redirects
         # to exactly that host -- traced, not assumed. The .NET SDK install in
         # claude-workspace needs nothing new.
+        # ── crates.io, for the auq-mcp image (claude-workbench) ────────────
+        # Added BEFORE the first Rust build, for the NuGet reason above: cargo
+        # does not fail on a missing name, it sits at "Updating crates.io
+        # index" until the job timeout.
+        #
+        # Two names, from the registry's own config (index.crates.io/config.json,
+        # read 2026-09-12): the sparse index is served from index.crates.io and
+        # `dl` points at static.crates.io. `api` (crates.io) is for publishing
+        # only, so it is deliberately NOT listed. Cargo.lock carries no git
+        # sources, so github.com above is not a cargo dependency either.
+        - matchName: index.crates.io
+        - matchName: static.crates.io
       toPorts:
         - ports:
             - port: "443"
