@@ -146,7 +146,7 @@ spec:
           # which is all the mint needs, and it is already on the node -- so a
           # dedicated image would cost a second build, a second release and a
           # second pull to save nothing.
-          image: ghcr.io/lanternfyre/claude-workspace:0.1.5
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.7
           restartPolicy: Always
           command: ["/bin/bash", "/etc/broker/broker.sh"]
           securityContext:
@@ -185,7 +185,7 @@ spec:
           # ⚠️ A PINNED CONVCO TAG, NEVER :latest. The shared pipeline moves
           # :latest on every master build, so :latest plus IfNotPresent is
           # "whatever this node happened to cache".
-          image: ghcr.io/lanternfyre/claude-workspace:0.1.5
+          image: ghcr.io/lanternfyre/claude-workspace:0.1.7
           ports:
             - {name: console, containerPort: 7681}
             - {name: ssh, containerPort: 2222}
@@ -221,6 +221,12 @@ spec:
             # Read-only: the workspace consumes tokens, the broker produces them.
             - {name: gh-token, mountPath: /var/run/gh-token, readOnly: true}
             - {name: kube-ro, mountPath: /etc/kube-ro, readOnly: true}
+            # The shim reads /etc/claude-code/mcp/mcp.json per invocation. The
+            # image pre-creates the directory, so an unmounted box runs with no
+            # MCP servers rather than failing -- which also means a TYPO IN THE
+            # VOLUME NAME DEGRADES SILENTLY, not loudly. Verify by asking the
+            # box for its server list, never by seeing the mount in the spec.
+            - {name: mcp-config, mountPath: /etc/claude-code/mcp, readOnly: true}
           resources:
             requests: {cpu: 500m, memory: 2Gi}
             limits:
@@ -269,6 +275,8 @@ spec:
           secret: {secretName: console-auth, defaultMode: 0400}
         - name: workspace-config
           configMap: {name: workspace-repos}
+        - name: mcp-config
+          configMap: {name: claude-box-alpha-mcp}
         # ⚠️ Mounted ONLY into the broker container. The workspace has no reason
         # to read the mint script, and the read-only cluster role excludes
         # configmaps, so the box cannot fetch it through the API either.
