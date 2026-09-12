@@ -20,6 +20,7 @@ metadata:
   namespace: monitoring
   annotations:
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/instance=alloy-gateway"
     gethomepage.dev/group: Observability
     gethomepage.dev/name: Faro Collector
     gethomepage.dev/description: Browser telemetry ingest (Grafana Faro Web SDK)
@@ -95,6 +96,7 @@ metadata:
   namespace: monitoring
   annotations:
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/instance=alloy-gateway"
     gethomepage.dev/group: Observability
     gethomepage.dev/name: OTel Gateway
     gethomepage.dev/description: OTLP ingest for external apps
@@ -119,6 +121,7 @@ metadata:
   namespace: monitoring
   annotations:
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/instance=alloy-gateway"
     gethomepage.dev/group: Observability
     gethomepage.dev/name: Pyroscope Ingest
     gethomepage.dev/description: Pyroscope profile ingest (no-auth, machine push)

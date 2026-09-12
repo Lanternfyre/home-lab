@@ -34,6 +34,7 @@ metadata:
   namespace: auq
   annotations:
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/name=auq,app.kubernetes.io/component=mobile"
     gethomepage.dev/name: auq mobile
     gethomepage.dev/description: Expo dev server for the auq mobile client
     gethomepage.dev/group: Agents

@@ -14,6 +14,7 @@ metadata:
   namespace: immich
   annotations:
     gethomepage.dev/enabled: "true"
+    gethomepage.dev/pod-selector: "app.kubernetes.io/instance=immich,app.kubernetes.io/name=server"
     gethomepage.dev/name: Immich
     gethomepage.dev/description: Photo library
     gethomepage.dev/group: Home
