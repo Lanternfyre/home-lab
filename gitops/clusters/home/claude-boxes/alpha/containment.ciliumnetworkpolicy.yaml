@@ -171,14 +171,35 @@ spec:
     # secret" is true of the box and false of what the box can drive. Closing
     # it means an ingress CNP on `mcp`, tracked separately.
     #
-    # Port 5577 is auq-server, which does not exist yet. A rule that selects
-    # nothing is inert, not wrong; it is here so the pair lands together.
     - toEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: mcp
       toPorts:
         - ports:
             - {port: "8080", protocol: TCP}
+
+    # ── In-cluster: auq ────────────────────────────────────────────────────
+    # ⚠️ auq is its OWN namespace, not `mcp`. Port 5577 used to be listed on
+    # the `mcp` rule above, back when auq had no home and the rule was inert;
+    # it moved here when auq actually landed. Leaving it on `mcp` would have
+    # been the silent failure mode -- a rule that selects nothing does not
+    # error, so `ask_user_questions` would simply hang until its 300 s
+    # long-poll deadline and report "pending", which reads as "the user has
+    # not answered yet" rather than "the packet never left the box".
+    #
+    # auq-mcp runs INSIDE this pod (stdio), so the connection this admits is
+    # box → auq-server:5577 directly; the phone's half of the round trip goes
+    # through the Gateway and is not this policy's business.
+    #
+    # 🔴 Cluster-local endpoint, not auq.lab.techyon.dev. Same trap as the MCP
+    # rule above: the LAN hostname leaves for a Gateway that this policy does
+    # not admit, and under kube-proxy replacement policy would see the
+    # Gateway's backend port (10443) rather than 443.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: auq
+      toPorts:
+        - ports:
             - {port: "5577", protocol: TCP}
 
     # ── Anthropic ──────────────────────────────────────────────────────────
