@@ -1150,6 +1150,59 @@ Then enter the code in the mobile app within five minutes. After the first
 device exists, `auq pair` from the laptop mints subsequent codes normally and
 none of this is needed again.
 
+### Connecting `auq-rs` (the CLI and the MCP server) — the same flow
+
+🔴 **THERE IS NO SELF-PAIR SUBCOMMAND, AND `auq pair` IS NOT IT.** `auq pair`
+mints a code and renders a QR *for someone else* — it is the tool you use to
+onboard the phone, and it needs a working credential itself. The CLI and the
+MCP server authenticate with `AUQ_BEARER_TOKEN`, and nothing in auq-rs obtains
+one. **A bearer token IS a device token**: auq-rs is just another device, so it
+gets its token from `POST /api/devices/pair` exactly like the phone does.
+
+Do this once per client — the laptop and each box get their **own** token, so
+`device_name` should say which is which and unpairing one leaves the others
+working:
+
+```bash
+# 1. Mint a code. Loopback only, so port-forward -- see above for why exec cannot.
+kubectl -n auq port-forward deploy/auq-auq-server 5577:5577 &
+CODE=$(curl -s -X POST http://127.0.0.1:5577/api/pairing-codes | jq -r .code)
+
+# 2. Trade it for a token. This endpoint is OPEN -- run it against the real
+#    hostname, not the forward, so you also prove the path the client will use.
+curl -s -X POST https://auq.lab.techyon.dev/api/devices/pair \
+  -H 'Content-Type: application/json' \
+  -d "{\"code\":\"$CODE\",\"device_name\":\"tarjei-laptop\"}" | jq -r .token
+kill %1
+```
+
+```bash
+# 3. Hand it to the client.
+export AUQ_SERVER_URL=https://auq.lab.techyon.dev
+export AUQ_BEARER_TOKEN=<the token from step 2>
+auq watch
+```
+
+⚠️ **Step 2's response is the only time you see that token.** It is stored
+hashed; there is no "show me the token again" endpoint. Lost means re-pair.
+Put it in 1Password as you read it.
+
+**Verified against the live server on 2026-09-12** — this is measured, not read
+off the OpenAPI spec:
+
+| call | result | what it proves |
+|---|---|---|
+| `POST /api/pairing-codes` over port-forward | **201**, 6-char code | the loopback bypass works, and `port-forward` really does land in the pod netns |
+| `POST /api/pairing-codes` through the Gateway | **401** | the bypass is *not* leaking to LAN callers — the gate is source-IP, exactly as intended |
+| `POST /api/devices/pair` through the Gateway, bad code | **404**, not 401 | the pairing endpoint is genuinely open pre-token; it reached the handler and merely failed to find that code |
+
+⚠️ **The box cannot use auq yet, and no token will change that.** `auq-mcp` is
+a **stdio** server — Claude spawns it as a child process — and the binary is not
+in `claude-workspace`, because its `build.rs` panics without an `openapi.json`
+at the repo root. The network path is already open (the `auq` namespace rule in
+`claude-boxes/alpha/containment.ciliumnetworkpolicy.yaml`) and the ConfigMap
+entry is written and commented out; only the binary is missing.
+
 **Two more things only you can do:**
 
 1. **The mobile app's server URL** — `expo.extra.AUQ_SERVER_URL` needs a custom
