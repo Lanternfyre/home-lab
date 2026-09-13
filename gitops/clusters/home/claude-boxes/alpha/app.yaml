@@ -10,4 +10,4 @@
 #Notice chart name has to be a part of repoURL for oci
 repoURL: "ghcr.io/lanternfyre/charts"
 chart: "claude-box"
-targetRevision: "0.1.1"
+targetRevision: "0.1.2"
