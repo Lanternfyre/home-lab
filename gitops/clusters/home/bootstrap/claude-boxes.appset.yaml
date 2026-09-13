@@ -35,9 +35,9 @@ spec:
   goTemplate: true
   goTemplateOptions: ["missingkey=error"]
 
-  # ⚠️ MIGRATION WINDOW (manifests -> chart). If the generator ever yields no
-  # Application for a box -- a bad app.yaml, a half-applied change -- the
-  # controller deletes that Application, and its resources finalizer would
+  # If the generator ever yields no Application for a box -- a bad app.yaml, a
+  # half-applied change -- the controller deletes that Application, and its
+  # resources finalizer would
   # cascade into the StatefulSet and kill the live tmux session. This keeps the
   # objects when that happens. (`applicationsSync: create-update` would be the
   # obvious guard, but it is IGNORED unless the controller enables policy
@@ -91,11 +91,7 @@ spec:
         namespace: "claude-box-{{ .path.basename }}"
       syncPolicy:
         automated:
-          # ⚠️ MIGRATION WINDOW: false until the chart-rendered box is proven
-          # identical to the manifests it replaces. A mis-rendered object then
-          # shows as OutOfSync instead of being pruned. Restored to true in the
-          # follow-up PR, one review cycle later.
-          prune: false
+          prune: true
           selfHeal: true
         syncOptions:
           - ServerSideApply=true
