@@ -35,7 +35,9 @@ console:
 image:
   # Floors: 0.1.9 is the first with /usr/local/bin/auq-mcp (auqProxy below);
   # 0.1.10 is the first whose gh uses the broker-minted App token.
-  tag: "0.1.10"
+  # 0.1.11: seed-repos leaves the inherited working directory, so a FRESH
+  # volume clones (docker-compendium #19; box2/box3 cloned nothing on 0.1.10).
+  tag: "0.1.11"
 
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
