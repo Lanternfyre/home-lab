@@ -17,8 +17,8 @@ carries only what differs per box.
 | dir | console | volume | auq |
 |---|---|---|---|
 | `alpha` | `https://box1.lab.techyon.dev` | 40Gi | on |
-| `bravo` | `https://box2.lab.techyon.dev` | 20Gi | off |
-| `charlie` | `https://box3.lab.techyon.dev` | 20Gi | off |
+| `bravo` | `https://box2.lab.techyon.dev` | 20Gi | on |
+| `charlie` | `https://box3.lab.techyon.dev` | 20Gi | on |
 
 `bravo` and `charlie` were added on 2026-09-13 as copies of alpha, with three
 differences, each explained in their `chart-values.yaml`:
@@ -27,10 +27,9 @@ differences, each explained in their `chart-values.yaml`:
 * **20Gi**: enough for now. To grow one, patch the **claim**
   (`qnap-iscsi` allows expansion), not `storage.size`: a StatefulSet's
   `volumeClaimTemplates` cannot be updated, so a values edit fails the sync.
-* **auq off**: the chart mounts the bearer secret without `optional`, so
-  enabling auq before the box's 1Password item exists leaves the pod in
-  `ContainerCreating`. Each file lists the four steps to turn it on, including
-  the auq ingress policy, which names every box namespace literally.
+* **auq on its own device**: `Claude Box Bravo auq` / `Claude Box Charlie auq`,
+  paired per box, so unpairing one leaves the others working. auq's ingress
+  policy names both namespaces.
 
 Every hostname behind the gate also needs its callback in
 `apps/authentik/manifests/blueprint-envoy-gateway.external-secret.yaml`, in the

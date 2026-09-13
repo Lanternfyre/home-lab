@@ -1247,8 +1247,10 @@ box:
 2. **Run the three-doors check** from `claude-boxes/README.md` ("First run")
    against `box2` and `box3`. The browser door also proves Authentik accepts the
    new callbacks.
-3. **auq, only when that box needs it.** Pair a device named `claude-box-bravo`
-   or `claude-box-charlie` (the auq section above), store the token as
-   `Claude Box Bravo auq` or `Claude Box Charlie auq` (property `credential`),
-   then follow the four steps at the bottom of that box's `chart-values.yaml`.
-   Enabling auq before the item exists leaves the pod in `ContainerCreating`.
+3. **auq is on, per box.** Devices `claude-box-bravo` and `claude-box-charlie`
+   are paired and stored as `Claude Box Bravo auq` / `Claude Box Charlie auq`
+   (property `credential`), done 2026-09-13. The `auq-proxy` sidecar only
+   appears after the pod is recreated (`OnDelete`):
+   `kubectl -n claude-box-bravo delete pod claude-box-bravo-0`, same for charlie.
+   Renaming or deleting either item leaves that box stuck in
+   `ContainerCreating` on its next start.
