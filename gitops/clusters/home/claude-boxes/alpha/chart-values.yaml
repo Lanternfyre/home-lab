@@ -27,20 +27,18 @@ console:
   hostname: box1.lab.techyon.dev
   homepageName: box1
 
-# Today's single-owner probe, pinned THROUGH the migration so the pod template
-# does not change. Removed, deliberately, in the same commit that enables auq --
-# one pod delete for both.
-broker:
-  livenessProbe:
-    command:
-      - sh
-      - -c
-      - test $(( $(date +%s) - $(stat -c %Y /var/run/gh-token/lanternfyre.token) )) -lt 3300
-
 # 🔴 Pin the workspace image. The chart's default is Chart.appVersion, but the
 # shared publish step stamps appVersion with the CHART version when no
-# app-version is passed -- so claude-box 0.1.0 as published says
-# claude-workspace:0.1.0, not the 0.1.8 in its Chart.yaml. Without this pin the
-# next pod delete rolls alpha back to that image.
+# app-version is passed, so every published claude-box defaults to
+# claude-workspace:<chart version>. Without this pin a pod delete rolls alpha
+# onto an unrelated, older image.
 image:
-  tag: "0.1.8"
+  # 0.1.9 is the first claude-workspace carrying /usr/local/bin/auq-mcp, the
+  # floor for auqProxy below.
+  tag: "0.1.9"
+
+# auq through the sidecar. The bearer is this box's paired device token, and
+# only the auq-proxy container mounts it; the workspace gets no auq env at all.
+auqProxy:
+  enabled: true
+  onePasswordItem: "Claude Box Alpha auq"
