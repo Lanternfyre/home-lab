@@ -12,6 +12,31 @@ The objects, the probes, the network policy and the reasoning behind each
 literal now live in the chart's templates and `values.yaml`; this directory
 carries only what differs per box.
 
+## The boxes
+
+| dir | console | volume | auq |
+|---|---|---|---|
+| `alpha` | `https://box1.lab.techyon.dev` | 40Gi | on |
+| `bravo` | `https://box2.lab.techyon.dev` | 20Gi | off |
+| `charlie` | `https://box3.lab.techyon.dev` | 20Gi | off |
+
+`bravo` and `charlie` were added on 2026-09-13 as copies of alpha, with three
+differences, each explained in their `chart-values.yaml`:
+
+* **`rbac.clusterRole.create: false`**: alpha owns the shared ClusterRole.
+* **20Gi**: enough for now. To grow one, patch the **claim**
+  (`qnap-iscsi` allows expansion), not `storage.size`: a StatefulSet's
+  `volumeClaimTemplates` cannot be updated, so a values edit fails the sync.
+* **auq off**: the chart mounts the bearer secret without `optional`, so
+  enabling auq before the box's 1Password item exists leaves the pod in
+  `ContainerCreating`. Each file lists the four steps to turn it on, including
+  the auq ingress policy, which names every box namespace literally.
+
+Every hostname behind the gate also needs its callback in
+`apps/authentik/manifests/blueprint-envoy-gateway.external-secret.yaml`, in the
+same change. box1's was added one commit late, and the page failed while
+everything else stayed green.
+
 This is the Kubernetes port of the operator's own `claude-box`
 (`~/.claude/scripts/workbench/sandbox/`). That is a bubblewrap sandbox with a
 host-side GitHub App token minter and a CONNECT-only egress allowlist; here the

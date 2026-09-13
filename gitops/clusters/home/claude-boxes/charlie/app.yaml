@@ -1,0 +1,13 @@
+# claude-box-charlie, rendered from the claude-box chart.
+#
+# The chart lives in helm-compendium (claude-box/). The release name and the
+# namespace are NOT set here: the ApplicationSet derives both from this
+# directory's name (`claude-box-charlie`), because every object name, the
+# StatefulSet selector and the claim `home-claude-box-charlie-0` hang off it and a
+# typo here must not be able to rename the box.
+#
+# ⚠️ missingkey=error: the ApplicationSet dereferences exactly these three keys.
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/lanternfyre/charts"
+chart: "claude-box"
+targetRevision: "0.1.2"

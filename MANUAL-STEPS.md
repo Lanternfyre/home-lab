@@ -1230,3 +1230,25 @@ cannot complete an interactive browser sign-in — so pairing would not fail wit
 an error, it would fail as a redirect the app cannot follow. The security
 boundary is auq's own per-device bearer tokens. Reasoning in full at the top of
 `gitops/clusters/home/apps/auq/manifests/auq.httproute.yaml`.
+
+## 🟡 box2 and box3 — first login, and auq when wanted (2026-09-13)
+
+`claude-boxes/bravo` (`box2.lab.techyon.dev`) and `claude-boxes/charlie`
+(`box3.lab.techyon.dev`) need no new 1Password items to start: they reuse
+alpha's `Claude Workspace Console` and `Claude Box GitHub App`. That means the
+**same ttyd credential and the same ssh host key** as box1. What is left is per
+box:
+
+1. **Log in to Claude**, once each. The login lives on that box's volume:
+   ```sh
+   kubectl exec -it -n claude-box-bravo claude-box-bravo-0 -- attach    # then /login
+   kubectl exec -it -n claude-box-charlie claude-box-charlie-0 -- attach
+   ```
+2. **Run the three-doors check** from `claude-boxes/README.md` ("First run")
+   against `box2` and `box3`. The browser door also proves Authentik accepts the
+   new callbacks.
+3. **auq, only when that box needs it.** Pair a device named `claude-box-bravo`
+   or `claude-box-charlie` (the auq section above), store the token as
+   `Claude Box Bravo auq` or `Claude Box Charlie auq` (property `credential`),
+   then follow the four steps at the bottom of that box's `chart-values.yaml`.
+   Enabling auq before the item exists leaves the pod in `ContainerCreating`.
