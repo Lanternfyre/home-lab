@@ -49,6 +49,15 @@ server:
     ASPNETCORE_ENVIRONMENT: Production
     Auth__LoopbackBypass: "true"
 
+  # 🔔 Pushover. auq-server skips it without a word unless BOTH are set, which is
+  # why no notification ever arrived. Values come from
+  # manifests/pushover.external-secret.yaml (Alertmanager's 1Password items).
+  # optional defaults to true in the chart, so a missing Secret leaves the server
+  # up with Pushover off rather than failing the pod. Needs chart >= 0.1.2.
+  secretEnv:
+    AUQ_PUSHOVER_TOKEN:    {secret: pushover-credentials, key: apiToken}
+    AUQ_PUSHOVER_USER_KEY: {secret: pushover-credentials, key: userKey}
+
 # ── The Metro dev server ─────────────────────────────────────────────────────
 # Serves the JS bundle to the dev-client APK already installed on the phone.
 # It does not build or distribute an APK -- that needs EAS or an Android SDK
