@@ -45,6 +45,12 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-alpha
+        # box2 and box3 (claude-boxes/bravo, claude-boxes/charlie), each on its
+        # own paired device. Their auq-proxy dials the same ClusterIP east-west.
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-bravo
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-charlie
 
     # Prometheus. Nothing scrapes auq today; allowed so that adding a
     # ServiceMonitor later is not a silent metrics gap.
