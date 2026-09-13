@@ -33,9 +33,9 @@ console:
 # claude-workspace:<chart version>. Without this pin a pod delete rolls alpha
 # onto an unrelated, older image.
 image:
-  # 0.1.9 is the first claude-workspace carrying /usr/local/bin/auq-mcp, the
-  # floor for auqProxy below.
-  tag: "0.1.9"
+  # Floors: 0.1.9 is the first with /usr/local/bin/auq-mcp (auqProxy below);
+  # 0.1.10 is the first whose gh uses the broker-minted App token.
+  tag: "0.1.10"
 
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
