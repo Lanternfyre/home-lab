@@ -1,0 +1,63 @@
+# bravo's values for the claude-box chart -- box2, https://box2.lab.techyon.dev.
+#
+# alpha's shape with three deliberate differences, each explained where it is
+# set: this release does not create the shared ClusterRole, the volume is 20Gi,
+# and auq is off until the box has a paired device token.
+
+# One `owner/repo` per entry: what seed-repos clones AND what the broker's token
+# covers. An edit rescopes the token within 45 minutes, with no restart.
+# Starts as alpha's list; trim it to what this box actually works on.
+repos:
+  - Lanternfyre/home-lab
+  - Lanternfyre/claude-workbench
+  - Lanternfyre/docker-compendium
+  - Lanternfyre/helm-compendium
+  - Lanternfyre/github-actions-compendium
+  # ⚠️ Necronia is ~856 MiB and cloned in FULL (convco reads tags and history),
+  # so its first clone takes minutes -- in the background, not holding up the
+  # console. On 20Gi it is also the biggest single tenant of the volume.
+  - Lanternfyre/Necronia
+  - Lanternfyre/Necronia2.0
+
+console:
+  hostname: box2.lab.techyon.dev
+  homepageName: box2
+
+# 🔴 alpha owns the shared `claude-box-reader` ClusterRole. A second release that
+# also rendered it would put two Applications on one cluster-scoped object.
+# This box still gets its own binding to it, `claude-box-bravo-reader`.
+rbac:
+  clusterRole:
+    create: false
+
+# 20Gi, not the chart's 40Gi: enough for now (operator, 2026-09-13).
+# ⚠️ To grow it later, resize the CLAIM, not this value. qnap-iscsi carries
+# allowVolumeExpansion: true (apps/qnap-trident/manifests/iscsi.storage-class.yaml):
+#   kubectl -n claude-box-bravo patch pvc home-claude-box-bravo-0 \
+#     -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'
+# The claim is created by the StatefulSet controller, not rendered by the chart,
+# so this is not the "never patch chart-managed resources" case. Editing `size`
+# here instead changes the StatefulSet's volumeClaimTemplates, which Kubernetes
+# refuses to update -- the sync fails and nothing is resized. Update `size:` in
+# protected-volumes.yaml in the same change as the patch.
+storage:
+  size: 20Gi
+
+# Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
+# default image tag follows the chart version, not the workspace release.
+image:
+  tag: "0.1.10"
+
+# auq is OFF -- the chart default -- until this box has its own paired device
+# token. The chart mounts the bearer secret without `optional`, so enabling it
+# before the 1Password item exists leaves the pod stuck in ContainerCreating.
+# To turn it on, in one change:
+#   1. pair a device named `claude-box-bravo` (MANUAL-STEPS.md, the auq section);
+#   2. store the token in 1Password as "Claude Box Bravo auq", property `credential`;
+#   3. uncomment the block below;
+#   4. add `claude-box-bravo` to the ingress of
+#      apps/auq/manifests/auq-containment.ciliumnetworkpolicy.yaml -- it names
+#      each box's namespace literally, and without it auq-mcp's calls are dropped.
+# auqProxy:
+#   enabled: true
+#   onePasswordItem: "Claude Box Bravo auq"

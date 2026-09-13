@@ -332,6 +332,38 @@ protected:
       types into directly. The mitigation is convention, not storage: the box
       holds a contents:write token and is expected to push.
 
+  - namespace: claude-box-bravo
+    claim: home-claude-box-bravo-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      box2's $HOME (claude-boxes/bravo): the same contents as alpha's above --
+      the Anthropic OAuth credential, shell history and skills, and working
+      checkouts of the repositories in its chart-values.yaml.
+
+      20Gi rather than alpha's 40Gi, on the operator's call when the box was
+      added: enough for now, and the claim is resized if it fills. Keep the
+      `size` here in step with the live claim when that happens.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
+  - namespace: claude-box-charlie
+    claim: home-claude-box-charlie-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      box3's $HOME (claude-boxes/charlie): the same contents as alpha's above --
+      the Anthropic OAuth credential, shell history and skills, and working
+      checkouts of the repositories in its chart-values.yaml.
+
+      20Gi rather than alpha's 40Gi, on the operator's call when the box was
+      added: enough for now, and the claim is resized if it fills. Keep the
+      `size` here in step with the live claim when that happens.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning

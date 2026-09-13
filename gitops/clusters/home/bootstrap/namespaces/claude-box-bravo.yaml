@@ -1,0 +1,26 @@
+# claude-box-bravo
+#
+# Apps in this namespace: one Claude Code workspace box, box2 (the `bravo`
+# directory under gitops/clusters/home/claude-boxes/). A home agent node, like
+# alpha since 2026-09-12.
+#
+# Same posture as claude-box-alpha, and for the same reasons -- that file's
+# header carries them: `restricted` BY CONSTRUCTION, because the workload is an
+# agent with a shell; Claude Code's bundled bubblewrap sandbox is disabled
+# under it by design, and the pod plus the CiliumNetworkPolicy ARE the sandbox.
+# Do not add capabilities to "fix" it.
+#
+# ⚠️ This namespace must NEVER carry homelab.techyon.dev/edge-publish: "true" --
+# it forbids the read-only cluster token and requires a read-only root
+# filesystem, neither of which a development box can live with.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: claude-box-bravo
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
