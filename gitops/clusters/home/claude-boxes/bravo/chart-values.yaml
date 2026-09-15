@@ -46,7 +46,7 @@ storage:
 # Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
 # default image tag follows the chart version, not the workspace release.
 image:
-  tag: "0.1.11"
+  tag: "0.1.12"
 
 # auq through the sidecar, on THIS box's own paired device token -- a device
 # named `claude-box-bravo`, stored in 1Password as "Claude Box Bravo auq", property
