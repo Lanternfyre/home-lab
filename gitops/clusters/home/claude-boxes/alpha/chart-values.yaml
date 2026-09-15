@@ -44,3 +44,11 @@ image:
 auqProxy:
   enabled: true
   onePasswordItem: "Claude Box Alpha auq"
+
+# Sibling-only restart rights (claude-box >= 0.1.6, helm-compendium#39): these OTHER boxes'
+# service accounts may get/delete THIS box's pod, and nothing else. A box can never restart
+# itself. Operator decision 2026-09-15, Lanternfyre/claude-workbench#1521.
+restartableBy:
+  serviceAccounts:
+    - {namespace: claude-box-bravo, name: claude-box-bravo}
+    - {namespace: claude-box-charlie, name: claude-box-charlie}
