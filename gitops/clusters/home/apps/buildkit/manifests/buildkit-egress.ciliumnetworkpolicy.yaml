@@ -105,6 +105,29 @@ spec:
         - matchName: archive.ubuntu.com
         - matchName: security.ubuntu.com
         - matchName: ports.ubuntu.com
+        # ── Alpine, added 2026-09-16 for the ttyd image ────────────────────
+        # 🔴 THE IMAGE COMES FROM DOCKER HUB; THE PACKAGES DO NOT. `alpine:3.22`
+        # pulls fine over registry-1.docker.io above, which makes an Alpine base
+        # look supported -- but `apk` fetches its index and every package from
+        # dl-cdn.alpinelinux.org, which was listed NOWHERE until now. ttyd is the
+        # first Alpine-based image in docker-compendium, so nothing had ever
+        # exercised this path.
+        #
+        # ⚠️ IT DOES NOT FAIL AS "package not found". apk returns errno-style
+        # exit codes, so a denied fetch surfaces as exit 5 (EIO) or exit 13
+        # (EACCES) on an `apk add` line naming perfectly real packages. That
+        # reads as a bad package name, and it cost three CI cycles chasing one --
+        # including a rewrite to build every dependency from source, which did
+        # not and could not help.
+        #
+        # ⚠️ WORSE, IT FAILED INTERMITTENTLY. Cilium permits toFQDNs by LEARNED
+        # IP, and dl-cdn is Fastly-served exactly like pypi.org and
+        # files.pythonhosted.org above (both in 2a04:4e42::/32). The likely
+        # mechanism -- not proven -- is that when dl-cdn resolved into a Fastly
+        # address already learned for those names, apk succeeded; when it did
+        # not, the identical command failed. An allow-list hole that works
+        # sometimes is the hardest kind to read.
+        - matchName: dl-cdn.alpinelinux.org
         # Python, for the airflow image
         - matchName: pypi.org
         - matchName: files.pythonhosted.org
