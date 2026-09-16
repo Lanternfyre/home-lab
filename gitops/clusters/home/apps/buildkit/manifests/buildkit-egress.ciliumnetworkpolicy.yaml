@@ -190,6 +190,32 @@ spec:
         # `dl` points at static.crates.io. `api` (crates.io) is for publishing
         # only, so it is deliberately NOT listed. Cargo.lock carries no git
         # sources, so github.com above is not a cargo dependency either.
+        # ── Android SDK + Node, added 2026-09-16 for actions-runner-android ─
+        # The runner image bakes the Android cmdline-tools, platform 36 and
+        # build-tools 36.0.0, plus a Node tarball dropped into
+        # RUNNER_TOOL_CACHE. All of it is fetched by RUN steps in the
+        # Dockerfile, so it is needed HERE -- the daemon builds the image --
+        # and not only in the runners' own policy.
+        #
+        # 🔴 THESE TWO ARE UNVERIFIED, UNLIKE EVERY OTHER NAME IN THIS FILE.
+        # The convention here is to trace each host for a redirect before
+        # listing it. That could not be done: the agent box answered `000` (no
+        # response at all) for all eight candidate hosts, uniformly, across
+        # four unrelated operators -- which is the sandbox denying curl, not
+        # the hosts. Both names below are from documented behaviour, NOT from
+        # a trace.
+        #
+        # ⚠️ So watch `hubble observe --verdict DROPPED` DURING the first image
+        # build instead of reading the build log afterwards. A missing name
+        # here does not error, it hangs until the job deadline -- the exact
+        # trap dl.k8s.io and nuget.org sprang earlier in this same file.
+        #
+        # dl.google.com is Google's own CDN and serves the SDK zips directly
+        # (it is the host sdkmanager resolves out of repository2-3.xml), so no
+        # second name is expected for it.
+        - matchName: dl.google.com
+        # nodejs.org serves /dist directly.
+        - matchName: nodejs.org
         - matchName: index.crates.io
         - matchName: static.crates.io
       toPorts:

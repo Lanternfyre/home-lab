@@ -187,6 +187,40 @@ spec:
         # Cilium's '*' still spans exactly ONE label, so this covers
         # index.crates.io and static.crates.io but NOT a deeper name.
         - matchPattern: "*.crates.io"
+        # ── Gradle + Maven, added 2026-09-16 for the Android APK build ─────
+        # `expo prebuild` then `:app:assembleRelease` resolve the Android
+        # Gradle Plugin, the Kotlin compiler and every AndroidX artifact at
+        # BUILD time, on the RUNNER. buildkitd is not in this path at all, so
+        # the buildkit policy does not help here (and vice versa).
+        #
+        # 🔴 BOTH HALVES OF EACH REDIRECT PAIR ARE LISTED, DELIBERATELY.
+        # services.gradle.org hands the wrapper a 302 to downloads.gradle.org,
+        # and plugins.gradle.org serves plugin ARTIFACTS from
+        # plugins-artifacts.gradle.org. Allowing only the front door of either
+        # pair is precisely the production.cloudfront.docker.com trap two
+        # blocks up: the metadata request succeeds in about a second, then the
+        # download sits there and dies on a deadline, which reads as a slow
+        # mirror rather than a policy drop.
+        #
+        # ⚠️ UNVERIFIED FROM THE AGENT BOX, same as the pair added to the
+        # buildkit policy in this commit -- it cannot reach any of these hosts
+        # to trace the redirect itself. Confirm with `hubble observe --verdict
+        # DROPPED` on the first Android run.
+        #
+        # mavenCentral() resolves to repo.maven.apache.org; repo1.maven.org is
+        # the same content under the older name, still emitted by some plugin
+        # POMs. dl.google.com appears here as well as in the buildkit policy
+        # because BOTH fetch from it: the image bakes the SDK, and AGP then
+        # fetches any missing revision at build time.
+        - matchName: dl.google.com
+        - matchName: maven.google.com
+        - matchName: repo.maven.apache.org
+        - matchName: repo1.maven.org
+        - matchName: services.gradle.org
+        - matchName: downloads.gradle.org
+        - matchName: plugins.gradle.org
+        - matchName: plugins-artifacts.gradle.org
+        - matchName: nodejs.org
         - matchPattern: "*.blob.core.windows.net"
       toPorts:
         - ports:
