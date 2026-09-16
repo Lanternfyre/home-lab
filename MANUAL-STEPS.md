@@ -5,7 +5,77 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-09-12
+Last updated: 2026-09-16
+
+---
+
+## 🟡 ARC runner scale sets are being renamed — in flight (2026-09-16)
+
+Scale sets were named after **consumers** (`ndepend`, `mutation`) rather than
+what they provide. That scheme has no room for `android`, and later `rust`/`ts`.
+Renaming to describe **capability** and **capacity**:
+
+| old label | new label | what it actually is |
+|---|---|---|
+| `arc-linux` | `arc-linux` *(unchanged)* | the general pool — the image bakes no node and no rust; `setup-node`/rustup fetch those per job |
+| `arc-linux-ndepend` | `arc-linux-dind` | xl envelope **plus** a docker daemon |
+| `arc-linux-mutation` | `arc-linux-xl` | the same envelope, no docker |
+| — | `arc-linux-android` | JDK + Android SDK (added later, separately) |
+
+**Both old and new sets are registered during the migration, deliberately.**
+A `runnerScaleSetName` change deregisters one scale set and registers another,
+and the workflows that reference them live in six repos that merge on their own
+schedule. A job queued against a label nothing serves is **invisible, not red**.
+`minRunners: 0` makes the overlap free. The old sets are deleted only after each
+new label has taken a real job.
+
+### 🔴 What you must NOT do while this is in flight
+
+**Do not change any `CI_RUNNER*` org variable.** The new design derives
+specialist labels from `CI_RUNNER` by suffix — `format('{0}-dind', …)` — so with
+`CI_RUNNER` already set to `arc-linux` the new labels resolve the moment a
+workflow merges. There is no window needing a perfectly-timed flip, and editing
+a variable mid-migration is the only way to create one.
+
+### 🔴 The ARC outage flip is to UNSET `CI_RUNNER`, never to set it to `ubuntu-latest`
+
+Because specialist labels are derived, setting `CI_RUNNER=ubuntu-latest` yields
+`ubuntu-latest-dind` — a label no runner will ever claim, i.e. an infinite queue
+with no error anywhere. To fall back to GitHub-hosted:
+
+```bash
+gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER
+```
+
+Jobs that can run hosted then do; jobs that genuinely need the cluster queue
+visibly, which is the designed degradation.
+
+### Afterwards — delete four org variables (only a human can)
+
+Once every repo has moved and the old scale sets are gone:
+
+```bash
+gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_NDEPEND
+gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_MUTATION
+gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_SERVER
+gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_CLIENT
+```
+
+⚠️ `CI_RUNNER_MUTATION` is the only one of the four currently **set**, and it is
+read by the compendium's `mutation.yaml`. It must not be deleted until that
+workflow has merged and its floating tag has moved. The other three are already
+unset, so deleting them is a no-op at any time.
+
+⚠️ **Before starting, check no repo-level `CI_RUNNER` shadows the org one** — a
+repo-level variable silently wins, and would defeat the derivation in exactly
+one repo, which is the hardest possible version of this bug to find:
+
+```bash
+for r in Necronia Necronia2.0 claude-workbench docker-compendium \
+         helm-compendium github-actions-compendium home-lab; do
+  echo "== $r"; gh variable list -R "Lanternfyre/$r"
+done
+```
 
 ---
 

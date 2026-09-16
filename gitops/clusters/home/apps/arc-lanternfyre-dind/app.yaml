@@ -1,0 +1,23 @@
+#Notice chart name has to be a part of repoURL for oci
+# Docker-capable runner scale set (runs-on: arc-linux-dind) -- the dind set the
+# Necronia Quality workflow's `docker run --hostname TarjeiPC` needs. Same
+# 0.14.2 pin + chart-bump warning as arc-controller/app.yaml. Shares
+# ns arc-runners-lanternfyre; the github-app ExternalSecret is owned by the
+# arc-lanternfyre app dir (namespace-wide objects live there).
+#
+# ⚠️ REPLACES arc-lanternfyre-ndepend, WHICH STILL EXISTS. Both are registered
+# during the migration on purpose: a runnerScaleSetName change deregisters the
+# old set from GitHub and registers a new one, and the workflows that reference
+# it live in six repos that merge on their own schedule. A job queued against a
+# label nothing serves is INVISIBLE, not red -- so the old set stays until every
+# consumer has moved and taken a green run. `minRunners: 0` makes the overlap
+# free: a registered set with no runners is one listener pod and nothing else.
+#
+# ⚠️ Named for the CAPABILITY, not the consumer. NDepend is one thing that needs
+# docker, not the reason the pool exists -- the old name made `android`, and
+# later `rust`/`ts`, impossible to fit into the scheme.
+repoURL: "ghcr.io/actions/actions-runner-controller-charts"
+chart: "gha-runner-scale-set"
+targetRevision: "0.14.2"
+releaseName: "arc-lanternfyre-dind"
+namespace: "arc-runners-lanternfyre"
