@@ -5,13 +5,16 @@
 # ns arc-runners-lanternfyre; the github-app ExternalSecret is owned by the
 # arc-lanternfyre app dir (namespace-wide objects live there).
 #
-# ⚠️ REPLACES arc-lanternfyre-ndepend, WHICH STILL EXISTS. Both are registered
-# during the migration on purpose: a runnerScaleSetName change deregisters the
-# old set from GitHub and registers a new one, and the workflows that reference
+# REPLACED arc-lanternfyre-ndepend, deleted 2026-09-16 once every consumer had
+# moved. Both were registered side by side for the migration ON PURPOSE, and
+# the method is the reusable part: a runnerScaleSetName change deregisters the
+# old set from GitHub and registers a new one, while the workflows referencing
 # it live in six repos that merge on their own schedule. A job queued against a
-# label nothing serves is INVISIBLE, not red -- so the old set stays until every
-# consumer has moved and taken a green run. `minRunners: 0` makes the overlap
-# free: a registered set with no runners is one listener pod and nothing else.
+# label nothing serves is INVISIBLE, not red. `minRunners: 0` made the overlap
+# free -- a registered set with no runners is one listener pod and nothing else.
+#
+# ⚠️ FOR THE NEXT RENAME: add beside, migrate consumers, then delete. Never
+# edit runnerScaleSetName in place.
 #
 # ⚠️ Named for the CAPABILITY, not the consumer. NDepend is one thing that needs
 # docker, not the reason the pool exists -- the old name made `android`, and
