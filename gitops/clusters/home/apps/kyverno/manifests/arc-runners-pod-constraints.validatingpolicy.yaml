@@ -3,13 +3,19 @@
 # These namespaces sit at PSA `privileged` for ONE container in ONE of the three
 # scale sets that share `arc-runners-lanternfyre`:
 #
-#   arc-linux-ndepend  initContainer `dind` (docker:27.5.1-dind), privileged.
+#   arc-linux-dind     initContainer `dind` (docker:27.5.1-dind), privileged.
 #                      NDepend licences by MAC + UPPERCASE machine name;
 #                      pod.spec.hostname rejects uppercase, so the workflow runs
 #                      inside a Docker daemon in the pod, whose UTS namespace
 #                      kubelet never sees.
 #   arc-linux          no privileged container
-#   arc-linux-mutation no privileged container
+#   arc-linux-xl       no privileged container
+#
+# (Renamed 2026-09-16 from arc-linux-ndepend / arc-linux-mutation. Only this
+# comment changed: the policy matches on NAMESPACE and on a container literally
+# named `dind`, never on scale-set names. That independence is the point -- a
+# policy keyed on those names would have silently stopped covering the renamed
+# sets while still reporting as enforced.)
 #
 # None of the three uses hostPath, hostNetwork, hostPID or hostIPC -- confirmed
 # from chart values, because runner pods are EPHEMERAL and a cluster scan of

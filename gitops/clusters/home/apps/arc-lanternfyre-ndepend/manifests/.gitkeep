@@ -1,9 +1,0 @@
-# Intentionally empty.
-#
-# home-extra-manifests-appset.yaml generates a "<app>-manifests" Application for
-# EVERY directory under apps/, unconditionally. Without this directory that
-# Application points at a path that does not exist and sits permanently in
-# sync status "Unknown" -- which is noise that hides real failures.
-#
-# ArgoCD ignores dotfiles, so this renders zero resources and the app reports
-# Synced. Delete this file the moment you add a real manifest here.

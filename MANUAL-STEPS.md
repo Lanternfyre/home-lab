@@ -5,11 +5,11 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-09-16
+Last updated: 2026-09-16 (scale-set retirement)
 
 ---
 
-## 🟡 ARC runner scale sets are being renamed — in flight (2026-09-16)
+## 🟡 ARC scale sets renamed — done, except one step only you can do (2026-09-16)
 
 Scale sets were named after **consumers** (`ndepend`, `mutation`) rather than
 what they provide. That scheme has no room for `android`, and later `rust`/`ts`.
@@ -22,20 +22,25 @@ Renaming to describe **capability** and **capacity**:
 | `arc-linux-mutation` | `arc-linux-xl` | the same envelope, no docker |
 | — | `arc-linux-android` | JDK + Android SDK (added later, separately) |
 
-**Both old and new sets are registered during the migration, deliberately.**
-A `runnerScaleSetName` change deregisters one scale set and registers another,
-and the workflows that reference them live in six repos that merge on their own
-schedule. A job queued against a label nothing serves is **invisible, not red**.
-`minRunners: 0` makes the overlap free. The old sets are deleted only after each
-new label has taken a real job.
+**Done — all six repos merged, and the old sets were deleted 2026-09-16.**
+Old and new stayed registered side by side throughout, deliberately: a
+`runnerScaleSetName` change deregisters one scale set and registers another,
+while the referencing workflows live in six repos that merge on their own
+schedule. A job queued against a label nothing serves is **invisible, not red**,
+and `minRunners: 0` made the overlap free.
 
-### 🔴 What you must NOT do while this is in flight
+`arc-linux-dind` is **proven** — the Necronia Quality run executed its real
+`docker run --cap-add NET_ADMIN` against the licensed NDepend container on
+`arc-linux-dind-hvk8d-runner-lt8jh`.
 
-**Do not change any `CI_RUNNER*` org variable.** The new design derives
-specialist labels from `CI_RUNNER` by suffix — `format('{0}-dind', …)` — so with
-`CI_RUNNER` already set to `arc-linux` the new labels resolve the moment a
-workflow merges. There is no window needing a perfectly-timed flip, and editing
-a variable mid-migration is the only way to create one.
+⚠️ **`arc-linux-xl` has never taken a job.** Its only consumer is the weekly
+`mutation.yml` (schedule + `workflow_dispatch` only, so no PR can exercise it),
+and that suite is 0-for-4 historically for reasons unrelated to runners. This
+did not block the retirement: nothing references the old labels any more, and
+mutation has targeted `arc-linux-xl` since the Necronia PR merged — with or
+without the old directory. **The first mutation run is therefore also the first
+proof of this pool. If it queues instead of starting, suspect the scale set,
+not the suite.**
 
 ### 🔴 The ARC outage flip is to UNSET `CI_RUNNER`, never to set it to `ubuntu-latest`
 
@@ -50,9 +55,9 @@ gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER
 Jobs that can run hosted then do; jobs that genuinely need the cluster queue
 visibly, which is the designed degradation.
 
-### Afterwards — delete four org variables (only a human can)
+### 🟡 THE ONE REMAINING STEP — delete four dead org variables
 
-Once every repo has moved and the old scale sets are gone:
+Every repo has moved and the old scale sets are gone, so this is unblocked:
 
 ```bash
 gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_NDEPEND
@@ -61,10 +66,16 @@ gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_SERVER
 gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER_CLIENT
 ```
 
-⚠️ `CI_RUNNER_MUTATION` is the only one of the four currently **set**, and it is
-read by the compendium's `mutation.yaml`. It must not be deleted until that
-workflow has merged and its floating tag has moved. The other three are already
-unset, so deleting them is a no-op at any time.
+✅ The `CI_RUNNER_MUTATION` blocker is **cleared**. It was the only one of the
+four actually set, and the compendium's `mutation.yaml` read it — so it could
+not go until that workflow merged and its floating tag moved. Both happened
+2026-09-16 (compendium PR #30; `build-push` run `35160577724` moved the tag),
+and `mutation.yaml` now derives `format('{0}-xl', vars.CI_RUNNER)`. The other
+three were never set, so deleting them is a no-op at any time.
+
+🔴 **Do NOT delete `CI_RUNNER` itself.** It is now the single variable every
+runner label is derived from — removing it is the documented ARC outage flip,
+not cleanup.
 
 ⚠️ **Before starting, check no repo-level `CI_RUNNER` shadows the org one** — a
 repo-level variable silently wins, and would defeat the derivation in exactly
@@ -207,9 +218,7 @@ and the org **variables**:
 | `OBJECT_STORE_ENDPOINT` | `https://s3.lab.techyon.dev` |
 | `OBJECT_STORE_BUCKET` | `ci-reports` |
 | `OBJECT_STORE_REGION` | `us-east-1` |
-| `CI_RUNNER` | the ARC scale-set label |
-| `CI_RUNNER_NDEPEND` | the dind-capable label |
-| `CI_RUNNER_MUTATION` | the large-memory label |
+| `CI_RUNNER` | the GENERAL ARC scale-set label (`arc-linux`). Specialist labels are DERIVED from it by suffix — `-dind`, `-xl`, later `-android` — so a new stack adds no new variable |
 
 `OBJECT_STORE_PUBLIC_URL` is not needed: one hostname serves both uploads and
 browsing.

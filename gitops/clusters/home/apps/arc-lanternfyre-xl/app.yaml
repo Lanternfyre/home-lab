@@ -6,9 +6,9 @@
 # ns arc-runners-lanternfyre (github-app + ghcr-pull secrets owned by the
 # arc-lanternfyre app dir).
 #
-# ⚠️ REPLACES arc-lanternfyre-mutation, WHICH STILL EXISTS. Both are registered
-# during the migration on purpose -- see arc-lanternfyre-dind/app.yaml for why
-# a runnerScaleSetName change cannot be done in place.
+# REPLACED arc-lanternfyre-mutation, deleted 2026-09-16 -- see
+# arc-lanternfyre-dind/app.yaml for why a runnerScaleSetName change cannot be
+# done in place, and must be add-beside, migrate, then delete.
 #
 # ⚠️ Named for the CAPACITY it provides, not the job that asked for it.
 # Mutation testing is one consumer of a big serialized runner; naming the pool

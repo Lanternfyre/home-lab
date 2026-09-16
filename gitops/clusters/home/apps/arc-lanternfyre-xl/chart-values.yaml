@@ -1,9 +1,10 @@
 # Large-memory runner scale set (gha-runner-scale-set 0.14.2).
 # Workflows target it with `runs-on: arc-linux-xl`.
 #
-# ⚠️ REPLACES arc-lanternfyre-mutation. This file is that one with a new
-# runnerScaleSetName; everything else is deliberately byte-identical, because
-# every comment below was paid for by an incident. Do not "tidy" them.
+# REPLACED arc-lanternfyre-mutation (deleted 2026-09-16). This file began as
+# that one with a new runnerScaleSetName; everything else was kept
+# byte-identical, because every comment below was paid for by an incident.
+# Do not "tidy" them.
 #
 # Why a separate set: mutation (Stryker) is plain dotnet — no docker — but needs
 # the big-runner sizing (the 8Gi arc-linux runner was OOM-killed on both
@@ -21,9 +22,9 @@ githubConfigSecret: gha-runner-github-app
 
 runnerScaleSetName: "arc-linux-xl"
 
-# ⚠️ During the migration this set and arc-lanternfyre-mutation are BOTH
-# registered, so the effective ceiling is 2, not 1. Harmless by sequencing:
-# only one label is referenced by a workflow at a time.
+# The migration is over -- arc-lanternfyre-mutation was deleted 2026-09-16 --
+# so the effective ceiling is 1 again. (While both were registered it was
+# briefly 2, harmless only because one label was ever referenced at a time.)
 minRunners: 0
 maxRunners: 1
 
