@@ -1,0 +1,192 @@
+# Docker-capable runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux-dind`.
+#
+# ⚠️ REPLACES arc-lanternfyre-ndepend. This file is that one with a new
+# runnerScaleSetName; everything else is deliberately byte-identical, because
+# every comment below was paid for by an incident. Do not "tidy" them.
+#
+# ── Why dind at all ──────────────────────────────────────────────────────────
+# ndepend.yml runs `docker run --cap-add NET_ADMIN --hostname TarjeiPC …` --
+# the licence fingerprint is MAC + machine name, and the machine name is
+# UPPERCASE. pod.spec.hostname rejects uppercase (RFC 1123, verified by
+# server-side dry-run), but a container started by a Docker daemon INSIDE the
+# pod takes its hostname from that daemon's UTS namespace, which kubelet never
+# sees. So the workflow runs verbatim in-cluster: no job split, no
+# re-licensing, no NET_ADMIN on the pod itself.
+#
+# ── Hand-written sidecar; NEVER containerMode: dind ──────────────────────────
+# The chart's dind helper is a fixed literal with privileged: true and NO
+# resources key -- it cannot bound ephemeral storage, which matters more here
+# than anywhere (emptyDir shares /var/lib/kubelet with the containerd image
+# store and, on server nodes, the etcd WAL).
+#
+# 🔴 THIS SET IS XL-SIZED *AND* DOCKER-CAPABLE, AND THAT IS AN INVARIANT.
+# The runner container below is cpu 4 / mem 8Gi requests, 16Gi limits --
+# identical to arc-linux-xl. `-dind` and `-xl` are therefore NOT parallel
+# axes: this is the xl envelope PLUS a docker daemon. Anyone who later
+# "simplifies" this to a small docker-only pool silently removes the memory
+# headroom from every consumer that needs both -- Necronia's Quality build runs
+# its 10.9k-test suite in THIS container, and Necronia2.0's server leg needs
+# docker and Stryker memory at the same time. Shrink it and the symptom is an
+# exit 137 that reads as a mystery.
+#
+# ⚠️ Blast radius: one scale set, one org, first-party private repos only.
+# NEVER point anything that runs untrusted fork PRs at arc-linux-dind.
+
+githubConfigUrl: "https://github.com/Lanternfyre"
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux-dind"
+
+# maxRunners 1 -- concurrent inner containers would present identical
+# hostname+MAC to NDepend licensing (untested), and worst-case ephemeral for
+# one pod is ~32Gi.
+#
+# ⚠️ During the migration this set and arc-lanternfyre-ndepend are BOTH
+# registered, so the effective ceiling is 2, not 1. The sequencing keeps that
+# harmless: only one label is referenced by a workflow at a time, so the old
+# set receives zero jobs from the moment the Necronia PR merges.
+minRunners: 0
+maxRunners: 1
+
+# P0 #3 -- explicit, helm-template lookup returns empty under ArgoCD.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    priorityClassName: ci-runner
+    # ── CI I/O spreading (2026-09-06, the k8s-lab5 disk-saturation incident) ──
+    # All 5 arc-linux runners landed on k8s-lab5 at once and pinned its root
+    # disk: 100% util, w_await 478 ms, aqu-sq 93, io PSI `full avg10=35`.
+    # Prometheus, the ArgoCD application-controller, Redis, RabbitMQ and a
+    # CoreDNS replica share that node and were all stalling behind CI.
+    #
+    # This is NOT a scheduler bug. k8s-lab5 has 20 CPU allocatable against
+    # lab4=4, lab6=2, lab7=6, so at `cpu: 2` per runner it is the ONLY node
+    # that fits five -- the scheduler packed them there correctly. The trap is
+    # that the node with the most CPU has by far the worst disk: its root LVM
+    # is on a `BC501A NVMe SK hynix 128GB`, a DRAM-less OEM laptop drive that
+    # saturates around 37 MB/s of sustained writes. `_work` is an emptyDir, so
+    # every runner's build traffic lands on exactly that device.
+    #
+    # ⚠️ ephemeral-storage requests/limits do NOT help here. They bound
+    # CAPACITY, not throughput -- the node had 29 GB free while stalling.
+    #
+    # ScheduleAnyway, not DoNotSchedule: lab6 cannot fit even one runner at
+    # `cpu: 2`, so a hard constraint would strand runners Pending and cap CI
+    # concurrency. This is a scoring preference -- PodTopologySpread carries
+    # weight 2 against ImageLocality's 1, so it wins without ever blocking.
+    #
+    # The selector is `part-of: gha-runner-scale-set`, the label ARC stamps on
+    # every runner pod, so the lanternfyre scale sets spread against each
+    # OTHER too, not just within one set. Runner pods come from ARC's
+    # EphemeralRunner controller rather than a ReplicaSet, so the default
+    # k8s spread rules do not apply and this selector must be explicit --
+    # a selector matching nothing is a constraint with no effect and no error.
+    topologySpreadConstraints:
+      - topologyKey: kubernetes.io/hostname
+        maxSkew: 1
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/part-of: gha-runner-scale-set
+    # ⚠️ LOAD-BEARING, and the reason the spread above is safe to add.
+    # k8s-lab1/2/3 carry NO taints, so "cluster-wide" has always included the
+    # etcd servers -- runners simply never scored there while lab5 won on
+    # capacity. Spreading changes that: without this guard the first thing the
+    # new constraint does is push CI onto an etcd node, where the emptyDir
+    # shares a filesystem with the etcd WAL. Spreading CI I/O and letting it
+    # reach etcd are the same change unless both land together.
+    #
+    # ⚠️ This guard and ansible/playbooks/50-ci-taint.yml contradict each other
+    # if that switch is ever pointed at a SERVER: the node would be tainted FOR
+    # CI and simultaneously forbidden TO CI, and the only symptom is runners
+    # stuck Pending with no event naming either half. Dedicate agents, or drop
+    # this guard in the same change.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+    # v4 posture: cluster-wide, no nodeSelector/tolerations (see
+    # ansible/playbooks/50-ci-taint.yml for the reserve dedication switch).
+    initContainers:
+      # 🔴 MUST be an initContainer with restartPolicy: Always (native
+      # sidecar, GA on this cluster's 1.35): a pod ends when all `containers`
+      # terminate, and dockerd never does -- as a normal container it would
+      # keep every finished runner pod alive forever, stall ARC cleanup, and
+      # fill the namespace with zombies.
+      #
+      # ⚠️ The name `dind` and the `docker:` image prefix are BOTH load-bearing
+      # beyond docker itself: kyverno/manifests/arc-runners-pod-constraints
+      # forbids privileged containers except one literally named `dind` whose
+      # image starts with `docker:`. Rename either and admission denies the pod.
+      - name: dind
+        image: docker:27.5.1-dind
+        restartPolicy: Always
+        securityContext:
+          privileged: true
+        # kubelet blocks the runner container until dockerd answers.
+        startupProbe:
+          exec:
+            command: ["docker", "info"]
+          periodSeconds: 2
+          failureThreshold: 45
+        env:
+          - name: DOCKER_TLS_CERTDIR
+            value: /certs
+        resources:
+          requests: {cpu: 500m, memory: 1Gi, ephemeral-storage: 8Gi}
+          # Memory 6Gi then measure: the hosted runner gave this job ~7GB; a
+          # 4Gi cap is a downgrade and an OOMKill mid-analysis reads as a
+          # mystery failure. No CPU limit -- repo standing rule.
+          limits: {memory: 6Gi, ephemeral-storage: 20Gi}
+        volumeMounts:
+          # SAME path as the runner so the workflow's `-v "$PWD:/work"`
+          # resolves on the daemon's filesystem too.
+          - {name: work, mountPath: /home/runner/_work}
+          - {name: dind-cert, mountPath: /certs}
+    # Private-package pulls — Secret owned by the arc-lanternfyre app dir
+    # (namespace-wide), manifests/ghcr-pull.external-secret.yaml there.
+    imagePullSecrets:
+      - name: ghcr-pull
+    containers:
+      - name: runner
+        # Custom image: gh/oras/trivy/python3 + dotnet SDK baked — the
+        # Ensure-gh + setup-dotnet workflow steps become no-ops. dind sidecar
+        # above stays the stock docker image (public).
+        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: DOCKER_HOST
+            value: tcp://localhost:2376
+          - name: DOCKER_TLS_VERIFY
+            value: "1"
+          - name: DOCKER_CERT_PATH
+            value: /certs/client
+        resources:
+          # 2026-08-21 first-run lesson: the BUILD + 10.9k-test suite runs in
+          # THIS container (dind only hosts the NDepend docker run), and a
+          # 4Gi limit OOM-killed the runner mid-build — GitHub saw the runner
+          # vanish (assigned job=0), ARC cleaned up the pod, the job died
+          # with empty step conclusions and no logs. Hosted runners give
+          # ~7GB and the exit-143 history says even that was marginal.
+          # cpu request 4 + memory request 8Gi deliberately steer the pod to
+          # the large nodes (k8s-4/5: 32/47Gi allocatable) and off 4-CPU/16Gi
+          # members + 2-CPU k8s-6. No CPU limit — repo standing rule.
+          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
+          limits: {memory: 16Gi, ephemeral-storage: 12Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+          - {name: dind-cert, mountPath: /certs}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 20Gi}}
+      - {name: dind-cert, emptyDir: {}}
