@@ -13,7 +13,7 @@
 # WITHOUT the dind sidecar, maxRunners 1 (one long campaign at a time).
 #
 # ⚠️ This is the CAPACITY pool, not a toolchain. It runs the same
-# actions-runner-dotnet image as arc-linux; the only differences are the
+# actions-runner-base image as arc-linux; the only differences are the
 # envelope and the concurrency cap. Anything that needs docker as well belongs
 # on arc-linux-dind, which carries this same envelope plus a daemon.
 
@@ -99,7 +99,7 @@ template:
     containers:
       - name: runner
         # Custom image: gh/oras/trivy/python3 + dotnet SDK baked.
-        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-base:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Same envelope that let the Debug build + full test suites survive

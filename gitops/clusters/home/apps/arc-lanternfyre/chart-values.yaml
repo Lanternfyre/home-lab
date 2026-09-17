@@ -89,7 +89,7 @@ template:
     # re-adding here (see that playbook's half-a-switch warning):
     #   nodeSelector: {node-role.home-lab/ci: "true"}
     #   tolerations: [{key: dedicated, operator: Equal, value: ci, effect: NoSchedule}]
-    # Private-package pulls (actions-runner-dotnet) — see
+    # Private-package pulls (actions-runner-base) — see
     # manifests/ghcr-pull.external-secret.yaml. M11 alternative: packages
     # stay private, kubelet authenticates.
     imagePullSecrets:
@@ -100,7 +100,15 @@ template:
         # SDK 10.0.100 baked (setup-dotnet + Ensure-gh become no-ops).
         # :latest deliberately — build-push re-points it per release; pin to a
         # convco tag if a bad image ever ships.
-        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
+        #
+        # ⚠️ RENAMED 2026-09-17 from ghcr.io/lanternfyre/actions-runner-dotnet.
+        # The old name read as a .NET-only pool, but EVERY scale set runs this
+        # one image -- arc-linux, arc-linux-dind (plus a docker sidecar),
+        # arc-linux-xl (bigger envelope) and t3chy0n's set. The pools differ by
+        # CAPABILITY and CAPACITY, never by language; .NET is baked because it
+        # is the dominant workload. The old package is NOT deleted, so reverting
+        # this line is a complete rollback.
+        image: ghcr.io/lanternfyre/actions-runner-base:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Sized for the Necronia Grains/Scripting/Simulation suites -- the
