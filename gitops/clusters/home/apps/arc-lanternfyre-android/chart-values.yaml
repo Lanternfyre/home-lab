@@ -1,0 +1,113 @@
+# Android runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux-android`, derived as
+# format('{0}-android', vars.CI_RUNNER).
+#
+# This file is arc-lanternfyre-xl's with a different image and envelope. The
+# scheduling comments below were paid for by the 2026-09-06 k8s-lab5 incident
+# and are copied deliberately -- do not "tidy" them.
+#
+# 🔴 THE OUTAGE FLIP IS TO *UNSET* CI_RUNNER, never to set it to ubuntu-latest:
+# the suffix would compose `ubuntu-latest-android`, a label no runner will ever
+# claim -- an infinite queue with no error anywhere.
+githubConfigUrl: "https://github.com/Lanternfyre"
+githubConfigSecret: gha-runner-github-app
+
+runnerScaleSetName: "arc-linux-android"
+
+# maxRunners 1: one APK build at a time. Gradle is a fork-heavy, disk-heavy
+# workload with exactly one consumer here; concurrency would buy nothing and
+# would reproduce the lab5 I/O problem deliberately.
+minRunners: 0
+maxRunners: 1
+
+# P0 #3 -- explicit, helm-template lookup returns empty under ArgoCD.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    # ── CI I/O spreading (2026-09-06, the k8s-lab5 disk-saturation incident) ──
+    # Copied from arc-lanternfyre-xl, and NOT optional here: Gradle is exactly
+    # the sustained-write workload that pinned k8s-lab5's root disk (100% util,
+    # w_await 478 ms) and stalled Prometheus, the ArgoCD application-controller,
+    # Redis, RabbitMQ and a CoreDNS replica behind CI. The node with the most
+    # CPU has by far the worst disk -- a DRAM-less OEM NVMe that saturates
+    # around 37 MB/s sustained -- so the scheduler packs runners onto precisely
+    # the wrong node.
+    #
+    # ⚠️ ephemeral-storage requests/limits do NOT fix that. They bound CAPACITY,
+    # not throughput; the node had 29 GB free while stalling. The spread is what
+    # addresses throughput.
+    #
+    # The selector is the label ARC stamps on every runner pod, so this set
+    # spreads against the OTHER scale sets too, not only within itself.
+    topologySpreadConstraints:
+      - topologyKey: kubernetes.io/hostname
+        maxSkew: 1
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/part-of: gha-runner-scale-set
+    # ⚠️ LOAD-BEARING, and the reason the spread above is safe. k8s-lab1/2/3
+    # carry no taints, so spreading would otherwise push CI onto an etcd node,
+    # where the _work emptyDir shares a filesystem with the etcd WAL. Spreading
+    # CI I/O and letting it reach etcd are the same change unless both land
+    # together.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+    imagePullSecrets:
+      - name: ghcr-pull
+    containers:
+      - name: runner
+        # JDK 17 + Android cmdline-tools + platform 36 + build-tools 36.0.0,
+        # with Node baked into the runner tool cache so setup-node is a cache
+        # hit rather than a download. aapt2 and apksigner are smoke-tested at
+        # IMAGE BUILD time, because the expo-android workflow now hard-fails
+        # without them (require-sdk-tools) -- a verification step that skips its
+        # checks reports success while certifying nothing.
+        image: ghcr.io/lanternfyre/actions-runner-android:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          # 🔴 GRADLE_USER_HOME INSIDE THE WORK VOLUME, not the default ~/.gradle.
+          # Left at its default the cache lands in the container's WRITABLE
+          # LAYER -- unbounded node storage -- and the pod is evicted with an
+          # ephemeral-storage message that names no Gradle artefact at all.
+          # Pointing it at the emptyDir bounds it by that volume's sizeLimit and
+          # keeps it off the writable layer.
+          #
+          # A SEPARATE ~/.gradle volume was planned and is deliberately NOT used:
+          # runners are ephemeral so it would cache nothing between jobs, and a
+          # second sizeLimit double-counts against node ephemeral storage. See
+          # the throughput note above -- capacity was never the lab5 problem.
+          - name: GRADLE_USER_HOME
+            value: /home/runner/_work/.gradle
+          # ⚠️ Gradle sizes its daemon from the CONTAINER's view of the host,
+          # not from the cgroup limit, so an unset -Xmx lets it reserve against
+          # 20 CPU / 64 Gi and get OOM-killed as a bare exit 137 with no Java
+          # error to read.
+          - name: GRADLE_OPTS
+            value: "-Dorg.gradle.jvmargs=-Xmx6g -Dorg.gradle.daemon=false"
+        resources:
+          # A bigger ephemeral envelope than -xl: an Expo prebuild carries
+          # node_modules, a generated native project, the Gradle cache and the
+          # build outputs, all under _work. No CPU limit -- standing rule.
+          #
+          # ⚠️ The work volume's sizeLimit (16Gi) sits BELOW the pod's
+          # ephemeral-storage limit (20Gi) ON PURPOSE: the volume hits its own
+          # bound and fails the build, rather than tripping the pod limit and
+          # evicting it. The first names the cause; the second does not.
+          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 8Gi}
+          limits: {memory: 16Gi, ephemeral-storage: 20Gi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 16Gi}}

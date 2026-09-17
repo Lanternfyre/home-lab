@@ -1,0 +1,6 @@
+# Intentionally empty.
+#
+# The app-of-apps generates a companion `<name>-manifests` Application for every
+# app directory, unconditionally. With no file here that Application has nothing
+# to sync and sits Unknown in ArgoCD forever -- healthy-looking neighbours and
+# one permanently degraded entry that nothing explains.
