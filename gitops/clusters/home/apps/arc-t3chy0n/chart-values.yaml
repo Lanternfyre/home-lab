@@ -91,7 +91,7 @@ template:
       - name: runner
         # ── Toolchains: four stacks, one existing image, two downloads ───────
         # claude-workbench builds .NET, Rust, Node and Python. Reusing
-        # Lanternfyre's actions-runner-dotnet image covers TWO of the four for
+        # Lanternfyre's actions-runner-base image covers TWO of the four for
         # free (python3 and the dotnet SDK are already baked, along with
         # gh/oras/trivy). Node and Rust are fetched per job by setup-node and
         # rustup.
@@ -106,7 +106,7 @@ template:
         # ⚠️ Those two downloads are the reason the egress policy in manifests/
         # is WIDER than Lanternfyre's. Removing an entry there does not slow a
         # job down; it hangs it until timeout.
-        image: ghcr.io/lanternfyre/actions-runner-dotnet:latest
+        image: ghcr.io/lanternfyre/actions-runner-base:latest
         command: ["/home/runner/run.sh"]
         resources:
           # Lighter than Lanternfyre's: that scale set is sized for the
