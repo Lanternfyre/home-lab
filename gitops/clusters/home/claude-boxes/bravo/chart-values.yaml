@@ -69,3 +69,34 @@ restartableBy:
   serviceAccounts:
     - {namespace: claude-box-alpha, name: claude-box-alpha}
     - {namespace: claude-box-charlie, name: claude-box-charlie}
+# Codex egress. Opened 2026-09-22 (operator decision) because `codex login`
+# needs a browser and `codex login --device-auth` HUNG on the box: every
+# OpenAI host timed out exactly like the known-blocked ghcr.io, while
+# api.github.com returned 200 — name-based filtering, not CIDR. A missing
+# FQDN hangs rather than failing, which is precisely how it presented.
+#
+# ⚠️ extraEgress, NOT registryFqdns. Helm REPLACES lists rather than merging
+# them, so setting registryFqdns here would silently drop npm / pypi /
+# pythonhosted / nuget / context7 from this box. extraEgress defaults to []
+# and is appended verbatim, so this is purely additive.
+#
+# Each host with the reason it is open — the ChatGPT-account login flow was
+# the mode chosen (operator, 2026-09-22); an API-key-only setup needs just
+# the third:
+#   auth.openai.com  the browser / --device-auth flow authenticates here
+#   chatgpt.com      ChatGPT-plan runtime calls (backend-api/codex)
+#   api.openai.com   the API host, used when codex is pointed at a key
+#
+# ⚠️ matchName only — a `*` in matchName rejects the WHOLE policy while ArgoCD
+# keeps reporting Synced. If login still hangs after this, take the next host
+# from `hubble observe --verdict DROPPED`, never from guesswork: this list was
+# derived from codex's documented flow, NOT from observed drop verdicts, because
+# the hubble CLI is not present in the box.
+networkPolicy:
+  extraEgress:
+    - toFQDNs:
+        - matchName: auth.openai.com
+        - matchName: chatgpt.com
+        - matchName: api.openai.com
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
