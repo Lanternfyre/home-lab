@@ -13,7 +13,14 @@ spec:
       homelab.techyon.dev/protect: "true"
 
   storage:
-    size: 8Gi
+    # 12Gi, not because the workload needs it -- the databases total 263 MB and
+    # steady-state pg_wal is bounded by max_slot_wal_keep_size + max_wal_size
+    # below, i.e. ~5.5Gi worst case, so 8Gi was always adequate. The extra 4Gi
+    # buys the free space that lets a frozen instance start again: CNPG refuses
+    # to launch PostgreSQL at all once a volume is full ("Not enough disk
+    # space"), and the only other way to put free space on a full instance is
+    # to destroy and rebuild it. See the 2026-09-25 incident note below.
+    size: 12Gi
     storageClass: qnap-iscsi
 
   postgresql:
@@ -29,6 +36,30 @@ spec:
       tcp_keepalives_interval: "10"
       tcp_keepalives_count: "3"
       shared_buffers: "128MB"
+      # Cap WAL retained for a replication slot. This is a CEILING, not an
+      # allocation -- the default is -1, meaning a slot may pin WAL until the
+      # volume dies, and on 2026-09-25 one did.
+      #
+      # Measured, not guessed: the 2026-09-23 13:17 failover forked timeline 26
+      # off timeline 25 at 22/E70B84A0 (0000001A.history line 25), but
+      # postgres-ha-3 had already replayed to 22/E80000A0 -- ~15 MB PAST the
+      # fork -- so it could never follow the new timeline and its slot
+      # _cnpg_postgres_ha_3 went inactive at restart_lsn 22/E708DE50 and stayed
+      # there. Nothing after that LSN could be recycled.
+      #
+      # What made 37 hours enough to kill an 8Gi volume is that CNPG sets
+      # archive_timeout = 5min, which forces a segment switch every 5 minutes
+      # whether or not the segment is full. Each switched segment is written
+      # out at its full 16 MB while holding ~1 MB of records (measured: 4.5-6.7%
+      # full via pg_waldump --stats). So the LSN advances 192 MB/h regardless of
+      # load, against ~12 MB/h of real writes, and 7.1 GB of pg_wal accumulated
+      # behind the dead slot -- 95% of it zero padding.
+      #
+      # 4GB is deliberately larger than max_wal_size (1GB) so ordinary replica
+      # lag never trips it. A replica that exceeds it loses its slot and is
+      # re-cloned, which for a 263 MB database costs seconds -- and is strictly
+      # better than the primary refusing to start.
+      max_slot_wal_keep_size: "4GB"
 
   monitoring:
     # Off deliberately -- NOT "monitoring disabled". The instance exporter on
