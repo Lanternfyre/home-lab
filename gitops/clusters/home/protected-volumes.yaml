@@ -113,7 +113,7 @@ protected:
 
   - namespace: databases
     claim: postgres-ha-1
-    size: 8Gi
+    size: 12Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
     backup: NONE                 # see the BACKUP STATE banner at the top
@@ -121,7 +121,7 @@ protected:
 
   - namespace: databases
     claim: postgres-ha-2
-    size: 8Gi
+    size: 12Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
     backup: NONE                 # see the BACKUP STATE banner at the top
@@ -129,7 +129,7 @@ protected:
 
   - namespace: databases
     claim: postgres-ha-3
-    size: 8Gi
+    size: 12Gi
     class: qnap-iscsi
     source: CNPG Cluster/postgres-ha (label via spec.inheritedMetadata)
     backup: NONE                 # see the BACKUP STATE banner at the top
