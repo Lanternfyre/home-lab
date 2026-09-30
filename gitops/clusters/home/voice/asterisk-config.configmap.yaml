@@ -115,10 +115,21 @@ data:
     [global]
     type = global
     user_agent = techyon-voice
-    ; ip: Halonet (identify below, by the registrar's resolved addresses).
-    ; auth_username: ElevenLabs. It has no static IPs, so it is identified by
-    ; the digest username it answers the 401 challenge with.
-    endpoint_identifier_order = ip,auth_username
+    ; ip:     Halonet (identify in pjsip_secrets.conf, by the registrar's
+    ;         resolved addresses).
+    ; header: ElevenLabs (identify below, by the From host). It has no static
+    ;         IPs, so it cannot be matched by address.
+    ;
+    ; 🔴 NOT `auth_username`. That identifier looks up an ENDPOINT NAMED after
+    ; the digest username -- not an auth section with that username. With the
+    ; endpoint named `elevenlabs` and any other credential, every INVITE
+    ; failed with "No matching endpoint found after 5 tries" and ElevenLabs
+    ; reported "max auth retry attempts reached". Measured 2026-09-30.
+    ;
+    ; Matching on a header is NOT authentication -- anyone can write a From
+    ; line. The endpoint's `auth =` is: an identified request is still
+    ; challenged, and only the digest credential lets it in.
+    endpoint_identifier_order = ip,header
 
     [transport-udp]
     type = transport
@@ -194,6 +205,14 @@ data:
     media_encryption = no
     dtmf_mode = rfc4733
     from_domain = edge-1.techyon.dev
+
+    [elevenlabs]
+    type = identify
+    endpoint = elevenlabs
+    ; Their SIP servers send From: <sip:+48...@ip-35-184-220-237.host.rtc.elevenlabs.io>
+    ; ⚠️ No `;` in the regex: Asterisk config treats it as a comment start
+    ; and silently truncates the value.
+    match_header = From: /@[-a-z0-9.]+\.rtc\.elevenlabs\.io>/
 
     #include pjsip_secrets.conf
 
