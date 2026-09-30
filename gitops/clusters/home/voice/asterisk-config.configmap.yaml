@@ -79,6 +79,8 @@ data:
     load = res_pjsip_endpoint_identifier_ip.so
     load = res_pjsip_endpoint_identifier_user.so
     load = res_pjsip_outbound_registration.so
+    ; Accepts REGISTER -- only for the `linphone` test extension below.
+    load = res_pjsip_registrar.so
     load = res_pjsip_sdp_rtp.so
     load = res_pjsip_nat.so
     load = res_pjsip_caller_id.so
@@ -89,6 +91,7 @@ data:
 
     load = pbx_config.so
     load = app_dial.so
+    load = app_echo.so
     load = func_callerid.so
 
     load = bridge_simple.so
@@ -195,6 +198,38 @@ data:
     dtmf_mode = rfc4733
     from_domain = edge-1.techyon.dev
 
+    ; ── linphone: a TEST EXTENSION, to exercise each leg in isolation ──────
+    ; A softphone registering over TLS from anywhere (it is behind NAT, hence
+    ; rtp_symmetric/force_rport/rewrite_contact). Its password is
+    ; `linphone_password` in the 1Password item; the SIP username is literally
+    ; `linphone`. What it can dial: see [from-linphone] in extensions.conf.
+    ;
+    ; ⚠️ It is a password-protected phone on a public port. Same toll-fraud
+    ; allow-list as the ElevenLabs trunk; remove it once testing is done
+    ; (endpoint, aor, auth, the dialplan contexts, and the 1Password field).
+    [linphone]
+    type = aor
+    max_contacts = 1
+    remove_existing = yes
+    qualify_frequency = 30
+
+    [linphone]
+    type = endpoint
+    transport = transport-tls
+    context = from-linphone
+    disallow = all
+    allow = alaw,ulaw,g722
+    aors = linphone
+    auth = linphone-auth
+    direct_media = no
+    rtp_symmetric = yes
+    force_rport = yes
+    rewrite_contact = yes
+    media_address = 167.86.81.59
+    bind_rtp_to_media_address = yes
+    media_encryption = no
+    dtmf_mode = rfc4733
+
     #include pjsip_secrets.conf
 
   extensions.conf: |
@@ -206,15 +241,27 @@ data:
     ; DID (the Halonet number, E.164) comes from 1Password.
     #include extensions_globals.conf
 
-    ; ── Inbound: anything Halonet delivers goes to the ElevenLabs agent ─────
+    ; ── Inbound: anything Halonet delivers goes to ${INBOUND} ──────────────
     ; The Request-URI user is whatever Halonet puts there (often the account
     ; name, not the number), so it is not trusted as the target. ElevenLabs
     ; routes on the number it imported, which is DID.
+    ;
+    ; 🔴 TEST MODE: Halonet calls ring the `linphone` extension, NOT the agent.
+    ; Switch INBOUND back to `to-agent` when testing is done.
     [from-halonet]
-    exten => _X.,1,Goto(to-agent,s,1)
-    exten => _+X.,1,Goto(to-agent,s,1)
-    exten => _[a-zA-Z].,1,Goto(to-agent,s,1)
-    exten => s,1,Goto(to-agent,s,1)
+    exten => _X.,1,Goto(inbound,s,1)
+    exten => _+X.,1,Goto(inbound,s,1)
+    exten => _[a-zA-Z].,1,Goto(inbound,s,1)
+    exten => s,1,Goto(inbound,s,1)
+
+    [inbound]
+    exten => s,1,Set(INBOUND=to-linphone)
+     same => n,Goto(${INBOUND},s,1)
+
+    [to-linphone]
+    exten => s,1,NoOp(Halonet -> linphone: ${CALLERID(num)})
+     same => n,Dial(PJSIP/linphone,30)
+     same => n,Hangup()
 
     [to-agent]
     exten => s,1,NoOp(Halonet -> ElevenLabs: ${CALLERID(num)} -> ${DID})
@@ -245,8 +292,21 @@ data:
     exten => _40XXXXXXX,1,Goto(refused,s,1)
     exten => i,1,Goto(refused,s,1)
 
+    ; ── The linphone test extension ────────────────────────────────────────
+    ;   600          echo test: Asterisk <-> linphone audio only
+    ;   700          the ElevenLabs agent directly (no Halonet involved)
+    ;   PL numbers   out through Halonet, same allow-list as the agent
+    [from-linphone]
+    include => from-elevenlabs
+    exten => 600,1,Answer()
+     same => n,Echo()
+     same => n,Hangup()
+    exten => 700,1,NoOp(linphone -> ElevenLabs agent ${DID})
+     same => n,Dial(PJSIP/${DID}@elevenlabs,60)
+     same => n,Hangup()
+
     [to-pstn]
-    exten => _[1-9]XXXXXXXX,1,NoOp(ElevenLabs -> Halonet: ${EXTEN})
+    exten => _[1-9]XXXXXXXX,1,NoOp(-> Halonet: ${EXTEN})
      same => n,Set(CALLERID(num)=${DID})
      same => n,Dial(PJSIP/${EXTEN}@halonet,90)
      same => n,Hangup()
