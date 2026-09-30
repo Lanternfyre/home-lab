@@ -1,0 +1,256 @@
+# Asterisk's non-secret configuration. Credentials, the registrar and the DID
+# come from 1Password via asterisk.external-secret.yaml and are #include'd.
+#
+#   Halonet ──UDP 5060──▶ Asterisk ──TLS 5061──▶ sip.rtc.elevenlabs.io  (inbound)
+#   Halonet ◀──UDP 5060── Asterisk ◀──TLS 5061── ElevenLabs agent        (outbound)
+#                RTP both legs: UDP 20000-20099 on 167.86.81.59
+#
+# 🔴 167.86.81.59 IS HARD-CODED BELOW, deliberately. Binding the transports and
+# RTP to the PUBLIC address (rather than 0.0.0.0) is what keeps Asterisk off
+# wg0 and the CNI interfaces entirely -- it does not even listen there. It is
+# the same address as the `external-dns.alpha.kubernetes.io/target` annotation
+# on apps/envoy-gateway-edge/manifests/homelab-edge.gateway.yaml; if the VPS is
+# ever renumbered, both change together.
+#
+# ⚠️ There is no external_signaling_address / external_media_address / local_net
+# anywhere, and that is correct: hostNetwork means Asterisk's socket IS the
+# public address, so there is no NAT to describe. Adding them "to be safe"
+# would make Asterisk rewrite addresses that are already right.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: asterisk-config
+  namespace: voice
+data:
+  asterisk.conf: |
+    [directories]
+    astetcdir => /etc/asterisk
+    astmoddir => /usr/lib/asterisk/modules
+    astvarlibdir => /var/lib/asterisk
+    astdatadir => /var/lib/asterisk
+    astkeydir => /var/lib/asterisk
+    astagidir => /var/lib/asterisk/agi-bin
+    ; The root filesystem is read-only. astdb is the one thing Asterisk
+    ; writes outside spool/run/log, so it is moved onto the spool emptyDir.
+    astdbdir => /var/spool/asterisk
+    astspooldir => /var/spool/asterisk
+    astrundir => /var/run/asterisk
+    astlogdir => /var/log/asterisk
+    astsbindir => /usr/sbin
+
+    [options]
+    hideconnect = yes
+    ; No core dumps on a public node -- they would hold the SIP passwords.
+    dumpcore = no
+
+  logger.conf: |
+    [general]
+    dateformat = %F %T
+
+    [logfiles]
+    ; stdout only -- kubectl logs is the log. Nothing is written to disk.
+    console => notice,warning,error,verbose(3)
+
+  # Present only to turn CDR off: there is no database to write to, and the
+  # default is a CSV under the log emptyDir that nobody reads.
+  cdr.conf: |
+    [general]
+    enable = no
+
+  modules.conf: |
+    ; 🔴 autoload=no, and an explicit list. The image ships ~300 modules,
+    ; including AMI (manager, :5038), ARI/HTTP (:8088) and chan_sip. On a
+    ; public IP each one is a listener nobody asked for. What is not loaded
+    ; cannot answer.
+    [modules]
+    autoload = no
+
+    load = res_timing_timerfd.so
+    load = res_sorcery_config.so
+    load = res_sorcery_memory.so
+    load = res_sorcery_astdb.so
+    load = res_pjproject.so
+    load = res_pjsip.so
+    load = res_pjsip_session.so
+    load = res_pjsip_pubsub.so
+    load = chan_pjsip.so
+    load = res_pjsip_authenticator_digest.so
+    load = res_pjsip_outbound_authenticator_digest.so
+    load = res_pjsip_endpoint_identifier_ip.so
+    load = res_pjsip_endpoint_identifier_user.so
+    load = res_pjsip_outbound_registration.so
+    load = res_pjsip_sdp_rtp.so
+    load = res_pjsip_nat.so
+    load = res_pjsip_caller_id.so
+    load = res_pjsip_rfc3326.so
+    load = res_pjsip_dlg_options.so
+    load = res_pjsip_dtmf_info.so
+    load = res_rtp_asterisk.so
+
+    load = pbx_config.so
+    load = app_dial.so
+    load = func_callerid.so
+
+    load = bridge_simple.so
+    load = bridge_native_rtp.so
+
+    load = codec_alaw.so
+    load = codec_ulaw.so
+    load = codec_a_mu.so
+    load = codec_g722.so
+    load = codec_resample.so
+
+  rtp.conf: |
+    [general]
+    ; 🔴 MUST MATCH `edge_fw_host_service` in
+    ; ansible/roles/edge_firewall/defaults/main.yml. A port outside the opened
+    ; range is one-way audio with no error anywhere. 100 ports = ~25 calls
+    ; (RTP+RTCP per leg, two legs per call).
+    rtpstart = 20000
+    rtpend = 20099
+    strictrtp = yes
+    icesupport = no
+
+  pjsip.conf: |
+    [global]
+    type = global
+    user_agent = techyon-voice
+    ; ip: Halonet (identify below, by the registrar's resolved addresses).
+    ; auth_username: ElevenLabs. It has no static IPs, so it is identified by
+    ; the digest username it answers the 401 challenge with.
+    endpoint_identifier_order = ip,auth_username
+
+    [transport-udp]
+    type = transport
+    protocol = udp
+    bind = 167.86.81.59:5060
+
+    [transport-tls]
+    type = transport
+    protocol = tls
+    bind = 167.86.81.59:5061
+    cert_file = /etc/asterisk/tls/tls.crt
+    priv_key_file = /etc/asterisk/tls/tls.key
+    ca_list_file = /etc/ssl/certs/ca-certificates.crt
+    method = tlsv1_2
+    verify_server = yes
+    verify_client = no
+    require_client_cert = no
+
+    ; ── Halonet: UDP-only, registration-based ──────────────────────────────
+    ; Its auth, aor, identify and registration are in pjsip_secrets.conf
+    ; (the registrar and account are secrets). This is the part that is not.
+    ;
+    ; 🔴 5060/udp IS NOT OPEN ON THE EDGE FIREWALL. Halonet's INVITEs come back
+    ; along the flow Asterisk's own REGISTER opened, admitted by
+    ; `ct state established,related`. `qualify_frequency` on the aor keeps that
+    ; conntrack entry alive. If calls stop arriving while registration shows
+    ; Registered, Halonet is sending from a different address than it registers
+    ; on -- open 5060/udp source-restricted to that set, not to the world.
+    ;
+    ; A TEMPLATE (!), instantiated as [halonet](halonet-endpoint) in
+    ; pjsip_secrets.conf, which adds from_user/from_domain. Two plain
+    ; [halonet] endpoint sections would be two objects with one id.
+    [halonet-endpoint](!)
+    type = endpoint
+    transport = transport-udp
+    context = from-halonet
+    disallow = all
+    allow = alaw,ulaw
+    aors = halonet
+    outbound_auth = halonet-auth
+    direct_media = no
+    rtp_symmetric = yes
+    force_rport = yes
+    rewrite_contact = yes
+    media_address = 167.86.81.59
+    bind_rtp_to_media_address = yes
+    dtmf_mode = rfc4733
+    send_rpid = yes
+
+    ; ── ElevenLabs: TLS, digest both ways ──────────────────────────────────
+    [elevenlabs]
+    type = aor
+    contact = sip:sip.rtc.elevenlabs.io:5061;transport=tls
+    ; ElevenLabs does not promise to answer OPTIONS; a failed qualify would
+    ; mark the aor unavailable and refuse every inbound call.
+    qualify_frequency = 0
+
+    [elevenlabs]
+    type = endpoint
+    transport = transport-tls
+    context = from-elevenlabs
+    disallow = all
+    allow = alaw,ulaw,g722
+    aors = elevenlabs
+    ; Challenge every INVITE ElevenLabs sends (its outbound calls), and answer
+    ; its challenge on ours (its inbound calls). Same credential both ways.
+    auth = elevenlabs-auth
+    outbound_auth = elevenlabs-auth
+    direct_media = no
+    rtp_symmetric = yes
+    media_address = 167.86.81.59
+    bind_rtp_to_media_address = yes
+    media_encryption = no
+    dtmf_mode = rfc4733
+    from_domain = edge-1.techyon.dev
+
+    #include pjsip_secrets.conf
+
+  extensions.conf: |
+    [general]
+    static = yes
+    writeprotect = yes
+    autofallthrough = yes
+
+    ; DID (the Halonet number, E.164) comes from 1Password.
+    #include extensions_globals.conf
+
+    ; ── Inbound: anything Halonet delivers goes to the ElevenLabs agent ─────
+    ; The Request-URI user is whatever Halonet puts there (often the account
+    ; name, not the number), so it is not trusted as the target. ElevenLabs
+    ; routes on the number it imported, which is DID.
+    [from-halonet]
+    exten => _X.,1,Goto(to-agent,s,1)
+    exten => _+X.,1,Goto(to-agent,s,1)
+    exten => _[a-zA-Z].,1,Goto(to-agent,s,1)
+    exten => s,1,Goto(to-agent,s,1)
+
+    [to-agent]
+    exten => s,1,NoOp(Halonet -> ElevenLabs: ${CALLERID(num)} -> ${DID})
+     same => n,Dial(PJSIP/${DID}@elevenlabs,60)
+     same => n,Hangup()
+
+    ; ── Outbound: the ElevenLabs agent dials out through Halonet ────────────
+    ; 🔴 TOLL-FRAUD GUARD. A SIP trunk reachable from the internet that dials
+    ; anything is how a phone bill reaches five figures overnight. Polish
+    ; numbers only, and the premium-rate ranges are refused explicitly --
+    ; Asterisk picks the MORE SPECIFIC pattern, so the literal 70/30/40
+    ; prefixes below win over the [1-9] allow.
+    ;
+    ; ⚠️ Halonet is dialled with the NATIONAL 9-digit number. If Halonet
+    ; rejects that (403/404 on outbound), switch to ${EXTEN:1} (48XXXXXXXXX).
+    [from-elevenlabs]
+    exten => _+48[1-9]XXXXXXXX,1,Goto(to-pstn,${EXTEN:3},1)
+    exten => _48[1-9]XXXXXXXX,1,Goto(to-pstn,${EXTEN:2},1)
+    exten => _[1-9]XXXXXXXX,1,Goto(to-pstn,${EXTEN},1)
+    exten => _+4870XXXXXXX,1,Goto(refused,s,1)
+    exten => _+4830XXXXXXX,1,Goto(refused,s,1)
+    exten => _+4840XXXXXXX,1,Goto(refused,s,1)
+    exten => _4870XXXXXXX,1,Goto(refused,s,1)
+    exten => _4830XXXXXXX,1,Goto(refused,s,1)
+    exten => _4840XXXXXXX,1,Goto(refused,s,1)
+    exten => _70XXXXXXX,1,Goto(refused,s,1)
+    exten => _30XXXXXXX,1,Goto(refused,s,1)
+    exten => _40XXXXXXX,1,Goto(refused,s,1)
+    exten => i,1,Goto(refused,s,1)
+
+    [to-pstn]
+    exten => _[1-9]XXXXXXXX,1,NoOp(ElevenLabs -> Halonet: ${EXTEN})
+     same => n,Set(CALLERID(num)=${DID})
+     same => n,Dial(PJSIP/${EXTEN}@halonet,90)
+     same => n,Hangup()
+
+    [refused]
+    exten => s,1,NoOp(Refused outbound destination)
+     same => n,Hangup(21)

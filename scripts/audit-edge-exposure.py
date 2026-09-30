@@ -55,6 +55,16 @@ NODEPORT   no Service in the cluster allocates a NodePort. The edge node is a
            endpoint happens to be scheduled on the edge)  [live cluster]
            With --probe, every allocated TCP NodePort is also connected to on
            the public address; one that accepts is a FAIL regardless of policy.
+HOSTSVC    every edge_fw_host_service entry (a port opened for a hostNetwork
+           workload, not a Gateway listener) names a Deployment that exists, is
+           hostNetwork, and is pinned to the edge node. Otherwise it is a port
+           open to the internet answering nothing -- or answering from
+           something nobody declared                    [repo + live cluster]
+CONFINE    every hostNetwork workload behind a host service runs as a uid listed
+           in edge_fw_confined_uids, and every listed uid matches its
+           workload's runAsUser. The uid IS the nftables output rule; a
+           mismatch is a public workload that runs, works, and is unconfined
+                                                          [repo + live cluster]
 
 Exit codes
 ----------
@@ -191,6 +201,77 @@ def firewall_ports(path: str, yaml) -> tuple[dict[str, set[int]], dict[int, int]
         if isinstance(e, dict) and "public_port" in e and "listener_port" in e
     }
     return out, dnat
+
+
+def host_services(path: str, yaml) -> tuple[list[dict], list[dict]] | None:
+    """(edge_fw_host_service, edge_fw_confined_uids) from the firewall defaults.
+
+    Read separately from firewall_ports() on purpose: these are NOT Gateway
+    listeners, so the listener-parity checks must never see them -- an entry
+    here would otherwise be reported as an ORPHAN rule.
+    """
+    try:
+        with open(path) as fh:
+            data = yaml.safe_load(fh) or {}
+    except OSError as exc:
+        print(f"cannot read firewall defaults {path}: {exc}", file=sys.stderr)
+        return None
+    svcs = [e for e in (data.get("edge_fw_host_service") or []) if isinstance(e, dict)]
+    uids = [e for e in (data.get("edge_fw_confined_uids") or []) if isinstance(e, dict)]
+    return svcs, uids
+
+
+def check_host_services(r: Report, svcs: list[dict], uids: list[dict], quiet: bool) -> None:
+    """HOSTSVC and CONFINE -- ports opened for hostNetwork workloads."""
+    confined = {int(u["uid"]): u.get("workload") for u in uids if "uid" in u}
+    seen: dict[str, dict] = {}
+    for e in svcs:
+        what = (f"{e.get('proto', '?')}/"
+                + (f"{e['range'][0]}-{e['range'][1]}" if "range" in e else str(e.get("port"))))
+        wl = e.get("workload", "")
+        if "/" not in wl:
+            r.fail("HOSTSVC", f"edge_fw_host_service {what} names no `workload: ns/deployment`. "
+                              f"A port opened for nobody is a port open to the internet.")
+            continue
+        if wl not in seen:
+            ns, name = wl.split("/", 1)
+            seen[wl] = kubectl("-n", ns, "get", "deployment", name) or {}
+        spec = seen[wl].get("spec", {}).get("template", {}).get("spec", {})
+        if not spec:
+            r.fail("HOSTSVC", f"{what} is opened for {wl}, which does not exist. The port is "
+                              f"open on the public address and nothing is supposed to answer it.")
+            continue
+        if not spec.get("hostNetwork"):
+            r.fail("HOSTSVC", f"{what} is opened for {wl}, which is not hostNetwork -- so it "
+                              f"cannot be bound on the edge's public address at all.")
+            continue
+        sel = spec.get("nodeSelector") or {}
+        if sel.get("infrastructure.techyon.dev/location") != "edge":
+            r.fail("HOSTSVC", f"{wl} is hostNetwork but not pinned to the edge node; "
+                              f"the firewall entry for {what} exists only there.")
+            continue
+        r.ok("HOSTSVC", f"{what} -> {wl} (hostNetwork, edge)", quiet)
+
+    for wl, obj in seen.items():
+        spec = obj.get("spec", {}).get("template", {}).get("spec", {})
+        if not spec:
+            continue
+        uid = (spec.get("securityContext") or {}).get("runAsUser")
+        overrides = {
+            (c.get("securityContext") or {}).get("runAsUser")
+            for c in (spec.get("containers") or []) + (spec.get("initContainers") or [])
+        } - {None, uid}
+        if uid is None or overrides:
+            r.fail("CONFINE", f"{wl} does not pin one pod-level runAsUser, so no "
+                              f"edge_fw_confined_uids entry can match it -- it is unconfined.")
+        elif uid not in confined:
+            r.fail("CONFINE", f"{wl} runs as uid {uid}, which is not in edge_fw_confined_uids. "
+                              f"It can reach wg0, the pod network and localhost from the edge.")
+        elif confined[uid] != wl:
+            r.warn("CONFINE", f"uid {uid} is confined for `{confined[uid]}` but {wl} runs as "
+                              f"it too. Confined either way; the label is misleading.")
+        else:
+            r.ok("CONFINE", f"{wl} runs as uid {uid}, confined to the public NIC", quiet)
 
 
 def check_programmed(r: Report, listeners: list, quiet: bool) -> None:
@@ -578,6 +659,9 @@ def main() -> int:
     if listeners is None or fwres is None:
         return 2
     fw, dnat = fwres
+    hostres = host_services(args.firewall, yaml)
+    if hostres is None:
+        return 2
 
     namespaces = kubectl("get", "namespaces")
     if namespaces is None:
@@ -597,6 +681,7 @@ def main() -> int:
 
     r = Report()
     check_firewall(r, listeners, fw, dnat, args.quiet)
+    check_host_services(r, *hostres, args.quiet)
     check_programmed(r, listeners, args.quiet)
     check_routes(r, set(published), args.quiet)
     if not published:

@@ -5,10 +5,14 @@
 # is trusted; everything arriving on {{ edge_fw_public_iface }} is not, and is
 # dropped unless named below.
 #
-# ⚠️ INPUT ONLY. Nothing here touches forward or output, and that is
-# deliberate: Cilium and kube-proxy own the forward path and program their own
-# rules. A policy-drop forward chain here would break pod networking in a way
-# that looks like a CNI fault.
+# ⚠️ INPUT, plus ONE narrow output chain. Nothing here touches forward, and
+# that is deliberate: Cilium and kube-proxy own the forward path and program
+# their own rules. A policy-drop forward chain here would break pod networking
+# in a way that looks like a CNI fault.
+#
+# The output chain is `policy accept` and matches ONLY the uids in
+# edge_fw_confined_uids, so it changes nothing for the node, Cilium, kubelet or
+# the edge Envoy. See that variable for why it exists.
 
 # ── ATOMIC TABLE REPLACE, NOT `flush ruleset` ───────────────────────────────
 #
@@ -160,6 +164,12 @@ table inet edge_filter {
     iifname "{{ edge_fw_public_iface }}" tcp dport {{ r.listener_port }} accept
 {% endfor %}
 
+    # ── Host-bound services (hostNetwork workloads, not Gateway listeners) ──
+{% for r in edge_fw_host_service | default([]) %}
+    # {{ r.workload }}: {{ r.why | trim }}
+    iifname "{{ edge_fw_public_iface }}" {% if r.saddr | default([]) %}ip saddr { {{ r.saddr | join(', ') }} } {% endif %}{{ r.proto }} dport {% if r.range is defined %}{{ r.range[0] }}-{{ r.range[1] }}{% else %}{{ r.port }}{% endif %} accept
+{% endfor %}
+
     # 🔴 EVERYTHING ELSE IS DROPPED, and these are the ones that matter:
     #   10250/tcp     kubelet -- full node API, binds 0.0.0.0
     #    4240/tcp     Cilium health, binds 0.0.0.0
@@ -171,6 +181,33 @@ table inet edge_filter {
     # not what it binds. This chain is the only thing that closes them.
     counter comment "dropped-inbound"
   }
+{% if edge_fw_confined_uids | default([]) %}
+
+  # ── OUTBOUND CONFINEMENT: these uids reach the internet and nothing else ──
+  #
+  # `policy accept`: everything not owned by a listed uid passes untouched.
+  # For a listed uid, the only accepted interface is the public NIC. That
+  # closes wg0 (home nodes), cilium_host/lxc* (pods, and service IPs --
+  # socket-LB rewrites a ClusterIP to a pod IP before routing, so it too leaves
+  # via cilium_host), and lo (Envoy admin, kubelet, anything bound to
+  # 127.0.0.1).
+  #
+  # ⚠️ `meta skuid` is the socket owner as seen by the HOST. Pods here run
+  # without user namespaces, so runAsUser 20060 is host uid 20060 -- which is
+  # why Kyverno pins the number rather than merely requiring non-root.
+  #
+  # ⚠️ The confined workload must resolve names via the host's UPSTREAM
+  # resolvers (dnsPolicy: Default), which leave via the public NIC. Anything
+  # needing CoreDNS or 127.0.0.53 would be dropped here, and a DNS failure
+  # looks like the far end being down.
+  chain output {
+    type filter hook output priority filter; policy accept;
+{% for u in edge_fw_confined_uids %}
+    # {{ u.workload }}: {{ u.why | trim }}
+    meta skuid {{ u.uid }} oifname != "{{ edge_fw_public_iface }}" counter drop comment "confined-uid-{{ u.uid }}"
+{% endfor %}
+  }
+{% endif %}
 }
 {% if edge_fw_service_tcp_dnat | default([]) %}
 

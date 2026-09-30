@@ -5,7 +5,51 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-09-16 (scale-set retirement)
+Last updated: 2026-09-30 (VoIP on the edge)
+
+---
+
+## 🟡 VoIP: Asterisk on the edge (Halonet ⇄ ElevenLabs) — three steps before it works (2026-09-30)
+
+Asterisk runs `hostNetwork` on `k8s-edge1` and bridges the Halonet number
+(SIP/UDP only) to ElevenLabs Agents (SIP/TLS). See `EDGE-NODE.md` → "Asterisk".
+Everything is in git except these steps:
+
+### 1. Create the 1Password item — vault `Infrastructure`, item `voip-asterisk`
+
+| field | value |
+|---|---|
+| `halonet_registrar` | the SIP domain/server Linphone uses, no `sip:` (e.g. `sip.halonet.pl`) |
+| `halonet_username` | Linphone "Username" |
+| `halonet_auth_username` | Linphone "Auth ID"/"User ID"; **repeat the username** if there is none |
+| `halonet_password` | SIP password |
+| `halonet_number` | the number in E.164 (`+48…`). Must equal the number imported into ElevenLabs |
+| `elevenlabs_sip_username` | invent one, e.g. `el-trunk` |
+| `elevenlabs_sip_password` | long random string |
+
+⚠️ **Log Linphone out of the Halonet account first.** Two registrations on one
+account split or steal the incoming calls.
+
+### 2. Apply the edge firewall (sudo)
+
+```bash
+cd ansible && ansible-playbook playbooks/61-edge-firewall.yml --ask-become-pass
+```
+
+This opens 5061/tcp and 20000-20099/udp and adds the uid-20060 output
+confinement. **Run it before or together with the merge.** Without it Asterisk
+registers but no audio arrives and ElevenLabs cannot reach 5061.
+
+### 3. ElevenLabs dashboard: Phone numbers → Import → SIP trunk
+
+* Phone number: the same E.164 value as `halonet_number`
+* Inbound (ElevenLabs receives calls): digest auth, username and password from step 1
+* Outbound (the agent calls out): address `edge-1.techyon.dev:5061`, transport **TLS**,
+  digest auth with the same username and password, media encryption **Disabled** or **Allowed**
+* Assign the agent to the number
+
+Verify: `kubectl -n voice exec deploy/asterisk -- asterisk -rx 'pjsip show registrations'`
+→ `Registered`, then call the number from a mobile phone.
 
 ---
 

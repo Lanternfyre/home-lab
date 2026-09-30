@@ -75,6 +75,62 @@ edge_fw_service_tcp_dnat:
       exactly when someone reaches for a VPN. Cloudflare Tunnel cannot carry it
       either: gRPC over a public hostname is unsupported.
 
+# ── HOST-BOUND SERVICES THAT ARE NOT GATEWAY LISTENERS ──────────────────────
+#
+# A hostNetwork workload that binds its own ports on this node, rather than
+# being published through `homelab-edge`. Kept apart from edge_fw_service_*
+# DELIBERATELY: those pair 1:1 with Gateway listeners and
+# scripts/audit-edge-exposure.py fails any entry there with no listener. These
+# entries have no listener by definition; the audit checks each against the
+# `workload` it names instead.
+#
+# Entry shape: proto (tcp|udp), then `port` OR `range: [lo, hi]`, optional
+# `saddr: [cidr, ...]` to restrict the source, `workload: ns/deployment`, why.
+#
+# 🔴 Asterisk (apps: gitops/clusters/home/voice). SIP and RTP cannot go through
+# the edge Envoy -- see EDGE-NODE.md "Asterisk".
+#   * 5060/udp is ABSENT ON PURPOSE. Halonet's traffic comes back along the
+#     flow Asterisk's REGISTER opened (`ct state established,related`). Only if
+#     Halonet turns out to send INVITEs from other addresses, add it here WITH
+#     `saddr` -- never open to the world: 5060/udp is the most scanned port on
+#     the internet after 22.
+#   * The RTP range MUST equal rtpstart/rtpend in the asterisk-config
+#     ConfigMap. A mismatch is one-way or no audio, with no error anywhere.
+edge_fw_host_service:
+  - proto: tcp
+    port: 5061
+    workload: voice/asterisk
+    why: >-
+      SIP over TLS. ElevenLabs sends its agents' outbound calls here. It has no
+      static source IPs below its Enterprise tier, so this cannot be
+      source-restricted; digest auth and TLS are the control.
+  - proto: udp
+    range: [20000, 20099]
+    workload: voice/asterisk
+    why: >-
+      RTP for both call legs (Halonet and ElevenLabs), ~25 concurrent calls.
+      ElevenLabs' media addresses are dynamic, so no source restriction.
+
+# ── OUTBOUND CONFINEMENT BY UID ─────────────────────────────────────────────
+#
+# A process running as one of these uids may send out of the PUBLIC NIC and
+# nothing else: not wg0 (home nodes: 6443, 4240, VXLAN 8473), not the CNI
+# interfaces (the pod network, and service IPs via socket-LB), not lo (Envoy
+# admin 19001-19003, kubelet). Rendered as an `output` chain in edge_filter.
+#
+# This is the compensating control for a hostNetwork workload that strangers
+# can reach: hostNetwork carries the node's identity, so no
+# CiliumNetworkPolicy can confine it, and the node's own identity is what
+# edge-node-containment has to let through.
+#
+# 🔴 THE UID IS A CONTRACT WITH KYVERNO. `voice-pod-constraints` pins
+# runAsUser 20060 on any hostNetwork pod in `voice`. Change one without the
+# other and the workload runs, works, and is no longer confined.
+edge_fw_confined_uids:
+  - uid: 20060
+    workload: voice/asterisk
+    why: "Asterisk. Talks to Halonet and ElevenLabs on the internet and to nothing else."
+
 # The interface facing the internet. Everything on wg0 is trusted; everything
 # arriving here is not.
 edge_fw_public_iface: "{{ node_nic | default('eth0') }}"
