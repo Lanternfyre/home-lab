@@ -86,6 +86,8 @@ data:
     load = res_pjsip_dlg_options.so
     load = res_pjsip_dtmf_info.so
     load = res_rtp_asterisk.so
+    ; SRTP (SDES) for the ElevenLabs leg -- see media_encryption there.
+    load = res_srtp.so
 
     load = pbx_config.so
     load = app_dial.so
@@ -202,7 +204,14 @@ data:
     rtp_symmetric = yes
     media_address = 167.86.81.59
     bind_rtp_to_media_address = yes
-    media_encryption = no
+    ; 🔴 SDES-SRTP, NOT `no`. ElevenLabs (LiveKit) offers `RTP/SAVP` with
+    ; `a=crypto` lines; with media_encryption=no Asterisk finds no stream it
+    ; can accept and answers 488 Not Acceptable Here ("Couldn't negotiate
+    ; stream ... (nothing)"), even though the codecs match. Measured
+    ; 2026-09-30 with the pjsip logger. The SDES keys travel inside the SDP,
+    ; which is why this leg is TLS -- over plain TCP they would be readable.
+    ; The Halonet leg stays plain RTP; Asterisk bridges the two.
+    media_encryption = sdes
     dtmf_mode = rfc4733
     from_domain = edge-1.techyon.dev
 
