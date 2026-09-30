@@ -49,7 +49,9 @@ registers but no audio arrives and ElevenLabs cannot reach 5061.
 * Assign the agent to the number
 
 Verify: `kubectl -n voice exec deploy/asterisk -- asterisk -rx 'pjsip show registrations'`
-→ `Registered`, then call the number from a mobile phone.
+→ `Registered`, and `... -rx 'pjsip show contacts'` → the halonet contact `Avail`
+with an RTT. Then call the number from a mobile phone. If either check or the
+call fails, use the decision table in `EDGE-NODE.md` → "Asterisk".
 
 ---
 

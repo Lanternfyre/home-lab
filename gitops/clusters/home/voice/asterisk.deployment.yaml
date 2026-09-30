@@ -12,7 +12,7 @@
 #                 send out of the public NIC and nothing else -- not wg0, not
 #                 the pod network, not localhost.
 # `edge-node-containment` is irrelevant too: Asterisk needs nothing inside the
-# cluster (it resolves via the host, dnsPolicy: Default).
+# cluster (it resolves via public resolvers, dnsPolicy: None).
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -46,10 +46,20 @@ spec:
       serviceAccountName: asterisk
       automountServiceAccountToken: false
       hostNetwork: true
-      # Resolves through the host's upstream resolvers, depending on nothing
-      # in-cluster. (ClusterFirstWithHostNet would need CoreDNS, which the uid
-      # confinement forbids anyway.)
-      dnsPolicy: Default
+      # 🔴 EXPLICIT PUBLIC RESOLVERS, not `Default`. The uid confinement drops
+      # everything uid 20060 sends to lo, and the edge host runs
+      # systemd-resolved on 127.0.0.53. `Default` hands the pod whatever
+      # resolv.conf kubelet chose -- today k3s picks the upstream file, but if
+      # that ever becomes the stub, every lookup of the registrar and of
+      # sip.rtc.elevenlabs.io is silently dropped, and it reads as the far
+      # end being down. Same servers as `node_dns_servers` in
+      # ansible/inventory/group_vars/all.yml. ClusterFirstWithHostNet is out
+      # too: CoreDNS is on the pod network, which the confinement also forbids.
+      dnsPolicy: None
+      dnsConfig:
+        nameservers: ["1.1.1.1", "8.8.8.8"]
+        options:
+          - { name: ndots, value: "1" }
       enableServiceLinks: false
       nodeSelector:
         infrastructure.techyon.dev/location: edge

@@ -196,10 +196,10 @@ table inet edge_filter {
   # without user namespaces, so runAsUser 20060 is host uid 20060 -- which is
   # why Kyverno pins the number rather than merely requiring non-root.
   #
-  # ⚠️ The confined workload must resolve names via the host's UPSTREAM
-  # resolvers (dnsPolicy: Default), which leave via the public NIC. Anything
-  # needing CoreDNS or 127.0.0.53 would be dropped here, and a DNS failure
-  # looks like the far end being down.
+  # ⚠️ The confined workload must resolve names via PUBLIC resolvers
+  # (Asterisk: dnsPolicy None + dnsConfig 1.1.1.1/8.8.8.8), which leave via the
+  # public NIC. CoreDNS (pod network) and systemd-resolved (127.0.0.53, on lo)
+  # are both dropped here, and a DNS failure looks like the far end being down.
   chain output {
     type filter hook output priority filter; policy accept;
 {% for u in edge_fw_confined_uids %}

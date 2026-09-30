@@ -563,13 +563,21 @@ Deployment.
 
 ⚠️ **No CiliumNetworkPolicy, on purpose.** A hostNetwork pod carries the node
 identity and no CNP selects it; `edge-node-containment` is irrelevant because
-Asterisk needs nothing in-cluster (`dnsPolicy: Default`). A CNP here would read
+Asterisk needs nothing in-cluster. It resolves via `1.1.1.1`/`8.8.8.8` (`dnsPolicy: None`), because the uid rule drops the host's `127.0.0.53` stub. A CNP here would read
 like containment and do nothing.
 
-⚠️ **If calls stop arriving while `pjsip show registrations` says Registered**,
-Halonet is sending INVITEs from an address other than the one it registers
-on, so conntrack does not match them. Add 5060/udp to `edge_fw_host_service`
-**with `saddr`** set to Halonet's proxies. Never open it to the world.
+⚠️ **`qualify_frequency = 25` on the Halonet AOR does two jobs, and one can
+break the other.** It keeps the conntrack entry alive, which is the only reason
+5060/udp can stay closed. But PJSIP also refuses to `Dial` a contact whose
+qualify fails. First-run decision tree:
+
+| `pjsip show registrations` | `pjsip show contacts` (halonet) | inbound calls | meaning / fix |
+|---|---|---|---|
+| Registered | Avail, with RTT | arrive | the design works as intended |
+| Registered | Avail | **do not arrive** | Halonet sends INVITEs from an address other than its registrar, so conntrack does not match them. Add 5060/udp to `edge_fw_host_service` **with `saddr`** set to those proxies |
+| Registered | **Unavail** | may or may not arrive | the registrar does not answer OPTIONS, so **outbound calls fail** and conntrack is only refreshed by re-REGISTER (every 300s). Set `qualify_frequency = 0`, lower `expiration` to 60, and add 5060/udp with `saddr` |
+
+Never open 5060/udp to the world.
 
 ⚠️ `strategy: Recreate`, as for the edge Envoy (finding 14). A second pod could
 not bind the same ports, and two registrations would split the calls.
