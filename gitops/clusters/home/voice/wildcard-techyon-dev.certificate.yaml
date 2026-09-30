@@ -1,0 +1,22 @@
+# The cert ElevenLabs verifies when it dials sip:edge-1.techyon.dev:5061.
+#
+# Same idiom as `wildcard-techyon-dev` in gateway-edge (see
+# apps/envoy-gateway-edge/manifests/homelab-edge.gateway.yaml): a namespace-
+# local copy rather than a shared Secret, because a pod mounts Secrets from its
+# own namespace only, and cert-manager is happy to issue twice.
+#
+# DNS-01 via `cloudflare-ca`, so it needs neither port 80 nor the name to
+# resolve here. `edge-1.techyon.dev` already exists (external-dns, from the
+# ot-demo TCPRoute annotation), so no DNS record is added for SIP.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-techyon-dev
+  namespace: voice
+spec:
+  secretName: wildcard-techyon-dev-tls
+  dnsNames:
+    - "*.techyon.dev"
+  issuerRef:
+    kind: ClusterIssuer
+    name: cloudflare-ca

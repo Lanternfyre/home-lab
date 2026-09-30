@@ -1,0 +1,166 @@
+# H3 -- privilege containment in the `voice` namespace.
+#
+# `voice` is PSA `privileged` for exactly ONE reason: Asterisk needs
+# `hostNetwork` on the public edge node, because SIP and RTP cannot be proxied
+# through the edge Envoy (see bootstrap/namespaces/voice.yaml). Nothing there
+# needs privilege, host PID/IPC, host paths or added capabilities, and this
+# policy is what says so -- PSA has stopped enforcing it.
+#
+# Same shape as gateway-edge-pod-constraints, plus the hardening clauses of
+# edge-published-pod-constraints: Asterisk is reachable by strangers (5061/tcp,
+# RTP), so it must meet at least the bar a published workload meets.
+#
+# ── This is a DELIBERATE exception to edge-published-pod-constraints ────────
+# That policy says "a published workload may not share the host's network".
+# Asterisk does, because the alternative does not carry SIP. What makes the
+# exception tolerable is NOT this policy alone, it is the pair:
+#
+#   * here      -- a hostNetwork pod must run as uid 20060 and be pinned to the
+#                  edge node;
+#   * nftables  -- `edge_fw_confined_uids` in roles/edge_firewall drops every
+#                  packet uid 20060 sends out of any interface but the public
+#                  NIC. So a compromised Asterisk cannot reach wg0 (home nodes:
+#                  6443, 4240, VXLAN 8473), the pod network, or localhost
+#                  (Envoy admin 19001-19003, kubelet).
+#
+# 🔴 THE UID IS THE CONTRACT BETWEEN THE TWO. Change it here and the firewall
+# confines nobody; the pod still runs, still works, and is no longer contained.
+# That is why runAsUser is pinned to a literal below rather than merely
+# required to be non-root.
+#
+# 🔴 THE NODE PIN IS NOT TIDINESS. The output rule exists only on the edge node.
+# A hostNetwork Asterisk scheduled on a home node would sit on the LAN with
+# nothing confining it.
+#
+# ⚠️ The exemption keys on the ServiceAccount AND a label, both of which a pod
+# author sets. Unlike gateway-edge (where the controller applies the label),
+# nothing here is controller-minted: the namespace itself is the boundary, and
+# only ArgoCD writes to it.
+#
+# ⚠️ DO NOT add a hostPort test. Under hostNetwork the API server defaults
+# hostPort = containerPort (see gateway-edge-pod-constraints).
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: voice-pod-constraints
+spec:
+  validationActions: [Deny]
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: voice
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+    - name: isAsterisk
+      expression: >-
+        has(object.spec.serviceAccountName) &&
+        object.spec.serviceAccountName == 'asterisk' &&
+        has(object.metadata.labels) &&
+        'app.kubernetes.io/name' in object.metadata.labels &&
+        object.metadata.labels['app.kubernetes.io/name'] == 'asterisk'
+    - name: usesHostNetwork
+      expression: >-
+        has(object.spec.hostNetwork) && object.spec.hostNetwork == true
+  validations:
+    - expression: >-
+        !variables.usesHostNetwork || variables.isAsterisk
+      message: >-
+        Only Asterisk (ServiceAccount `asterisk`, label
+        app.kubernetes.io/name=asterisk) may use host networking in `voice`.
+    - expression: >-
+        !variables.usesHostNetwork ||
+        (has(object.spec.nodeSelector) &&
+         'infrastructure.techyon.dev/location' in object.spec.nodeSelector &&
+         object.spec.nodeSelector['infrastructure.techyon.dev/location'] == 'edge')
+      message: >-
+        A hostNetwork pod in `voice` must carry nodeSelector
+        infrastructure.techyon.dev/location=edge. The nftables rule confining
+        its uid exists only on the edge node; anywhere else it would sit on the
+        LAN unconfined.
+    - expression: >-
+        !variables.usesHostNetwork ||
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.runAsUser) &&
+         object.spec.securityContext.runAsUser == 20060 &&
+         variables.allContainers.all(c,
+           !has(c.securityContext) ||
+           !has(c.securityContext.runAsUser) ||
+           c.securityContext.runAsUser == 20060))
+      message: >-
+        A hostNetwork pod in `voice` must run as uid 20060 (pod-level, and no
+        container may override it). That uid is what `edge_fw_confined_uids`
+        in roles/edge_firewall confines to the public NIC; any other uid is
+        unconfined on a public node.
+    - expression: >-
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: "Nothing in `voice` may share the host PID or IPC namespace."
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath))
+      message: >-
+        No hostPath volumes in `voice`. It runs on a machine with a public IP;
+        its filesystem is not a shared resource.
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: "Nothing in `voice` may run privileged."
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) &&
+          c.securityContext.capabilities.drop.exists(d, d == 'ALL') &&
+          (!has(c.securityContext.capabilities.add) ||
+           size(c.securityContext.capabilities.add) == 0))
+      message: >-
+        Every container in `voice` must drop ALL capabilities and add none.
+        SIP 5060/5061 and RTP 20000-20099 are all above 1023, so
+        NET_BIND_SERVICE is never needed.
+    - expression: >-
+        (has(object.spec.securityContext) &&
+         has(object.spec.securityContext.runAsNonRoot) &&
+         object.spec.securityContext.runAsNonRoot == true) ||
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.runAsNonRoot) &&
+          c.securityContext.runAsNonRoot == true)
+      message: "A pod in `voice` must declare runAsNonRoot."
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          has(c.securityContext.readOnlyRootFilesystem) &&
+          c.securityContext.readOnlyRootFilesystem == true &&
+          has(c.securityContext.allowPrivilegeEscalation) &&
+          c.securityContext.allowPrivilegeEscalation == false)
+      message: >-
+        Every container in `voice` must set readOnlyRootFilesystem: true and
+        allowPrivilegeEscalation: false.
+    - expression: >-
+        has(object.spec.automountServiceAccountToken) &&
+        object.spec.automountServiceAccountToken == false
+      message: >-
+        A pod in `voice` must set automountServiceAccountToken: false. It is
+        reachable from the internet and needs nothing from the API server.
+    - expression: >-
+        variables.allContainers.all(c, c.image.contains('@sha256:'))
+      message: "Images in `voice` must be pinned by digest."
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.resources) &&
+          has(c.resources.limits) &&
+          'memory' in c.resources.limits)
+      message: "Every container in `voice` must set a memory limit."

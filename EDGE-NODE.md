@@ -519,6 +519,66 @@ the VPN with no extra service.
 
 ---
 
+## Asterisk: the second hostNetwork workload (2026-09-30)
+
+A Halonet phone number (SIP, **UDP only**, registration-based) bridged to
+ElevenLabs Agents (SIP over **TLS**; its UDP is "experimental, testing only").
+Asterisk is the B2BUA between the two. It lives in `gitops/clusters/home/voice/`.
+
+```
+Halonet ──UDP 5060──▶ Asterisk ──TLS 5061──▶ sip.rtc.elevenlabs.io   (inbound)
+Halonet ◀──UDP 5060── Asterisk ◀──TLS 5061── ElevenLabs agent         (outbound)
+             RTP both legs: UDP 20000-20099, bound to 167.86.81.59
+```
+
+**It is NOT behind the edge Envoy, and "edge → inner node" is the trap.**
+- RTP is a *range* of ports, but a Gateway listener is one port.
+- Envoy's UDP proxy only forwards flows a client starts. Everything Asterisk
+  starts never crosses it: REGISTER and OPTIONS to Halonet, its TLS to
+  ElevenLabs, its first RTP packets. With Asterisk at home, those leave through
+  the home NAT, so Halonet binds the registration there and sends its INVITEs
+  there too. Envoy would not even be in the path.
+- Envoy rewrites the source, so every remote party looks like the edge node.
+
+SIP puts addresses *inside* the payload, so the robust shape is that Asterisk's
+socket is the public address. Hence `hostNetwork` on `k8s-edge1`.
+
+**What this costs, and what pays for it.** It is a deliberate exception to
+`edge-published-pod-constraints` ("a published workload may not share the
+host's network"), and Asterisk's SIP stack is a bigger attack surface than
+Envoy. What compensates:
+
+| control | where | what |
+|---|---|---|
+| namespace `voice`, PSA privileged | `bootstrap/namespaces/voice.yaml` | **not** `edge-publish`-labelled. That label is for Gateway routes, and its policy would deny hostNetwork |
+| `voice-pod-constraints` | Kyverno | hostNetwork is allowed only for SA `asterisk`, **uid 20060**, nodeSelector edge. Also: no caps, read-only rootfs, image pinned by digest, no SA token |
+| inbound | `edge_fw_host_service` | 5061/tcp and 20000-20099/udp. **5060/udp is not open**: Halonet's replies and INVITEs return along the REGISTER flow (`ct established`), kept alive by `qualify_frequency=25` |
+| outbound | `edge_fw_confined_uids` | uid 20060 may send out of `eth0` only: not wg0, not cilium/lxc (pods, service IPs), not lo (Envoy admin, kubelet). Proven with a container before shipping: same uid, lo reachable before the rule, blocked after, internet unaffected, root unaffected |
+| Asterisk itself | ConfigMap | `autoload=no` plus an explicit module list (no AMI, ARI, HTTP or chan_sip). Transports bound to `167.86.81.59`, not `0.0.0.0`, so it does not even listen on wg0. Outbound dialplan is Polish numbers only, with premium ranges refused |
+
+🔴 **uid 20060 is a contract between Kyverno and nftables.** Change it in one
+place and the pod runs, works, and is no longer confined.
+`scripts/audit-edge-exposure.py` (CONFINE) checks the pairing against the live
+Deployment.
+
+⚠️ **No CiliumNetworkPolicy, on purpose.** A hostNetwork pod carries the node
+identity and no CNP selects it; `edge-node-containment` is irrelevant because
+Asterisk needs nothing in-cluster (`dnsPolicy: Default`). A CNP here would read
+like containment and do nothing.
+
+⚠️ **If calls stop arriving while `pjsip show registrations` says Registered**,
+Halonet is sending INVITEs from an address other than the one it registers
+on, so conntrack does not match them. Add 5060/udp to `edge_fw_host_service`
+**with `saddr`** set to Halonet's proxies. Never open it to the world.
+
+⚠️ `strategy: Recreate`, as for the edge Envoy (finding 14). A second pod could
+not bind the same ports, and two registrations would split the calls.
+
+Operator steps (1Password item `voip-asterisk`, the firewall run, the ElevenLabs
+trunk): `MANUAL-STEPS.md`.
+
+---
+
 ## Standing warnings
 
 * **The edge node is the first node in this fleet that is not trusted
@@ -532,6 +592,10 @@ the VPN with no extra service.
 * **`flannel-backend: none` and the storage invariants in
   [`CLAUDE.md`](CLAUDE.md) still apply**, and the storage one applies *by
   exception* here — write the exception down where the gate can see it.
+* **Two hostNetwork workloads run here now, not one.** The edge Envoy
+  (`gateway-edge`) and Asterisk (`voice`). The second is an exception to
+  `edge-published-pod-constraints`, contained by uid instead; see "Asterisk"
+  above. A third must justify itself the same way, not by pointing at these.
 * **Do not put the client VPN and the cluster underlay on one mechanism.** They
   are separated on purpose; the underlay must survive NetBird being broken.
 * **Verify against the live cluster.** Most of this repo's history is things

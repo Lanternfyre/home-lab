@@ -1,0 +1,34 @@
+# Asterisk: the Halonet (SIP/UDP) <-> ElevenLabs (SIP/TLS) bridge, running on
+# the public edge node. See EDGE-NODE.md "Asterisk -- the second hostNetwork
+# workload".
+#
+# ── Why `privileged`, and why NOT `edge-publish` ────────────────────────────
+# Asterisk runs `hostNetwork` on k8s-edge1 so it owns the public IP directly.
+# SIP carries addresses inside its payload and RTP is a RANGE of UDP ports, so
+# neither survives being proxied through the edge Envoy: a Gateway listener is
+# one port, Envoy's UDP proxy only forwards what a client started (Asterisk's
+# own REGISTER, its TLS to ElevenLabs and its first RTP packets never cross
+# it), and it rewrites the source. PSA `baseline` forbids hostNetwork, hence
+# `privileged` -- narrowed back by `voice-pod-constraints` (Kyverno) to one
+# ServiceAccount, one uid, one node class and no added privilege.
+#
+# 🔴 DO NOT add `homelab.techyon.dev/edge-publish: "true"`. That label is the
+# opt-in for Gateway ROUTES, and `edge-published-pod-constraints` forbids
+# hostNetwork outright -- it would deny the only pod this namespace exists for.
+# Nothing here attaches to `homelab-edge`.
+#
+# ⚠️ Same trap as gateway-edge: this label, the Kyverno policy and the workload
+# live in three different Applications with no sync-wave between them. Out of
+# order it self-heals (FailedCreate retries); look at
+#   kubectl -n voice get events --field-selector reason=FailedCreate
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: voice
+  labels:
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35

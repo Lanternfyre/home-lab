@@ -1,0 +1,127 @@
+# Asterisk on the public edge node, hostNetwork. Read
+# bootstrap/namespaces/voice.yaml for why it is not behind the edge Envoy, and
+# kyverno/manifests/voice-pod-constraints for what it may and may not be.
+#
+# ── Why there is NO CiliumNetworkPolicy in this directory ───────────────────
+# A hostNetwork pod IS the host: its traffic carries the node's identity, and no
+# CiliumNetworkPolicy selects it. A CNP here would be a file that reads like
+# containment and does nothing. The containment is:
+#   * inbound  -- roles/edge_firewall `edge_fw_host_service`: 5061/tcp and
+#                 20000-20099/udp only. 5060/udp is NOT open (see pjsip.conf).
+#   * outbound -- roles/edge_firewall `edge_fw_confined_uids`: uid 20060 may
+#                 send out of the public NIC and nothing else -- not wg0, not
+#                 the pod network, not localhost.
+# `edge-node-containment` is irrelevant too: Asterisk needs nothing inside the
+# cluster (it resolves via the host, dnsPolicy: Default).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: asterisk
+  namespace: voice
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: asterisk
+  namespace: voice
+  labels: { app.kubernetes.io/name: asterisk }
+  annotations:
+    # Asterisk reads config and certs at start only.
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 1
+  # 🔴 MANDATORY under hostNetwork, exactly as for the edge Envoy
+  # (EDGE-NODE.md finding 14): two pods cannot bind 5061 and the RTP range on
+  # one node, so a RollingUpdate surge pod would sit Pending forever. And two
+  # Asterisks registered to one Halonet account would split the calls.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app.kubernetes.io/name: asterisk }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: asterisk }
+    spec:
+      serviceAccountName: asterisk
+      automountServiceAccountToken: false
+      hostNetwork: true
+      # Resolves through the host's upstream resolvers, depending on nothing
+      # in-cluster. (ClusterFirstWithHostNet would need CoreDNS, which the uid
+      # confinement forbids anyway.)
+      dnsPolicy: Default
+      enableServiceLinks: false
+      nodeSelector:
+        infrastructure.techyon.dev/location: edge
+      tolerations:
+        - key: infrastructure.techyon.dev/edge
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      securityContext:
+        # 🔴 20060 IS THE CONTRACT with `edge_fw_confined_uids`. Kyverno pins it.
+        runAsNonRoot: true
+        runAsUser: 20060
+        runAsGroup: 20060
+        fsGroup: 20060
+        seccompProfile: { type: RuntimeDefault }
+      terminationGracePeriodSeconds: 10
+      containers:
+        - name: asterisk
+          # andrius/asterisk:22 (Asterisk 22.10.1, Debian trixie). Run as a
+          # non-root uid, the image's entrypoint skips its chown/usermod branch
+          # and execs the command as-is -- but the command is set explicitly
+          # anyway, because its default carries `-U asterisk -p` (drop to a
+          # user we already are; realtime priority we have no capability for).
+          image: andrius/asterisk@sha256:212326bd3f973a597be9e4747be5d6653802e4950159e95aa7d728e394de2012
+          command: ["/usr/sbin/asterisk"]
+          args: ["-f", "-n", "-vvv"]
+          # The image's WORKDIR is not readable by an arbitrary uid.
+          workingDir: /tmp
+          # hostNetwork: these ARE the host ports. Declared for readability;
+          # the API server defaults hostPort to match.
+          ports:
+            - { name: sip-udp, containerPort: 5060, protocol: UDP }
+            - { name: sip-tls, containerPort: 5061, protocol: TCP }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: { drop: ["ALL"] }
+          # exec, not tcpSocket: see memory "edge kubelet probe is world" --
+          # and a tcp probe on 5061 would be a TLS handshake log line every
+          # ten seconds for nothing.
+          startupProbe:
+            exec: { command: ["/usr/sbin/asterisk", "-rx", "core waitfullybooted"] }
+            periodSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            exec: { command: ["/usr/sbin/asterisk", "-rx", "core show uptime"] }
+            periodSeconds: 30
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: 50m, memory: 96Mi }
+            limits:   { memory: 384Mi }
+          volumeMounts:
+            - { name: config, mountPath: /etc/asterisk, readOnly: true }
+            - { name: run, mountPath: /var/run/asterisk }
+            - { name: spool, mountPath: /var/spool/asterisk }
+            - { name: log, mountPath: /var/log/asterisk }
+            - { name: tmp, mountPath: /tmp }
+      volumes:
+        - name: config
+          projected:
+            defaultMode: 0440
+            sources:
+              - configMap:
+                  name: asterisk-config
+              - secret:
+                  name: asterisk-secrets
+              - secret:
+                  name: wildcard-techyon-dev-tls
+                  items:
+                    - { key: tls.crt, path: tls/tls.crt }
+                    - { key: tls.key, path: tls/tls.key }
+        - { name: run, emptyDir: { medium: Memory, sizeLimit: 8Mi } }
+        - { name: spool, emptyDir: { sizeLimit: 64Mi } }
+        - { name: log, emptyDir: { sizeLimit: 64Mi } }
+        - { name: tmp, emptyDir: { medium: Memory, sizeLimit: 16Mi } }
