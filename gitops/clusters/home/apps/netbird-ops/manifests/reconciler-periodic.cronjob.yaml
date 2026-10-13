@@ -1,0 +1,174 @@
+# Runs the NetBird reconciler on a SCHEDULE, because the chart's own copy only
+# runs on an Argo sync -- and the failure it repairs is triggered by a pod
+# restart, which never produces one.
+#
+# ── 🔴 THE INCIDENT THIS CLOSES ─────────────────────────────────────────────
+#
+# Measured 2026-10-13. auq was unreachable over NetBird for ~19 days while
+# every health signal was green:
+#
+#   auq-auq-server pod            Running 27d, endpoint 10.245.9.122:5577 healthy
+#   HTTPRoute auq                 Accepted=True, ResolvedRefs=True
+#   Gateway homelab               PROGRAMMED=True, 192.168.32.18:443
+#   auq.lab.techyon.dev           -> 192.168.32.18 (correct)
+#   netbird-routing-peer          Running, 1 restart 19d ago
+#
+# The route was bound to a peer that no longer existed. `chart-values.yaml`
+# already names this exact mechanism, under `peerPrune`:
+#
+#   "The routing peer keeps its NetBird identity in an emptyDir, so a pod
+#    recreation registers a NEW peer with the same name and the old record
+#    lingers -- with the route still bound to it. [...] every VPN client was
+#    routed to a peer that no longer existed. The reconciler (0.1.13) binds the
+#    route to the newest incarnation and deletes the rest."
+#
+# So the repair existed and was correct. What was missing is that NOTHING RAN
+# IT. The chart's `reconciler-job.yaml` carries:
+#
+#   argocd.argoproj.io/hook: PostSync
+#
+# i.e. it fires on sync only. A routing-peer restart does not sync anything, so
+# the orphaned route sat there until a human noticed the VPN was dead. Argo
+# reported netbird-ops Synced/Healthy throughout -- truthfully, because every
+# resource it manages WAS present and none of them is a workload.
+#
+# ⚠️ THE ROUTING PEER'S `emptyDir{medium: Memory}` IS THE ROOT CAUSE; this is
+# the repair, not the cure. Giving that peer a persistent identity (chart
+# `netbird` 0.1.9, templates/routing-peer-deployment.yaml) would stop the
+# re-registration happening at all and make this CronJob redundant. That is a
+# chart change plus a release, so it is deliberately NOT bundled here -- but it
+# is the fix that would let this file be deleted.
+#
+# ── ⚠️ THIS DUPLICATES THE CHART'S JOB, AND THAT IS A REAL COST ─────────────
+#
+# Copied from helm-compendium `netbird` chart, templates/reconciler-job.yaml,
+# as published at targetRevision 0.1.14, with `chart-values.yaml`'s values
+# substituted by hand. If that template's env list, volumes or command change,
+# THIS FILE SILENTLY GOES STALE -- it renders fine and reconciles the wrong
+# thing. The honest alternative was a `reconciler.schedule` value in the chart
+# itself, which is the better home for it; this lives here because the ask was
+# a homelab-repo fix with no chart release in the path.
+#
+# 🟢 WHEN YOU TOUCH THE CHART'S RECONCILER, DIFF IT AGAINST THIS FILE. The
+# values below come from `../chart-values.yaml`; keep them in step with it, not
+# with memory.
+#
+# ── Safety of running it repeatedly ─────────────────────────────────────────
+#
+# The chart documents the script as idempotent for exactly this reason: "it
+# runs on every sync: routes are matched on network_id and written only when
+# they differ, and the setup key is created only when no valid key of that name
+# exists. A run that changes nothing logs that it changed nothing."
+#
+# ⚠️ `concurrencyPolicy: Forbid` stops this CronJob overlapping ITSELF. It
+# cannot stop it overlapping the chart's PostSync hook Job during a deploy.
+# Tolerated on the idempotency above rather than solved, and named here so the
+# next person does not have to rediscover that it is unguarded.
+#
+# 15 minutes is the worst-case VPN outage after a peer restart. It is a token
+# fetch plus a handful of API reads per run (96/day); the pairing-code rate
+# limit in auq is unrelated and untouched by this.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: netbird-ops-reconciler-periodic
+  namespace: netbird-ops
+  labels:
+    # 🔴 `app.kubernetes.io/name` MUST stay `netbird-reconciler`: it is the
+    # endpointSelector in reconciler-egress.ciliumnetworkpolicy.yaml, and that
+    # policy sets enableDefaultDeny.egress. A pod without this label cannot
+    # reach authentik, the NetBird API, or the apiserver -- it would start,
+    # fail every call, and look like a credentials problem.
+    app.kubernetes.io/name: netbird-reconciler
+    app.kubernetes.io/instance: netbird-ops
+    app.kubernetes.io/component: reconciler
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  # A missed window (node down, controller restart) should just wait for the
+  # next one; replaying a backlog of reconciles buys nothing idempotent.
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      # Same reasoning as the chart: a failure should be visible, not retried
+      # into a crashloop that buries the first error.
+      backoffLimit: 1
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: netbird-reconciler
+            app.kubernetes.io/instance: netbird-ops
+            app.kubernetes.io/component: reconciler
+        spec:
+          restartPolicy: Never
+          serviceAccountName: netbird-ops-reconciler
+          # 🔴 The one pod here that carries a token, which is why netbird-ops
+          # is a NON-published namespace. See chart-values.yaml's header.
+          automountServiceAccountToken: true
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            fsGroup: 65532
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: reconcile
+              image: "docker.io/library/python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
+              imagePullPolicy: IfNotPresent
+              command: ["python3", "/script/reconcile.py"]
+              env:
+                - name: NETBIRD_API
+                  value: "https://vpn.techyon.dev"
+                - name: AUTHENTIK_TOKEN_URL
+                  value: "https://authentik.techyon.dev/application/o/token/"
+                # ⚠️ The SAME public client the dashboard and CLI use. NetBird
+                # validates the token issuer against one configured value.
+                - name: AUTHENTIK_CLIENT_ID
+                  value: "netbird"
+                - name: AUTHENTIK_USERNAME
+                  value: "netbird-reconciler"
+                - name: AUTHENTIK_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: netbird-reconciler-credentials
+                      key: password
+                - name: SETUP_KEY_NAMESPACE
+                  value: "netbird"
+                - name: SETUP_KEY_SECRET
+                  value: "netbird-setup-key"
+                - name: SETUP_KEY_FIELD
+                  value: "setup-key"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  memory: 128Mi
+              volumeMounts:
+                - { name: script, mountPath: /script, readOnly: true }
+                - { name: desired, mountPath: /config, readOnly: true }
+                # readOnlyRootFilesystem with nowhere to write has broken pods
+                # in this chart before; python wants a scratch dir.
+                - { name: tmp, mountPath: /tmp }
+              workingDir: /tmp
+          volumes:
+            # 🔴 Both ConfigMaps are rendered by the CHART, not by this file.
+            # If the chart's release name ever stops being `netbird-ops`, these
+            # names break and the pod fails to mount.
+            - name: script
+              configMap:
+                name: netbird-ops-reconciler-script
+            - name: desired
+              configMap:
+                name: netbird-ops-reconciler-desired
+            - name: tmp
+              emptyDir: {}
