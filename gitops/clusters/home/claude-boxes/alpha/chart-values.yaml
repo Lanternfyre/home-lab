@@ -83,3 +83,35 @@ networkPolicy:
         - matchName: api.openai.com
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    # GitHub Actions log storage + crates.io egress. Opened 2026-10-13
+    # (operator decision, cut from #2277 + #2208) -- both hosts fail the same
+    # way the codex hosts above did: TCP connect with no HTTP response
+    # (`dial tcp 20.209.227.33:443: i/o timeout`) while api.github.com
+    # returns 200 and DNS resolves. Name-based filtering, not CIDR; a
+    # missing FQDN hangs rather than failing.
+    #
+    # Each host with the reason it is open:
+    #   *.blob.core.windows.net  GitHub Actions log storage. The `sa<N>`
+    #                            prefix rotates (observed productionresultssa0
+    #                            / productionresultssa1), so a wildcard is
+    #                            required -- two matchName entries would not
+    #                            survive the next rotation.
+    #   crates.io / *.crates.io  the crate index and static asset host
+    #   static.rust-lang.org     rustup/cargo toolchain downloads
+    #   sh.rustup.rs             the rustup installer script
+    #
+    # ⚠️ matchPATTERN, not matchName, for every wildcard entry here -- matchName
+    # is validated against `^([-a-zA-Z0-9_]+[.]?)+$` and rejects `*` outright.
+    # As matchName a wildcard entry does not merely fail to match: the CRD
+    # rejects the WHOLE object, so every other change in the same apply never
+    # reaches the cluster either, while ArgoCD keeps reporting Synced/Healthy
+    # -- the only visible symptom is a ComparisonError on the Application.
+    # See runner-egress.ciliumnetworkpolicy.yaml, which hit exactly this.
+    - toFQDNs:
+        - matchPattern: "*.blob.core.windows.net"
+        - matchName: crates.io
+        - matchPattern: "*.crates.io"
+        - matchName: static.rust-lang.org
+        - matchName: sh.rustup.rs
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
