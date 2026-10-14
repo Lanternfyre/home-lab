@@ -83,3 +83,45 @@ networkPolicy:
         - matchName: api.openai.com
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+  # Actions log storage + the Rust registry and toolchain. Opened 2026-10-14
+  # (operator decision, Lanternfyre/claude-workbench#2288). Both presented
+  # exactly like the codex hosts above: TCP connect with NO HTTP response --
+  # `dial tcp 20.209.227.33:443: i/o timeout` -- while api.github.com returned
+  # 200 and DNS resolved. Name-based filtering again, not a permission gap:
+  # `actions:read` is granted and no auth is involved at the point of failure.
+  #
+  # What each one unblocks:
+  #   *.blob.core.windows.net  Actions LOG storage. `gh run view --log-failed`
+  #                            downloads from here, so /wf-green's central step
+  #                            was unrunnable. Observed hosts were
+  #                            productionresultssa0. and productionresultssa1.;
+  #                            the sa<N> prefix ROTATES, so a wildcard is
+  #                            required rather than two matchName entries.
+  #                            Filed as claude-workbench#2277.
+  #   crates.io, *.crates.io   the cargo index and crate downloads -- `cargo
+  #                            build`/`test` of ANY crate failed without them.
+  #                            `*` spans exactly one label, so this covers
+  #                            index.crates.io and static.crates.io.
+  #                            Filed as claude-workbench#2208 (severity:high),
+  #                            whose accepted answer was "mirror, vendor, or
+  #                            egress" -- this is the egress mechanism.
+  #   static.rust-lang.org     toolchain and component downloads
+  #   sh.rustup.rs             the rustup installer
+  #
+  # ⚠️ matchPATTERN, not matchName, for both wildcards. matchName is validated
+  # against '^([-a-zA-Z0-9_]+[.]?)+$' and rejects `*` outright -- as matchName
+  # the entry does not merely fail to match, the CRD rejects the WHOLE object,
+  # so every other change in the same apply never reaches the cluster and the
+  # box keeps running the last valid version, while ArgoCD reports Synced
+  # throughout (the error surfaces only as a ComparisonError on the
+  # Application). This is copied verbatim from the ARC runner policy
+  # (apps/arc-lanternfyre/manifests/runner-egress.ciliumnetworkpolicy.yaml),
+  # which carries both entries and the same warning, rather than invented here.
+    - toFQDNs:
+        - matchPattern: "*.blob.core.windows.net"
+        - matchName: crates.io
+        - matchPattern: "*.crates.io"
+        - matchName: static.rust-lang.org
+        - matchName: sh.rustup.rs
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
