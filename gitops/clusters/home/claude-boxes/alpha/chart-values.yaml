@@ -37,7 +37,10 @@ image:
   # 0.1.10 is the first whose gh uses the broker-minted App token.
   # 0.1.11: seed-repos leaves the inherited working directory, so a FRESH
   # volume clones (docker-compendium #19; box2/box3 cloned nothing on 0.1.10).
-  tag: "0.1.14"
+  # 0.1.15 is the first that starts a session in bypassPermissions -- the mode
+  # is set in the image's managed-settings layer, which nothing inside the box
+  # can override (docker-compendium #26; Lanternfyre/claude-workbench#2326).
+  tag: "0.1.15"
 
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
