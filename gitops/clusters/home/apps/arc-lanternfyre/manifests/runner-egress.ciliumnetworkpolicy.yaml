@@ -221,6 +221,46 @@ spec:
         - matchName: plugins.gradle.org
         - matchName: plugins-artifacts.gradle.org
         - matchName: nodejs.org
+        # ── Temurin JDK metadata, added 2026-10-15 for the Android APK build ──
+        # `actions/setup-java` with `distribution: temurin` resolves the JDK
+        # from the Adoptium API before it downloads anything:
+        # `src/distributions/temurin/installer.ts:165` (read at the @v5 tag)
+        # builds `https://api.adoptium.net/v3/assets/version/...`, and :182
+        # validates its own pagination against the same host, so paging adds
+        # no further names.
+        #
+        # ⚠️ THIS IS THE SECOND FAULT, NOT THE FIRST, and the distinction is
+        # why it was never reached. Every APK run since 2026-09-22 died in
+        # ~1 second inside `actions/setup-java@v4`, which declares
+        # `using: node20` and is silently killed on the node24 the runner now
+        # forces -- it never got as far as dialling this host. The action pin
+        # is fixed in github-actions-compendium
+        # (`expo-android.yaml`, setup-java/setup-node @v5); THIS rule is what
+        # stops the resolve hanging once that fix lets it actually run.
+        #
+        # ⚠️ The DOWNLOAD needs nothing new. The API returns a
+        # `github.com/adoptium/...` release-asset link, which redirects into
+        # the *.githubusercontent.com constellation -- both already allowed
+        # above. That redirect hop is the one part of this NOT verified from
+        # the agent box, which cannot reach api.adoptium.net either (the curl
+        # hangs 12s and times out -- the same signature this file documents
+        # throughout). Confirm with `hubble observe --verdict DROPPED` on the
+        # first run after this syncs.
+        #
+        # ⚠️ Deliberately NOT packages.adoptium.net. That is the apt/deb
+        # repository, used when INSTALLING Temurin as a package;
+        # `actions-runner-android`'s Dockerfile explicitly avoids it and takes
+        # the JDK from the distro instead, for this very allowlist's sake. The
+        # runner path needs the API only.
+        #
+        # The alternative to this rule is baking JDK 17 into
+        # $RUNNER_TOOL_CACHE the way that image already bakes Node (layout
+        # plus the `<arch>.complete` sentinel), which would make setup-java a
+        # cache hit and need no egress at all. Not taken here: the cache path
+        # for temurin is `Java_Temurin-Hotspot_jdk`, and filling it with
+        # Ubuntu's openjdk-17 would make the directory name assert a vendor
+        # the bytes do not come from. One honest FQDN beats a cache that lies.
+        - matchName: api.adoptium.net
         - matchPattern: "*.blob.core.windows.net"
       toPorts:
         - ports:
