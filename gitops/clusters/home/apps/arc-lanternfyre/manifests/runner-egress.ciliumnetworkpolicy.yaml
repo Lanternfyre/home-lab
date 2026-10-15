@@ -261,6 +261,38 @@ spec:
         # Ubuntu's openjdk-17 would make the directory name assert a vendor
         # the bytes do not come from. One honest FQDN beats a cache that lies.
         - matchName: api.adoptium.net
+        # ── React Native's own Maven repo, added 2026-10-15 ───────────────────
+        # 🔴 THE REDIRECT-PAIR TRAP AGAIN, AND THIS TIME MEASURED ON A REAL RUN.
+        # `mavenCentral()` is the declared repository and `repo.maven.apache.org`
+        # is already allowed above -- but React Native 0.86 does NOT publish
+        # `com.facebook.react:react-android` to Central. Gradle asks Central,
+        # follows through to `repo.reactnative.dev`, and THAT is the GET that
+        # dies. The error names the allowed host first and the denied host
+        # second, so it reads as Central being broken:
+        #
+        #   > Could not get resource
+        #     'https://repo.maven.apache.org/maven2/.../react-android-0.86.3-release.aar'
+        #      > Could not GET
+        #        'https://repo.reactnative.dev/maven2/.../react-android-0.86.3-release.aar'
+        #         > Network is unreachable
+        #
+        # Measured on run 38793761498 (2026-10-15, the first run to reach Gradle
+        # since 2026-09-18): `:app:assembleRelease` failed with 8 task failures,
+        # EVERY ONE of them this same single missing host, surfacing once per
+        # consuming module (`react-native-async-storage`,
+        # `react-native-safe-area-context`, and six more).
+        #
+        # ⚠️ Note the failure MODE differs from the hangs this file documents
+        # elsewhere: `Network is unreachable` arrives fast rather than sitting
+        # until a deadline. So "a missing FQDN hangs" is the common case, not the
+        # only one -- do not read a fast network error as evidence that the
+        # allowlist is innocent.
+        #
+        # Only this one host was missing: every failed GET in that run resolves
+        # to `repo.reactnative.dev` and nothing else, checked rather than assumed
+        # (`grep -oE "Could not GET 'https?://[^/']+"` over the whole job log ->
+        # 8 occurrences, 1 distinct host).
+        - matchName: repo.reactnative.dev
         - matchPattern: "*.blob.core.windows.net"
       toPorts:
         - ports:
