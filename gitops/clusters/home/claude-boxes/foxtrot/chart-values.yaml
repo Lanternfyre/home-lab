@@ -1,0 +1,142 @@
+# foxtrot's values for the claude-box chart -- box3, https://box3.lab.techyon.dev.
+#
+# One of the three TECHYON boxes (delta, echo, foxtrot; added 2026-10-22). The
+# Lanternfyre boxes (alpha, bravo, charlie) live on lanternfyre.dev; this group
+# took over the box1-3.lab.techyon.dev names they left. Same shape as bravo and
+# charlie otherwise: no shared ClusterRole, 20Gi, auq through the sidecar.
+
+# One `owner/repo` per entry: what seed-repos clones AND what the broker's token
+# covers. An edit rescopes the token within 45 minutes, with no restart.
+repos:
+  - t3chy0n/flx
+  - t3chy0n/admin-panel-boilerplate
+
+console:
+  hostname: box3.lab.techyon.dev
+  # Distinct from the Lanternfyre boxes' `box3` tile on the homepage.
+  homepageName: techyon-box3
+
+# 🔴 techyon boxes mint for the t3chy0n installation ONLY. The chart default is
+# both orgs; pinned here, a Lanternfyre repo added to `repos:` fails the render
+# instead of quietly handing this box a Lanternfyre token.
+#
+# ⚠️ Separation by token scope, not by key: the GitHub App, its private key and
+# the console item (ttyd credential, SSH host key) are SHARED with the
+# Lanternfyre boxes (operator, 2026-10-22). Hard isolation would need a second
+# GitHub App.
+github:
+  installations:
+    - t3chy0n
+
+# 🔴 alpha owns the shared `claude-box-reader` ClusterRole. A second release that
+# also rendered it would put two Applications on one cluster-scoped object.
+# This box still gets its own binding to it, `claude-box-foxtrot-reader`.
+rbac:
+  clusterRole:
+    create: false
+
+# 20Gi, like bravo and charlie (operator, 2026-10-22).
+# ⚠️ To grow it later, resize the CLAIM, not this value -- see bravo's
+# chart-values.yaml for why, and update protected-volumes.yaml with it:
+#   kubectl -n claude-box-foxtrot patch pvc home-claude-box-foxtrot-0 \
+#     -p '{"spec":{"resources":{"requests":{"storage":"40Gi"}}}}'
+storage:
+  size: 20Gi
+
+# Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
+# default image tag follows the chart version, not the workspace release.
+image:
+  tag: "0.1.16"
+
+# auq through the sidecar, on a token SHARED with claude-box-charlie: the item
+# "Claude Box Charlie auq" (operator, 2026-10-22 -- one auq, reuse the tokens rather
+# than pair three more devices). The cost is the one bravo's comment names the
+# other way round: unpairing that device in auq cuts off BOTH boxes. To split
+# them later, pair a device `claude-box-foxtrot`, store it as "Claude Box Foxtrot auq",
+# and change this one line.
+#
+# The chart mounts the bearer secret without `optional`, so if the item is ever
+# renamed or removed the pod sticks in ContainerCreating on its next start.
+auqProxy:
+  enabled: true
+  onePasswordItem: "Claude Box Charlie auq"
+
+# Sibling-only restart rights, within the techyon group: these OTHER boxes'
+# service accounts may get/delete THIS box's pod, and nothing else.
+restartableBy:
+  serviceAccounts:
+    - {namespace: claude-box-delta, name: claude-box-delta}
+    - {namespace: claude-box-echo, name: claude-box-echo}
+# Codex egress. Opened 2026-09-22 (operator decision) because `codex login`
+# needs a browser and `codex login --device-auth` HUNG on the box: every
+# OpenAI host timed out exactly like the known-blocked ghcr.io, while
+# api.github.com returned 200 — name-based filtering, not CIDR. A missing
+# FQDN hangs rather than failing, which is precisely how it presented.
+#
+# ⚠️ extraEgress, NOT registryFqdns. Helm REPLACES lists rather than merging
+# them, so setting registryFqdns here would silently drop npm / pypi /
+# pythonhosted / nuget / context7 from this box. extraEgress defaults to []
+# and is appended verbatim, so this is purely additive.
+#
+# Each host with the reason it is open — the ChatGPT-account login flow was
+# the mode chosen (operator, 2026-09-22); an API-key-only setup needs just
+# the third:
+#   auth.openai.com  the browser / --device-auth flow authenticates here
+#   chatgpt.com      ChatGPT-plan runtime calls (backend-api/codex)
+#   api.openai.com   the API host, used when codex is pointed at a key
+#
+# ⚠️ matchName only — a `*` in matchName rejects the WHOLE policy while ArgoCD
+# keeps reporting Synced. If login still hangs after this, take the next host
+# from `hubble observe --verdict DROPPED`, never from guesswork: this list was
+# derived from codex's documented flow, NOT from observed drop verdicts, because
+# the hubble CLI is not present in the box.
+networkPolicy:
+  extraEgress:
+    - toFQDNs:
+        - matchName: auth.openai.com
+        - matchName: chatgpt.com
+        - matchName: api.openai.com
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+  # Actions log storage + the Rust registry and toolchain. Opened 2026-10-14
+  # (operator decision, Lanternfyre/claude-workbench#2288). Both presented
+  # exactly like the codex hosts above: TCP connect with NO HTTP response --
+  # `dial tcp 20.209.227.33:443: i/o timeout` -- while api.github.com returned
+  # 200 and DNS resolved. Name-based filtering again, not a permission gap:
+  # `actions:read` is granted and no auth is involved at the point of failure.
+  #
+  # What each one unblocks:
+  #   *.blob.core.windows.net  Actions LOG storage. `gh run view --log-failed`
+  #                            downloads from here, so /wf-green's central step
+  #                            was unrunnable. Observed hosts were
+  #                            productionresultssa0. and productionresultssa1.;
+  #                            the sa<N> prefix ROTATES, so a wildcard is
+  #                            required rather than two matchName entries.
+  #                            Filed as claude-workbench#2277.
+  #   crates.io, *.crates.io   the cargo index and crate downloads -- `cargo
+  #                            build`/`test` of ANY crate failed without them.
+  #                            `*` spans exactly one label, so this covers
+  #                            index.crates.io and static.crates.io.
+  #                            Filed as claude-workbench#2208 (severity:high),
+  #                            whose accepted answer was "mirror, vendor, or
+  #                            egress" -- this is the egress mechanism.
+  #   static.rust-lang.org     toolchain and component downloads
+  #   sh.rustup.rs             the rustup installer
+  #
+  # ⚠️ matchPATTERN, not matchName, for both wildcards. matchName is validated
+  # against '^([-a-zA-Z0-9_]+[.]?)+$' and rejects `*` outright -- as matchName
+  # the entry does not merely fail to match, the CRD rejects the WHOLE object,
+  # so every other change in the same apply never reaches the cluster and the
+  # box keeps running the last valid version, while ArgoCD reports Synced
+  # throughout (the error surfaces only as a ComparisonError on the
+  # Application). This is copied verbatim from the ARC runner policy
+  # (apps/arc-lanternfyre/manifests/runner-egress.ciliumnetworkpolicy.yaml),
+  # which carries both entries and the same warning, rather than invented here.
+    - toFQDNs:
+        - matchPattern: "*.blob.core.windows.net"
+        - matchName: crates.io
+        - matchPattern: "*.crates.io"
+        - matchName: static.rust-lang.org
+        - matchName: sh.rustup.rs
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
