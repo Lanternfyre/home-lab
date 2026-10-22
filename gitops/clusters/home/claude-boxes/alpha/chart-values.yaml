@@ -24,8 +24,18 @@ repos:
   - Lanternfyre/Necronia2.0
 
 console:
-  hostname: box1.lab.techyon.dev
+  # Moved from box1.lab.techyon.dev on 2026-10-22: Lanternfyre work lives on
+  # lanternfyre.dev, and box1.lab.techyon.dev now belongs to a techyon box.
+  hostname: box1.lab.lanternfyre.dev
   homepageName: box1
+
+# 🔴 lanternfyre boxes mint for the Lanternfyre installation ONLY (2026-10-22).
+# The chart default is both orgs; with t3chy0n listed, an edit that added a
+# t3chy0n repo to `repos:` would quietly widen this box into the techyon boxes'
+# territory. With it absent, that edit fails the render instead.
+github:
+  installations:
+    - lanternfyre
 
 # 🔴 Pin the workspace image. The chart's default is Chart.appVersion, but the
 # shared publish step stamps appVersion with the CHART version when no
