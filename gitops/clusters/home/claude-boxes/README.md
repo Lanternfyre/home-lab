@@ -19,12 +19,22 @@ carries only what differs per box.
 | `alpha` | `https://box1.lab.lanternfyre.dev` | Lanternfyre | 40Gi | on |
 | `bravo` | `https://box2.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
 | `charlie` | `https://box3.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
+| `delta` | `https://box1.lab.techyon.dev` | t3chy0n | 20Gi | on (alpha's token) |
+| `echo` | `https://box2.lab.techyon.dev` | t3chy0n | 20Gi | on (bravo's token) |
+| `foxtrot` | `https://box3.lab.techyon.dev` | t3chy0n | 20Gi | on (charlie's token) |
 
 **Two groups, split by DNS domain (2026-10-22).** Lanternfyre work is on
 `lanternfyre.dev`, techyon work on `techyon.dev`. A group's boxes pin
 `github.installations` to their own org, so a repo from the other org fails the
 render instead of quietly widening the token. The domain is only the
 hostname -- the gate, the Gateway and the listener are the same for both.
+
+What the two groups SHARE (operator, 2026-10-22): the GitHub App and its key,
+the console item (one ttyd credential and SSH host key for all six), the GHCR
+pull secret, the github MCP proxy's PAT, and the auq device tokens -- each
+techyon box reuses its Lanternfyre counterpart's, so unpairing that device in
+auq cuts off both. What differs: repos, `github.installations`, hostname, and
+the Anthropic account each box is `/login`-ed with.
 
 `bravo` and `charlie` were added on 2026-09-13 as copies of alpha, with three
 differences, each explained in their `chart-values.yaml`:

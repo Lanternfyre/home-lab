@@ -371,6 +371,45 @@ protected:
       NONE, for the same reasons as alpha: reconstructible except UNPUSHED
       work, which the box is expected to push.
 
+  - namespace: claude-box-delta
+    claim: home-claude-box-delta-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      box1.lab.techyon.dev's $HOME (claude-boxes/delta, a techyon box): the same
+      contents as alpha's above -- the Anthropic OAuth credential, shell
+      history and skills, and working checkouts of the t3chy0n repositories in
+      its chart-values.yaml.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
+  - namespace: claude-box-echo
+    claim: home-claude-box-echo-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      box2.lab.techyon.dev's $HOME (claude-boxes/echo, a techyon box): the same
+      contents as alpha's above -- the Anthropic OAuth credential, shell
+      history and skills, and working checkouts of the t3chy0n repositories in
+      its chart-values.yaml.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
+  - namespace: claude-box-foxtrot
+    claim: home-claude-box-foxtrot-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      box3.lab.techyon.dev's $HOME (claude-boxes/foxtrot, a techyon box): the same
+      contents as alpha's above -- the Anthropic OAuth credential, shell
+      history and skills, and working checkouts of the t3chy0n repositories in
+      its chart-values.yaml.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning

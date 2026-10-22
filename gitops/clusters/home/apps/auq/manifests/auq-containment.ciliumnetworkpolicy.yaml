@@ -51,6 +51,14 @@ spec:
             io.kubernetes.pod.namespace: claude-box-bravo
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-charlie
+        # The techyon boxes (claude-boxes/delta, echo, foxtrot; 2026-10-22),
+        # reusing the Lanternfyre boxes' device tokens pairwise.
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-delta
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-echo
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-foxtrot
 
     # Prometheus. Nothing scrapes auq today; allowed so that adding a
     # ServiceMonitor later is not a silent metrics gap.
