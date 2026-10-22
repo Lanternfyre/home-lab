@@ -65,6 +65,27 @@ data:
           # Envoy behind it.
           originServerName: authentik.techyon.dev
 
+      # ── lanternfyre.dev: ONE wildcard rule for the whole domain ───────────
+      # Added 2026-10-22 with the second domain. A wildcard here instead of a
+      # rule per app, because this list is not the access control -- attaching
+      # an HTTPRoute to `homelab-tunnel` is. That route is also what makes
+      # external-dns publish the proxied CNAME, so a lanternfyre.dev name with
+      # no route has no DNS and never reaches this rule; one that does reach it
+      # gets Envoy's 404.
+      #
+      # `originServerName: lanternfyre.dev` for EVERY host under the wildcard:
+      # it only has to be a name the origin certificate covers, and
+      # wildcard-lanternfyre-dev-tls carries the apex for exactly this reason.
+      # Envoy picks that certificate by SNI and routes by Host, so the visitor's
+      # hostname still decides which app answers.
+      #
+      # ⚠️ The apex `lanternfyre.dev` itself is NOT matched by `*.` -- it would
+      # need its own rule when something is published there.
+      - hostname: "*.lanternfyre.dev"
+        service: https://envoy-gateway-envoy-homelab-tunnel-6cc00307.gateway-envoy.svc.cluster.local:443
+        originRequest:
+          originServerName: lanternfyre.dev
+
       # ── The two-port TCP demo: RETIRED 2026-09-06 ─────────────────────────
       #
       # This carried `ot-login.techyon.dev` and `ot-game.techyon.dev` as

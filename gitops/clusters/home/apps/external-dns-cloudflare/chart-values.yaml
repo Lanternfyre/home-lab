@@ -30,7 +30,11 @@ env:
   - name: CF_API_EMAIL
     value: adrian.jutrowski@techyon.dev
 
-domainFilters: ["techyon.dev"]
+# Two zones in ONE Cloudflare account, reached with ONE API token: the token's
+# zone resources list both (manual, MANUAL-STEPS.md "lanternfyre.dev"). A zone
+# missing from the token is not an error here -- external-dns just never sees
+# it, and records for it silently never appear.
+domainFilters: ["techyon.dev", "lanternfyre.dev"]
 
 registry: "txt"
 txtOwnerId: "home-lab"

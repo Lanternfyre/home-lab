@@ -1,0 +1,61 @@
+# THE `//` ROOT-PATH FIX, HOST-AGNOSTIC. Successor to
+# tunnel-root-path.envoypatchpolicy.yaml -- read that file first: it holds the
+# evidence for WHY the tunnel turns `/` into `//` and why that loops.
+#
+# ── Why a replacement was needed ────────────────────────────────────────────
+# The patch policy inserts a route at `/virtual_hosts/0/routes/0` and names ONE
+# backend cluster (authentik-tunnel). That protects exactly one hostname, and
+# since 2026-10-22 this Gateway serves TWO domains. Every new public app would
+# have needed its own patch entry naming its own cluster, and a vhost reorder
+# would have retargeted the existing one silently.
+#
+# This Lua filter runs on EVERY request through `homelab-tunnel`, whatever the
+# host: if `:path` is exactly `//`, or `//?<query>`, it drops the first slash
+# before routing. No backend is named and there is no index. The match mirrors
+# the old patch (`match.path: "//"` ignores the query string), and
+# `clearRouteCache()` makes the router re-select on the rewritten path.
+#
+# ⚠️ STAGED. The patch policy stays until this is proven on the live tunnel:
+# both rewrite to `/`, so neither can mask a failure of the other. The marker
+# header is how they are told apart -- only THIS filter sets it:
+#   IP=$(kubectl -n gateway-envoy get svc envoy-gateway-envoy-homelab-tunnel-6cc00307 \
+#        -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+#   curl -sk --path-as-is -D- -o /dev/null \
+#     --resolve authentik.techyon.dev:443:$IP 'https://authentik.techyon.dev//?probe=1'
+# must show `x-homelab-root-path: rewritten` and a 302 to the login flow, not to
+# `/`. Then delete the patch policy, and repeat.
+#
+# Status, per ANCESTOR as with every policy here (`.status.conditions` is empty):
+#   kubectl -n gateway-envoy get envoyextensionpolicy tunnel-root-path \
+#     -o jsonpath='{.status.ancestors[*].conditions}'
+#
+# Rendering checked offline with `egctl x translate` (v1.8.3) on 2026-10-22:
+# the filter lands in the listener's single filter chain.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: EnvoyExtensionPolicy
+metadata:
+  name: tunnel-root-path
+  namespace: gateway-envoy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: homelab-tunnel
+  lua:
+    - type: Inline
+      inline: |
+        function envoy_on_request(request_handle)
+          local path = request_handle:headers():get(":path")
+          if path == "//" or (path ~= nil and path:sub(1, 3) == "//?") then
+            request_handle:headers():replace(":path", path:sub(2))
+            request_handle:clearRouteCache()
+            request_handle:streamInfo():dynamicMetadata():set("homelab", "root_path", "rewritten")
+          end
+        end
+
+        function envoy_on_response(response_handle)
+          local md = response_handle:streamInfo():dynamicMetadata():get("homelab")
+          if md ~= nil and md["root_path"] == "rewritten" then
+            response_handle:headers():add("x-homelab-root-path", "rewritten")
+          end
+        end

@@ -92,21 +92,23 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: "*.lab.techyon.dev"
+      # No `hostname:`, two certificates -- the same shape, and the same
+      # reasons, as the open Gateway in homelab.gateway.yaml.
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            # The same wildcard Secret as the open Gateway. cert-manager
-            # renews one Certificate; both Gateways read it.
+            # The same wildcard Secrets as the open Gateway. cert-manager
+            # renews each Certificate once; both Gateways read them.
             name: wildcard-lab-techyon-dev-tls
+          - kind: Secret
+            name: wildcard-lab-lanternfyre-dev-tls
       allowedRoutes:
         namespaces:
           from: All
     - name: http
       protocol: HTTP
       port: 80
-      hostname: "*.lab.techyon.dev"
       allowedRoutes:
         namespaces:
           from: All
