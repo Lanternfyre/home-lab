@@ -1392,8 +1392,8 @@ boundary is auq's own per-device bearer tokens. Reasoning in full at the top of
 
 ## 🟡 box2 and box3 — first login, and auq when wanted (2026-09-13)
 
-`claude-boxes/bravo` (`box2.lab.techyon.dev`) and `claude-boxes/charlie`
-(`box3.lab.techyon.dev`) need no new 1Password items to start: they reuse
+`claude-boxes/bravo` (now `box2.lab.lanternfyre.dev`) and `claude-boxes/charlie`
+(now `box3.lab.lanternfyre.dev`) need no new 1Password items to start: they reuse
 alpha's `Claude Workspace Console` and `Claude Box GitHub App`. That means the
 **same ttyd credential and the same ssh host key** as box1. What is left is per
 box:

@@ -14,11 +14,17 @@ carries only what differs per box.
 
 ## The boxes
 
-| dir | console | volume | auq |
-|---|---|---|---|
-| `alpha` | `https://box1.lab.techyon.dev` | 40Gi | on |
-| `bravo` | `https://box2.lab.techyon.dev` | 20Gi | on |
-| `charlie` | `https://box3.lab.techyon.dev` | 20Gi | on |
+| dir | console | repos | volume | auq |
+|---|---|---|---|---|
+| `alpha` | `https://box1.lab.lanternfyre.dev` | Lanternfyre | 40Gi | on |
+| `bravo` | `https://box2.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
+| `charlie` | `https://box3.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
+
+**Two groups, split by DNS domain (2026-10-22).** Lanternfyre work is on
+`lanternfyre.dev`, techyon work on `techyon.dev`. A group's boxes pin
+`github.installations` to their own org, so a repo from the other org fails the
+render instead of quietly widening the token. The domain is only the
+hostname -- the gate, the Gateway and the listener are the same for both.
 
 `bravo` and `charlie` were added on 2026-09-13 as copies of alpha, with three
 differences, each explained in their `chart-values.yaml`:
@@ -89,7 +95,7 @@ not the scheduler: see "Recovery" below.
 
 ## The console
 
-`https://box1.lab.techyon.dev`, on the **gated** Gateway.
+`https://box1.lab.lanternfyre.dev` (and its siblings), on the **gated** Gateway.
 
 🔴 That choice is the security decision for the whole feature. ttyd is an
 interactive shell next to an Anthropic OAuth credential, a GitHub token with
@@ -140,7 +146,7 @@ Then prove the feature actually works -- 30 seconds, and it is the acceptance
 test:
 
 1. in the session: `echo hello-from-exec`
-2. open `https://box1.lab.techyon.dev` -> the **same** scrollback
+2. open the box's console URL -> the **same** scrollback
 3. ssh in -> the same again
 
 Three different scrollbacks means `AGENT_TMUX_SOCKET` is not reaching one of
