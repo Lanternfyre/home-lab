@@ -11,6 +11,14 @@ that manages the nodes:
   in this fleet that is not trusted infrastructure. See
   [EDGE-NODE.md](EDGE-NODE.md).
 
+**Two DNS domains, same Gateways** (since 2026-10-22): `techyon.dev` and
+`lanternfyre.dev`. Each has `*.lab.<domain>` on the LAN Gateways (`homelab`,
+`homelab-gated`) and `*.<domain>` through the tunnel (`homelab-tunnel`). They
+share listeners -- no `hostname:`, one certificate per domain, picked by SNI --
+so a route's own `hostnames:` decides its domain. Rationale in
+`apps/envoy-gateway/manifests/homelab.gateway.yaml`. The `*.techyon.dev/...`
+label and annotation KEYS are a namespace, not DNS; they do not change.
+
 ⚠️ **Two naming schemes, same machines.** Inventory hostnames are `k8s-N` and
 `edge-1.edge`; the Kubernetes node names and OS hostnames are `k8s-labN` and
 `k8s-edge1`. `kubectl` shows the second set, Ansible takes the first.

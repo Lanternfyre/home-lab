@@ -3,8 +3,16 @@
 # listener on an existing one.
 #
 #   homelab         *.lab.techyon.dev   LAN, open            192.168.32.18
+#                   *.lab.lanternfyre.dev
 #   homelab-gated   *.lab.techyon.dev   LAN, authentik       192.168.32.19
-#   homelab-tunnel  *.techyon.dev       INTERNET, authentik  via cloudflared
+#                   *.lab.lanternfyre.dev
+#   homelab-tunnel  *.techyon.dev       INTERNET, UNGATED    via cloudflared
+#                   *.lanternfyre.dev   (see "THERE IS DELIBERATELY NO
+#                   lanternfyre.dev      SecurityPolicy" below)
+#
+# Two domains since 2026-10-22, on the SAME listeners: no `hostname:`, one
+# certificate per domain, picked by SNI. Why one listener and not one per
+# domain is in homelab.gateway.yaml.
 #
 # ── Why the public names are ONE level deep ─────────────────────────────────
 # Cloudflare's Universal SSL covers the root domain and FIRST-level subdomains
@@ -53,6 +61,25 @@ spec:
   dnsNames:
     - "*.techyon.dev"
 ---
+# lanternfyre.dev's origin certificate. Unlike techyon.dev, the APEX IS
+# INCLUDED: nothing else serves `lanternfyre.dev` (checked 2026-10-22, the zone
+# was empty), so the cluster may answer for it. It is also the name cloudflared
+# validates the origin against for every lanternfyre.dev hostname -- see
+# `originServerName` in cloudflare-tunnel/cloudflared.configmap.yaml.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-lanternfyre-dev
+  namespace: gateway-envoy
+spec:
+  secretName: wildcard-lanternfyre-dev-tls
+  issuerRef:
+    name: cloudflare-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.lanternfyre.dev"
+    - "lanternfyre.dev"
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -96,12 +123,13 @@ spec:
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: "*.techyon.dev"
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
             name: wildcard-techyon-dev-tls
+          - kind: Secret
+            name: wildcard-lanternfyre-dev-tls
       allowedRoutes:
         namespaces:
           from: All

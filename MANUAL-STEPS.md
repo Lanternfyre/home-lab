@@ -5,7 +5,41 @@ hardware, sudo passwords, or a judgement call about your own data.
 
 **Legend:** 🔴 blocks the modernization plan · 🟡 do soon · 🟢 whenever
 
-Last updated: 2026-09-30 (VoIP on the edge)
+Last updated: 2026-10-22 (lanternfyre.dev as a second domain)
+
+---
+
+## 🟡 lanternfyre.dev — confirm the Cloudflare token can EDIT the second zone (2026-10-22)
+
+✅ **Probably already done.** Checked 2026-10-22: the token lists three zones
+-- `lanternfyre.dev`, `techyon.dev`, `tomaszbalicki.pl` -- so it reads the zone.
+Whether it may WRITE DNS there cannot be proven without writing, so the
+certificate check at the bottom is the real test. Only if those certificates
+stay not-Ready, do steps 1-3.
+
+lanternfyre.dev is served the same way as techyon.dev: `*.lab.lanternfyre.dev`
+on the two LAN Gateways, `*.lanternfyre.dev` (and the apex) through the tunnel.
+Until this step is done, **its two certificates never issue** and external-dns
+never publishes a record for it -- and neither says so loudly. cert-manager's
+Order sits pending on a DNS-01 failure; external-dns just does not list the zone.
+
+1. Cloudflare dashboard → My Profile → **API Tokens** → edit the token whose
+   value is GCP Secret Manager `CF_API_TOKEN` (project `techyon-393614`; both
+   external-dns-cloudflare and cert-manager read it).
+2. Under **Zone Resources**, add `lanternfyre.dev`. Permissions stay
+   **Zone:Read** + **Zone:DNS:Edit**.
+3. Editing a token's scope keeps its value, so nothing changes in GCP or git.
+   Only if you mint a NEW token instead does `CF_API_TOKEN` need the new value.
+
+Verify (the token is readable from the cluster; nothing is printed but the zone):
+```bash
+T=$(kubectl -n dns get secret cloudflare-access-token -o jsonpath='{.data.token}' | base64 -d)
+curl -s -H "Authorization: Bearer $T" \
+  'https://api.cloudflare.com/client/v4/zones?name=lanternfyre.dev' | jq '.result[].name'
+# expect "lanternfyre.dev"; then:
+kubectl -n gateway-envoy get certificate wildcard-lab-lanternfyre-dev wildcard-lanternfyre-dev
+# both READY=True within a few minutes
+```
 
 ---
 

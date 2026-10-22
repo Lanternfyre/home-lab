@@ -38,6 +38,23 @@ spec:
     # route ever needs it.
     - "lab.techyon.dev"
 ---
+# The SECOND domain's wildcard, lanternfyre.dev (added 2026-10-22). Same
+# issuer, same Cloudflare token -- the token carries both zones -- same DNS-01
+# flow, and both LAN Gateways present it alongside the techyon one.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: wildcard-lab-lanternfyre-dev
+  namespace: gateway-envoy
+spec:
+  secretName: wildcard-lab-lanternfyre-dev-tls
+  issuerRef:
+    name: cloudflare-ca
+    kind: ClusterIssuer
+  dnsNames:
+    - "*.lab.lanternfyre.dev"
+    - "lab.lanternfyre.dev"
+---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
@@ -47,15 +64,27 @@ spec:
   # No declared address, deliberately -- see homelab-gated.gateway.yaml.
   gatewayClassName: envoy
   listeners:
+    # ⚠️ NO `hostname:` on either listener, and TWO certificates on this one.
+    # That is how one listener serves two domains -- `*.lab.techyon.dev` and
+    # `*.lab.lanternfyre.dev` -- and Envoy picks the certificate by SNI.
+    #
+    # Deliberately NOT a second listener per domain: the claude-box chart, the
+    # gate's SecurityPolicy and the `https-redirect*` routes all pin
+    # `sectionName` by name, and `gated-header-size` patches `/filter_chains/0`.
+    # Verified 2026-10-22 with `egctl x translate` (v1.8.3) before committing:
+    # this shape still renders ONE filter chain, with no SNI match and both
+    # certificates in it, so every one of those keeps pointing at the right
+    # thing. Which hostnames a route gets is now the route's own `hostnames:`.
     - name: https
       protocol: HTTPS
       port: 443
-      hostname: "*.lab.techyon.dev"
       tls:
         mode: Terminate
         certificateRefs:
           - kind: Secret
             name: wildcard-lab-techyon-dev-tls
+          - kind: Secret
+            name: wildcard-lab-lanternfyre-dev-tls
       # Routes live in the APP's namespace, next to the app they expose, which
       # is how every Ingress here is already organised. Without this the
       # Gateway would only accept routes from gateway-envoy.
@@ -69,7 +98,6 @@ spec:
     - name: http
       protocol: HTTP
       port: 80
-      hostname: "*.lab.techyon.dev"
       allowedRoutes:
         namespaces:
           from: All
