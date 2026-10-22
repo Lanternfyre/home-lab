@@ -63,11 +63,9 @@ spec:
   hostnames:
     - authentik.techyon.dev
   rules:
-    # ⚠️ The name and namespace of this route, plus this rule's index, form the
-    # Envoy cluster name `httproute/authentik/authentik-tunnel/rule/0` that
-    # tunnel-root-path.envoypatchpolicy.yaml patches against. Renaming either,
-    # or inserting a rule above this one, breaks the doubled-root-path fix --
-    # and it breaks it silently, as a login redirect loop.
+    # The doubled-root-path fix no longer depends on this route's name or rule
+    # index: since 2026-10-22 it is a Lua filter on the whole Gateway
+    # (envoy-gateway/manifests/tunnel-root-path.envoyextensionpolicy.yaml).
     - backendRefs:
         - name: authentik-server
           port: 80
