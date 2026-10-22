@@ -5,11 +5,10 @@ config:
     provider:
       type: Kubernetes
     # EnvoyPatchPolicy is an EXTENSION API and is off by default. It is enabled
-    # here for exactly one policy -- manifests/tunnel-root-path.envoypatchpolicy.yaml
-    # -- which repairs a path the Cloudflare Tunnel doubles and that no
-    # supported API can express: Gateway API refuses a route match containing
-    # `//`, and Envoy's own merge_slashes does not touch a path that is only
-    # slashes.
+    # here for manifests/gated-header-size.envoypatchpolicy.yaml, which raises
+    # the gate's header limit for oauth cookies -- a listener field no supported
+    # API exposes. (It was first enabled for the tunnel's `//` root-path patch;
+    # that became a Lua EnvoyExtensionPolicy on 2026-10-22, which needs no flag.)
     #
     # ⚠️ It is an escape hatch that patches generated xDS directly, so it is
     # coupled to the SHAPE of what Envoy Gateway generates and can break on an
