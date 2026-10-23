@@ -151,6 +151,23 @@ protected:
                                  # e0c470e (2026-08-15) in favour of Velero
     reason: Hand-entered recipes and uploaded images. Not reconstructible.
 
+  - namespace: beads
+    claim: qnap-beads-dolt
+    size: 5Gi
+    class: qnap-iscsi
+    source: gitops/clusters/home/apps/beads/manifests/qnap-beads-dolt.pvc.yaml
+    backup: NONE                 # see the BACKUP STATE banner at the top
+    reason: >-
+      Every agent's beads issues, dependencies and memories, plus their Dolt
+      history and the server's users. Not reconstructible: repos carry only
+      .beads/config, never the data.
+    warning: >-
+      Dolt history is NOT a backup. It undoes an agent's deletes (and
+      `DOLT_UNDROP` restores a dropped database, as admin), but `bd flatten` /
+      `bd compact` squash history and then garbage-collect it -- irrecoverable,
+      and any box can run them. Neither covers the NAS. An offsite Dolt backup
+      is the first follow-up in apps/beads/README.md.
+
   - namespace: databases
     claim: pg-backup
     size: 10Gi

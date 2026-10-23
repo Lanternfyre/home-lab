@@ -1,0 +1,13 @@
+# beads -- the shared Dolt SQL server behind `bd`, the agents' issue graph and
+# long-term memory. One server; one database per opted-in project.
+#
+# The chart is helm-compendium's `dolt/` (generic: nothing in it knows about
+# beads). Everything beads-specific -- the PVC, the password item, the TLS
+# certificate, who may connect -- is in manifests/ and chart-values.yaml.
+#
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/lanternfyre/charts"
+chart: "dolt"
+targetRevision: "0.1.0"
+releaseName: "beads"
+namespace: "beads"

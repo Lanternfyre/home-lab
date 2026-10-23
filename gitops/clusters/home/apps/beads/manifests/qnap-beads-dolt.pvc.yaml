@@ -1,0 +1,21 @@
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: qnap-beads-dolt
+  namespace: beads
+  labels:
+    # Every agent's issues, dependencies, memories and their Dolt history. Not
+    # reconstructible: the git repos carry only .beads/config, never the data.
+    # Registered in gitops/clusters/home/protected-volumes.yaml.
+    homelab.techyon.dev/protect: "true"
+  annotations:
+    trident.qnap.io/threshold: "90"
+    trident.qnap.io/ThinAllocate: "true"
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  storageClassName: qnap-iscsi
