@@ -182,7 +182,8 @@ Mechanics, measured on 2.1.268 (2026-10-23) before any of this shipped:
 * **Only window 0 carries the name.** claude-session passes it; the shim and the
   managed settings do not. A second window or a `kubectl exec -- claude` must not
   answer to the box's name, or senders fall back to disambiguating by id. A
-  hand-typed `/rc` in another window is titled `<name>-<adjective>-<noun>`.
+  hand-typed `/rc` in another window is titled `<name>-<adjective>-<noun>`,
+  lowercased (`lanternfyre-box1-...`) -- Claude Code slugs the prefix.
 * **A restart keeps the address.** `--continue` reattaches to the Remote
   Control session the conversation recorded -- same `session_` URL after a pod
   delete.
@@ -206,6 +207,12 @@ Mechanics, measured on 2.1.268 (2026-10-23) before any of this shipped:
    To get a running box online now without losing its session, type
    `/rc Lanternfyre-box1` (its own name) in window 0; `--continue` reattaches
    to that same remote session at the next restart.
+4. **Check window 0 after the delete.** alpha, bravo and charlie used `/rc` by
+   hand before, so their conversations carry an OLD recorded remote session,
+   and `--continue` reattaches to that recording rather than making a new one.
+   What was measured is a fresh recording; an old or archived one was not.
+   If window 0 shows `Previous session is unavailable`, or the old title
+   instead of the box's name, type `/rc <its name>` once.
 
 ### ⚠️ Delivery into a bypass box is NOT automatic
 
