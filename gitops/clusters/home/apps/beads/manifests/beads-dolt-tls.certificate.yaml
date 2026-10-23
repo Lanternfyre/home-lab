@@ -1,0 +1,21 @@
+# The server certificate for the LAN door, beads.lab.lanternfyre.dev.
+#
+# Public (Let's Encrypt via DNS-01), so the operator's machine verifies it with
+# the system trust store and nothing to distribute. bd verifies chain AND
+# hostname (measured 2026-10-23: an unknown CA and an IP without a SAN are both
+# refused), so clients must connect by this name, never by the LB address.
+#
+# Renewal swaps the Secret; Reloader then rolls the server, because Dolt reads
+# the certificate only at start.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: beads-dolt-tls
+  namespace: beads
+spec:
+  secretName: beads-dolt-tls
+  dnsNames:
+    - beads.lab.lanternfyre.dev
+  issuerRef:
+    kind: ClusterIssuer
+    name: cloudflare-ca

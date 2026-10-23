@@ -1,0 +1,97 @@
+# H1 -- who may reach the beads Dolt server, and what it may reach.
+#
+# The server holds every agent's issues and memories, and its app user can drop
+# databases. So the door is narrow: the six boxes east-west, the LAN on the
+# LoadBalancer, nothing else -- in particular not the edge node and not the VPN.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: beads-containment
+  namespace: beads
+spec:
+  description: >-
+    Ingress and egress allow-lists for the beads Dolt server. Default-deny both
+    directions, stated explicitly.
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # ⚠️ NO node-admit rule, and that is deliberate. Every other namespace here
+    # needs `fromEntities: [host, remote-node, world]` for its kubelet probes --
+    # and admitting `world` on 3306 would open this server to everything this
+    # policy exists to keep out. The dolt chart's probes are EXEC
+    # (bash /dev/tcp to 127.0.0.1), which never crosses the policy.
+
+    # 🔴 THE AGENT BOXES, EAST-WEST, on the ClusterIP. Each box's own
+    # containment policy admits the `beads` namespace on 3306 when its chart
+    # sets `beads.enabled` -- both sides must agree, and a miss on either HANGS
+    # every bd command rather than failing it.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-alpha
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-bravo
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-charlie
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-delta
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-echo
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-foxtrot
+      toPorts:
+        - ports:
+            - {port: "3306", protocol: TCP}
+
+    # 🔴 THE LAN, through the LoadBalancer (beads.lab.lanternfyre.dev). The
+    # Service is externalTrafficPolicy Local, so the client's own address
+    # reaches the pod and the CIDR is what matches -- with Cluster it would be
+    # SNATed to a node and this rule would match nothing.
+    #
+    # 192.168.32.0/23 is the home LAN: the operator's machine (192.168.33.8),
+    # the LB pool (192.168.32.x). It EXCLUDES, by address:
+    #   * the edge node (10.250.0.1 over WireGuard) -- the one untrusted member
+    #   * VPN clients, which the edge SNATs and so arrive looking exactly like
+    #     a compromised edge (EDGE-NODE.md). Away from home, use
+    #     `kubectl port-forward` instead -- see apps/beads/README.md.
+    # Home nodes sit inside the range but carry `host`/`remote-node` identity,
+    # which a CIDR rule does not select.
+    #
+    # ⚠️ Cilium CIDR rules do not apply inside the pod CIDR (10.245.0.0/16); this
+    # range does not overlap it.
+    - fromCIDRSet:
+        - cidr: 192.168.32.0/23
+      toPorts:
+        - ports:
+            - {port: "3306", protocol: TCP}
+
+    # Prometheus, for the sql-server metrics endpoint. Off today (it is
+    # unauthenticated, so the chart leaves it disabled); admitted so enabling it
+    # with a ServiceMonitor is not a silent metrics gap.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: monitoring
+      toPorts:
+        - ports:
+            - {port: "9091", protocol: TCP}
+
+  egress:
+    # DNS only. The server needs nothing outward today -- no Dolt remote, no
+    # backup target. An offsite backup is the first follow-up, and it will have
+    # to be named here.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # ⚠️ NO `toEntities: [world]`, deliberately -- the standing rule this estate
+    # applies to every namespace. If a future need is real, name the host.

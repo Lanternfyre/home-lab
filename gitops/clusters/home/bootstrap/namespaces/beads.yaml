@@ -1,0 +1,19 @@
+# beads
+#
+# The one app here: the Dolt SQL server behind `bd` (apps/beads).
+#
+# Measured against the pod spec the dolt chart renders, and run in docker under
+# the same settings on 2026-10-23: non-root (uid 1000), all capabilities
+# dropped, allowPrivilegeEscalation false, seccomp RuntimeDefault, read-only
+# root filesystem, no host namespaces or hostPath. That is `restricted`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: beads
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
