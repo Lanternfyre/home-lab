@@ -14,14 +14,14 @@ carries only what differs per box.
 
 ## The boxes
 
-| dir | console | repos | volume | auq |
-|---|---|---|---|---|
-| `alpha` | `https://box1.lab.lanternfyre.dev` | Lanternfyre | 40Gi | on |
-| `bravo` | `https://box2.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
-| `charlie` | `https://box3.lab.lanternfyre.dev` | Lanternfyre | 20Gi | on |
-| `delta` | `https://box1.lab.techyon.dev` | t3chy0n | 20Gi | on (alpha's token) |
-| `echo` | `https://box2.lab.techyon.dev` | t3chy0n | 20Gi | on (bravo's token) |
-| `foxtrot` | `https://box3.lab.techyon.dev` | t3chy0n | 20Gi | on (charlie's token) |
+| dir | console | Remote Control name | repos | volume | auq |
+|---|---|---|---|---|---|
+| `alpha` | `https://box1.lab.lanternfyre.dev` | `Lanternfyre-box1` | Lanternfyre | 40Gi | on |
+| `bravo` | `https://box2.lab.lanternfyre.dev` | `Lanternfyre-box2` | Lanternfyre | 20Gi | on |
+| `charlie` | `https://box3.lab.lanternfyre.dev` | `Lanternfyre-box3` | Lanternfyre | 20Gi | on |
+| `delta` | `https://box1.lab.techyon.dev` | `Techyon-box1` | t3chy0n | 20Gi | on (alpha's token) |
+| `echo` | `https://box2.lab.techyon.dev` | `Techyon-box2` | t3chy0n | 20Gi | on (bravo's token) |
+| `foxtrot` | `https://box3.lab.techyon.dev` | `Techyon-box3` | t3chy0n | 20Gi | on (charlie's token) |
 
 **Two groups, split by DNS domain (2026-10-22).** Lanternfyre work is on
 `lanternfyre.dev`, techyon work on `techyon.dev`. A group's boxes pin
@@ -65,6 +65,14 @@ exec `/usr/local/bin/attach`, which is `tmux new-session -A -s main` on one
 socket. The entrypoint creates that session *detached, before any door starts* —
 tmux captures its environment at server start, so letting the first ssh login
 create it would give every Claude process sshd's stripped environment.
+
+**A fourth door: Remote Control, by name.** With `remoteControl.name` set
+(chart >= 0.1.8, image >= 0.1.17), window 0 starts as
+`claude --name <n> --remote-control <n> --continue`. The same session is then
+drivable from claude.ai/code and the Claude app, and **an orchestrator session
+reaches it by name** -- `ListAgents` lists it as a `Remote Control` row, and
+`SendMessage` to `Lanternfyre-box1` lands in window 0. See "Remote Control"
+below for what that needs.
 
 **No durable GitHub secret in the box.** The App PEM is mounted into the broker
 sidecar only. It mints ~1h installation tokens into a memory-backed emptyDir,
@@ -161,6 +169,67 @@ test:
 
 Three different scrollbacks means `AGENT_TMUX_SOCKET` is not reaching one of
 the doors.
+
+## Remote Control -- each box answers to its name
+
+The names are in the table above: brand from the console's domain, number from
+its hostname, so `Techyon-box2` is `box2.lab.techyon.dev`. Letters, digits and
+`-` only, so an `@Techyon-box2` mention needs no quotes (the chart fails the
+render otherwise).
+
+Mechanics, measured on 2.1.268 (2026-10-23) before any of this shipped:
+
+* **Only window 0 carries the name.** claude-session passes it; the shim and the
+  managed settings do not. A second window or a `kubectl exec -- claude` must not
+  answer to the box's name, or senders fall back to disambiguating by id. A
+  hand-typed `/rc` in another window is titled `<name>-<adjective>-<noun>`.
+* **A restart keeps the address.** `--continue` reattaches to the Remote
+  Control session the conversation recorded -- same `session_` URL after a pod
+  delete.
+* **Network: nothing new.** Remote Control is outbound HTTPS to
+  `api.anthropic.com`, which the chart's policy already admits.
+
+### What it needs, per box
+
+1. **A claude.ai login** (`/login`). Before it the name is inert and the box
+   onboards exactly as before; after it, Remote Control connects on the next
+   start, or at once with `/rc`. On the very first `/rc` Claude asks once to
+   enable Remote Control -- answer it at the console.
+2. **The SAME Anthropic account as the orchestrator.** Remote Control sessions
+   are visible only to the account that logged the box in, and cross-machine
+   `ListAgents` reads that account's list. alpha, bravo and charlie are on the
+   operator's personal account (checked 2026-10-23); delta, echo and foxtrot
+   have no login yet. A techyon box logged into a different account is
+   invisible to an orchestrator on the first one.
+3. **A pod delete**, once the pins move: chart `0.1.8` in `app.yaml`, image
+   `0.1.17` in `chart-values.yaml`. `OnDelete`, as ever -- pick the moment.
+   To get a running box online now without losing its session, type
+   `/rc Lanternfyre-box1` (its own name) in window 0; `--continue` reattaches
+   to that same remote session at the next restart.
+
+### ⚠️ Delivery into a bypass box is NOT automatic
+
+Every box runs `bypassPermissions`. With `crossSessionInbound` unset, Claude
+Code then **holds** each inbound message from a sender that is not also in
+bypass mode, behind an approval dialog in window 0 -- and drops it after five
+minutes when nobody answers, which on an unattended box is always. So:
+
+* an orchestrator running in `bypassPermissions` messages the boxes as-is;
+* an orchestrator in `default`, `acceptEdits` or `auto` sees them in
+  `ListAgents` but its messages never arrive.
+
+Lifting that is `"crossSessionInbound": "accept"` in claude-workspace's
+`managed-settings.json` -- an **open operator decision**, not done: it lets any
+session on the account put a prompt into a box holding a GitHub write token.
+
+### Acceptance check
+
+From a session connected to Remote Control (`/rc`) on the same account:
+
+1. `/list-agents` shows `Lanternfyre-box1` as a `Remote Control` row, not
+   `offline`.
+2. Ask it to message `@Lanternfyre-box1` "reply with your hostname" -- the answer
+   is `claude-box-alpha-0`, and the exchange is visible at the box's console.
 
 ## Recovery, and moving the box
 
