@@ -1421,13 +1421,14 @@ Each box's window 0 registers as a Remote Control session named after the box
 it with `ListAgents` / `SendMessage`. Detail and the acceptance check:
 `gitops/clusters/home/claude-boxes/README.md`, "Remote Control".
 
-1. **Merge, in order:** docker-compendium #29 (image `claude-workspace` 0.1.17),
-   then helm-compendium #42 (chart `claude-box` 0.1.8). Confirm each produced a
-   NEW tag (`claude-workspace-v0.1.17`, `claude-box-v0.1.8`) -- an unparsed
-   commit subject republishes the old version instead.
-2. **Move the pins** in all six boxes -- `targetRevision` in `app.yaml`,
-   `image.tag` in `chart-values.yaml`. The names are already in the values;
-   on chart 0.1.7 they render nothing.
+1. ~~**Merge, in order:** docker-compendium #29 (image `claude-workspace` 0.1.17),
+   then helm-compendium #42 (chart `claude-box` 0.1.8).~~ ✅ DONE 2026-10-23 --
+   both NEW tags verified (`claude-workspace-v0.1.17`, `claude-box-v0.1.8`),
+   the chart pulled from ghcr.io/lanternfyre/charts and the image manifest
+   present on GHCR.
+2. ~~**Move the pins** in all six boxes~~ ✅ DONE 2026-10-23 -- chart 0.1.8,
+   image 0.1.17. ⚠️ Argo syncing this changes the StatefulSet, NOT the pod:
+   `OnDelete` means nothing reaches a running box until step 4.
 3. **`/login` delta, echo and foxtrot** -- on the SAME Anthropic account the
    orchestrator uses, or it cannot see them. Answer the one-time "Enable
    Remote Control" prompt at the console on each box's first `/rc`.

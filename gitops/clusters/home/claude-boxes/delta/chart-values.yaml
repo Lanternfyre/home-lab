@@ -46,7 +46,7 @@ storage:
 # Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
 # default image tag follows the chart version, not the workspace release.
 image:
-  tag: "0.1.16"
+  tag: "0.1.17"
 
 # auq through the sidecar, on a token SHARED with claude-box-alpha: the item
 # "Claude Box Alpha auq" (operator, 2026-10-22 -- one auq, reuse the tokens rather
