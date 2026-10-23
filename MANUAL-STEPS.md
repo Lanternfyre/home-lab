@@ -1435,7 +1435,10 @@ it with `ListAgents` / `SendMessage`. Detail and the acceptance check:
    `--continue` brings the conversation back):
    `kubectl -n claude-box-<dir> delete pod claude-box-<dir>-0`.
    To bring a running box online without a restart: `/rc <its name>` in
-   window 0.
+   window 0. After each delete, look for `/remote-control is active` and the
+   box's name in window 0: alpha/bravo/charlie carry an old recorded remote
+   session from earlier hand-typed `/rc`, and on `Previous session is
+   unavailable` (or the old title) the fix is one `/rc <its name>`.
 5. **Decide `crossSessionInbound`.** The boxes run `bypassPermissions`, so a
    message from an orchestrator that is NOT in bypass mode is held in window 0
    and dropped after five minutes. Either run the orchestrator in
