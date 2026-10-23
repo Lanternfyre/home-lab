@@ -106,9 +106,18 @@ CALL DOLT_UNDROP('<db>');          -- an agent dropped it; the app user cannot u
 SELECT * FROM `<db>`.dolt_log LIMIT 20;   -- who changed what (BEADS_ACTOR)
 ```
 
-- **Rotate a password**: edit the field in 1Password. ExternalSecrets picks it
-  up within the hour, Reloader rolls the server (its init container re-sets
-  users on every start) and the boxes. Update the operator's credentials file.
+- **Rotate a password** -- only when the boxes can be restarted right after:
+  1. Edit the field in 1Password. Within the hour ExternalSecrets updates the
+     server's Secret and Reloader rolls it; its init container sets the new
+     password on start.
+  2. 🔴 From that moment every running box fails `bd` with "Access denied".
+     Their Secrets update too, but their pods are `OnDelete` and the
+     claude-box chart deliberately has no Reloader (a roll kills live
+     sessions), so the OLD password stays in each box's env.
+  3. Delete each box's pod. A box that must keep its session can instead get
+     `export BEADS_DOLT_PASSWORD=<new>` typed into its tmux shell -- that
+     reaches only processes started from that shell.
+  4. Update the operator's credentials file.
 - **Users** are reconciled from `chart-values.yaml` on every start. A user
   *removed* from the list is not dropped — `DROP USER` it as admin.
 
@@ -123,6 +132,11 @@ same securityContext as the pod, with bd 1.3.1; the dolt chart PR has the detail
   TLS key with `load_file()`. The chart always sets `secure_file_priv` to a
   missing directory, which closes it.
 - An app user **can** `DROP DATABASE` and **cannot** `DOLT_UNDROP` — admin can.
+- The data lives in `/var/lib/dolt/data`, not the volume root: Dolt treats the
+  fresh volume's root-owned `lost+found` as a database. And a SIGKILLed server
+  leaves a stale `.dolt/sql-server.info` that would wedge the users init
+  forever — the init clears it (safe: it runs before the server, RWO, one
+  replica). Both measured: kill, re-init, restart, data intact.
 - 🔴 `bd flatten` / `bd compact` rewrite history and then garbage-collect it.
   Irrecoverable, and any box can run them. **Dolt history is not a backup.**
 - Memories sit **uncommitted** in Dolt's working set — durable across restarts,
