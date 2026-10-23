@@ -61,6 +61,14 @@ auqProxy:
   enabled: true
   onePasswordItem: "Claude Box Alpha auq"
 
+# Remote Control under this box's address (operator request 2026-10-23):
+# window 0 registers as `Techyon-box1`, drivable from claude.ai/code and the app,
+# and reachable BY NAME from the operator's other sessions (ListAgents /
+# SendMessage). Brand from the console's domain, number from its hostname.
+# Needs chart >= 0.1.8 and image >= 0.1.17 -- see claude-boxes/README.md.
+remoteControl:
+  name: Techyon-box1
+
 # Sibling-only restart rights, within the techyon group: these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else.
 restartableBy:

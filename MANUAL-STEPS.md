@@ -1413,3 +1413,32 @@ box:
    `kubectl -n claude-box-bravo delete pod claude-box-bravo-0`, same for charlie.
    Renaming or deleting either item leaves that box stuck in
    `ContainerCreating` on its next start.
+
+## 🟡 Claude boxes on Remote Control, by name (2026-10-23)
+
+Each box's window 0 registers as a Remote Control session named after the box
+(`Lanternfyre-box1..3`, `Techyon-box1..3`), so an orchestrator session can reach
+it with `ListAgents` / `SendMessage`. Detail and the acceptance check:
+`gitops/clusters/home/claude-boxes/README.md`, "Remote Control".
+
+1. **Merge, in order:** docker-compendium #29 (image `claude-workspace` 0.1.17),
+   then helm-compendium #42 (chart `claude-box` 0.1.8). Confirm each produced a
+   NEW tag (`claude-workspace-v0.1.17`, `claude-box-v0.1.8`) -- an unparsed
+   commit subject republishes the old version instead.
+2. **Move the pins** in all six boxes -- `targetRevision` in `app.yaml`,
+   `image.tag` in `chart-values.yaml`. The names are already in the values;
+   on chart 0.1.7 they render nothing.
+3. **`/login` delta, echo and foxtrot** -- on the SAME Anthropic account the
+   orchestrator uses, or it cannot see them. Answer the one-time "Enable
+   Remote Control" prompt at the console on each box's first `/rc`.
+4. **Delete each pod when it is idle** (`OnDelete`; costs the tmux session,
+   `--continue` brings the conversation back):
+   `kubectl -n claude-box-<dir> delete pod claude-box-<dir>-0`.
+   To bring a running box online without a restart: `/rc <its name>` in
+   window 0.
+5. **Decide `crossSessionInbound`.** The boxes run `bypassPermissions`, so a
+   message from an orchestrator that is NOT in bypass mode is held in window 0
+   and dropped after five minutes. Either run the orchestrator in
+   `bypassPermissions`, or add `"crossSessionInbound": "accept"` to
+   claude-workspace's `managed-settings.json` -- which lets any session on the
+   account prompt a box holding a GitHub write token. Not done: yours to weigh.
