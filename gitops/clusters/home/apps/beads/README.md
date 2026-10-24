@@ -58,7 +58,7 @@ export BEADS_ACTOR=operator
 # (measured: a bare password line under the section is refused):
 #   [beads.lab.lanternfyre.dev:3306]
 #   password = <beads-password from 1Password>
-#   [127.0.0.1:3306]
+#   [127.0.0.1:13306]
 #   password = <the same>          # for the port-forward below
 ```
 
@@ -67,9 +67,19 @@ the edge node). Use a port-forward, which is loopback inside the pod and so neve
 meets the policy:
 
 ```bash
-kubectl -n beads port-forward svc/beads-dolt 3306:3306 &
-BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_SERVER_TLS= bd ready
+kubectl -n beads port-forward svc/beads-dolt 13306:3306 &
+BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_SERVER_PORT=13306 BEADS_DOLT_SERVER_TLS= bd ready
 ```
+
+Local port 13306, not 3306: a local MySQL (the operator's machine runs one in
+docker on 0.0.0.0:3306) would make the forward fail to bind. A terminal WITHOUT
+the env lines does not fall back to it -- bd then dials 127.0.0.1:0 and fails
+(measured).
+
+**Check the connection** in a repo that opted in: `bd context` shows `mode:
+server` and the host it is set to use, `bd ping` actually dials it. Not
+`bd where` / `bd info` -- they print a local `.beads/dolt` path and `Mode:
+direct` even when connected to the server.
 
 ## Opting a repo in
 
@@ -102,6 +112,12 @@ bd setup claude          # one SessionStart hook (`bd prime --hook-json`) + a CL
 - 🔴 **Other clones never run init.** A clone attaches through the committed
   `.beads/metadata.json` (it carries the `project_id`); running init in it
   hits the mismatch above. This is how the boxes join a repo that opted in.
+- 🔴 **In a repo with a git `origin`, unset the sync remote before committing.**
+  init writes `sync.remote: git+ssh://…<origin>` into `.beads/config.yaml` --
+  git-ref sync, which pushes Dolt data into the repo itself -- and tries to add
+  it as a Dolt remote, which the `beads` user may not (`Error 1142 command
+  denied`; a warning, init still succeeds). This server is the sharing
+  mechanism: `bd config unset sync.remote`, then commit.
 - **Host and port from env, never `--server-host`.** Then the committed
   `.beads/metadata.json` pins neither, and the same repo works from the LAN and
   from the boxes.
@@ -168,5 +184,16 @@ same securityContext as the pod, with bd 1.3.1; the dolt chart PR has the detail
   scheduled Dolt backup to an off-NAS remote — which also needs an egress rule.
 - **VPN access.** See above; revisit when the kube-proxy-replacement identity
   work makes VPN clients distinguishable from the edge.
-- **Web UI.** CLI and `perles` first; a board (beads-web / Maggie) behind the
-  gated Gateway only once the data proves useful.
+
+## Web board
+
+**https://beads-ui.lab.lanternfyre.dev**, behind Google sign-in: Bead Me Up,
+Scotty (`apps/beads-ui`). Board, list, epics, dependency graph and comments,
+read AND write, as `operator` -- the gate is the only access control, the
+app has none.
+
+- **Projects are declared**, in `apps/beads-ui/chart-values.yaml`
+  `projects:`. A repo that runs `bd init` does not appear by itself.
+- **Agents' changes arrive by poll** (15 s). The board's live stream watches
+  local files, so it fires only for writes made through the board.
+- Board ordering and Settings live in the pod and reset when it is replaced.

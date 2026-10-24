@@ -1,0 +1,37 @@
+# The beads web board. apps/beads/README.md ("Web board") has the why; values
+# here are only what differs from the chart.
+
+# 🔴 Pinned here as well as in the chart: the publish step stamps appVersion
+# with the chart version, so nothing may default from it.
+image:
+  tag: "0.1.0"
+
+# The image is a PRIVATE GHCR package (manifests/ghcr-docker.external-secret.yaml).
+imagePullSecrets:
+  - name: ghcr-docker
+
+beads:
+  # East-west, on the ClusterIP, plaintext -- like the boxes. No public
+  # certificate can carry a .svc name; the LB hostname is for the LAN.
+  host: beads-dolt.beads.svc.cluster.local
+  existingSecret: beads-dolt      # manifests/beads-dolt.external-secret.yaml
+  passwordKey: password
+  # Writes made through the board are the operator's own: the board shows
+  # `operator` as 👤 and every box (BEADS_ACTOR = its Remote Control name) as 🤖.
+  actor: operator
+
+# Every project that has opted in (`kubectl -n beads exec beads-dolt-0 -c dolt
+# -- ls /var/lib/dolt/data` lists them). A repo that runs `bd init` is NOT
+# picked up by itself -- add it here.
+projects:
+  - {database: necronia, name: Necronia2.0}
+  - {database: pilot, name: pilot}
+
+allowedHosts:
+  - beads-ui.lab.lanternfyre.dev
+
+# 🟡 15s, not the chart's 30s. The board's live stream watches LOCAL files, so
+# it fires only for writes made through the board itself; an agent's write from
+# a box is seen by this poll and nothing else. Each poll is one bd call per
+# open project.
+pollIntervalMs: 15000

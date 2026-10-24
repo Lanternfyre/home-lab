@@ -45,6 +45,15 @@ spec:
         - ports:
             - {port: "3306", protocol: TCP}
 
+    # The web board (apps/beads-ui), east-west, as the same `beads` user. Its
+    # own policy carries the matching egress rule.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: beads-ui
+      toPorts:
+        - ports:
+            - {port: "3306", protocol: TCP}
+
     # 🔴 THE LAN, through the LoadBalancer (beads.lab.lanternfyre.dev). The
     # Service is externalTrafficPolicy Local, so the client's own address
     # reaches the pod and the CIDR is what matches -- with Cluster it would be

@@ -1,0 +1,64 @@
+# H1 -- who may reach the beads board, and what it may reach.
+#
+# Its own namespace, NOT `beads`: the server's policy there is endpointSelector
+# {} (every pod in the namespace), and the board needs the opposite shape --
+# ingress from the gated Envoy on 3000, egress to the server on 3306.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: beads-ui-containment
+  namespace: beads-ui
+spec:
+  description: >-
+    The beads web board: ingress from the gated Gateway's Envoy only, egress to
+    DNS and the beads Dolt server only. Default-deny both directions.
+  endpointSelector: {}
+  enableDefaultDeny:
+    ingress: true
+    egress: true
+
+  ingress:
+    # ⚠️ NO node-admit rule, deliberately. The chart's probes are EXEC (bash
+    # /dev/tcp to 127.0.0.1:3000), so the kubelet never crosses this policy --
+    # and `fromEntities: [world]` on 3000 would let anything that can route to
+    # the pod skip the Google sign-in in front of an app with no auth of its own.
+
+    # The GATED Gateway's Envoy -- and not the open `homelab` one, so a route
+    # mistakenly moved there would fail closed instead of publishing the board.
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: gateway-envoy
+            gateway.envoyproxy.io/owning-gateway-name: homelab-gated
+      toPorts:
+        - ports:
+            - {port: "3000", protocol: TCP}
+
+  egress:
+    # DNS, with L7 inspection, the house shape. Nothing below is an FQDN rule,
+    # but without the DNS proxy engaged a later toFQDNs addition would match
+    # nothing and HANG.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # The Dolt server, east-west. apps/beads admits this namespace on 3306;
+    # both sides must agree, and a miss on either HANGS every bd call.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: beads
+      toPorts:
+        - ports:
+            - {port: "3306", protocol: TCP}
+
+    # 🟡 NOT allowed, on purpose: api.github.com (the app's update check -- it
+    # times out after 10s and changes nothing, since a container cannot
+    # self-update) and us.i.posthog.com (usage statistics, also switched off by
+    # an empty POSTHOG_KEY). bd's own metrics are off via DO_NOT_TRACK.
