@@ -44,7 +44,8 @@ v=1.3.1; u=https://github.com/gastownhall/beads/releases/download/v$v
 curl -sSfLO $u/beads_${v}_linux_amd64.tar.gz && curl -sSfLO $u/checksums.txt
 grep " beads_${v}_linux_amd64.tar.gz\$" checksums.txt | sha256sum -c - && tar -xzf beads_${v}_linux_amd64.tar.gz -C ~/bin bd
 
-# Env (shell profile). The password comes from the credentials file, not env.
+# Env (shell profile). The password comes from the credentials file, not env --
+# except for `bd init`, which ignores the file ("Opting a repo in").
 export DO_NOT_TRACK=1                       # bd phones home otherwise
 export BEADS_DOLT_SERVER_MODE=1             # a plain `bd init` must fail, not go embedded
 export BEADS_DOLT_SERVER_HOST=beads.lab.lanternfyre.dev
@@ -72,18 +73,35 @@ BEADS_DOLT_SERVER_HOST=127.0.0.1 BEADS_DOLT_SERVER_TLS= bd ready
 
 ## Opting a repo in
 
-One deliberate command, run once, committed:
+One deliberate command, run once, by ONE person, committed. bd init commits
+`.beads/` and `.gitignore` by itself, so run it on a branch:
 
 ```bash
-bd init --server --server-user beads --prefix <unique> --skip-agents --skip-hooks
+BEADS_DOLT_PASSWORD="$(kubectl -n beads get secret beads-dolt -o jsonpath='{.data.beads-password}' | base64 -d)" \
+  bd init --server --server-user beads --prefix <unique> --skip-agents --skip-hooks
 bd setup claude          # one SessionStart hook (`bd prime --hook-json`) + a CLAUDE.md block
 ```
 
-- 🔴 **`--prefix` explicit and unique.** It defaults to the directory name, and
-  the same prefix *is* the same database: two repos called `server` would
-  silently share one.
+- 🔴 **init needs the password inline.** It ignores
+  `~/.config/beads/credentials` and fails with `Error 1045 ... Access denied
+  for user 'beads'` (measured 2026-10-24, bd 1.3.2: the file matched the Secret
+  byte for byte, and `bd list` with the same file worked). Every command AFTER
+  init reads the file. The `VAR=… cmd` form keeps the password out of the shell.
+- **A failed init leaves debris**: a `.beads/` with no `metadata.json` and a
+  bd block appended to `.gitignore`. It holds no data -- `rm -rf .beads && git
+  checkout -- .gitignore`, then re-run.
 - 🔴 **`--server-user beads` is mandatory.** init ignores `BEADS_DOLT_SERVER_USER`
   and dials as root, which is refused (measured).
+- 🔴 **`--prefix` explicit and unique; it is the database name.** It defaults to
+  the directory name. List what is taken first:
+  `kubectl -n beads exec beads-dolt-0 -c dolt -- ls /var/lib/dolt/data`.
+  A second init on a taken prefix does NOT silently share it: init "succeeds",
+  writes a NEW `project_id` into its own `metadata.json`, and every later
+  command refuses with `PROJECT IDENTITY MISMATCH` (measured 2026-10-24; the
+  existing project was untouched).
+- 🔴 **Other clones never run init.** A clone attaches through the committed
+  `.beads/metadata.json` (it carries the `project_id`); running init in it
+  hits the mismatch above. This is how the boxes join a repo that opted in.
 - **Host and port from env, never `--server-host`.** Then the committed
   `.beads/metadata.json` pins neither, and the same repo works from the LAN and
   from the boxes.

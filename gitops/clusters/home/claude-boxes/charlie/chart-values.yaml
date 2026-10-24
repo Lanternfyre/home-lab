@@ -56,7 +56,7 @@ storage:
 # Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
 # default image tag follows the chart version, not the workspace release.
 image:
-  tag: "0.1.17"
+  tag: "0.1.18"
 
 # auq through the sidecar, on THIS box's own paired device token -- a device
 # named `claude-box-charlie`, stored in 1Password as "Claude Box Charlie auq", property
@@ -79,6 +79,18 @@ auqProxy:
 # Needs chart >= 0.1.8 and image >= 0.1.17 -- see claude-boxes/README.md.
 remoteControl:
   name: Lanternfyre-box3
+
+# beads, the shared issue graph and memory (chart >= 0.1.9, image >= 0.1.18;
+# apps/beads/README.md). bd reaches beads-dolt.beads:3306 in-cluster, as user
+# `beads` and as BEADS_ACTOR=<remoteControl.name>, so the audit trail and
+# `--claim` say which box did it. The password comes from the `Beads Dolt` item
+# through an ExternalSecret in this namespace; the chart adds the egress rule,
+# and the server's policy admits this namespace by name.
+# ⚠️ OnDelete and no Reloader: after a password rotation bd here fails with
+# "Access denied" until this pod is deleted (README, "Rotate a password").
+beads:
+  enabled: true
+  onePasswordItem: "Beads Dolt"
 
 # Sibling-only restart rights (claude-box >= 0.1.6, helm-compendium#39): these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else. A box can never restart

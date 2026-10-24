@@ -1453,23 +1453,26 @@ One Dolt SQL server in namespace `beads`, shared by every claude box and the
 operator's machine: the agents' issue graph and long-term memory. Detail,
 client setup and runbook: `gitops/clusters/home/apps/beads/README.md`.
 
-1. **Create the 1Password item `Beads Dolt`** (vault the `one-password` store
+1. ✅ **Create the 1Password item `Beads Dolt`** (done 2026-10-24) (vault the `one-password` store
    reads) with two fields, both long random strings:
    - `admin-password` -- `admin`@`localhost`, used only via `kubectl exec`
    - `beads-password` -- the app user every client connects as
    Before the `apps/beads` PR syncs: until it exists the ExternalSecret stays
    unready and the server pod waits in `CreateContainerConfigError`, which is
    the fail-closed state, not damage.
-2. **Merge, in order, confirming each NEW tag:** helm-compendium #43 (`dolt`
+2. ✅ **Merge, in order, confirming each NEW tag** (all verified 2026-10-24;
+   the server is live, and the last PR is the one switching the boxes on):
+   helm-compendium #43 (`dolt`
    chart, expect `dolt-v0.1.0`), then the home-lab `apps/beads` PR. Then
    docker-compendium #30 (expect `claude-workspace-v0.1.18`) and
    helm-compendium #44 (`claude-box`, expect `claude-box-v0.1.9`), then the
    home-lab PR that switches the boxes on.
 3. **Delete each box's pod when idle** once the boxes are switched on
    (`OnDelete`). That also lands the pending Remote Control names from #250.
-4. **Your machine**: `bd` into `~/bin`, the env lines and the credentials file
-   from the README ("The operator's machine"). The password is the
-   `beads-password` field.
+4. ✅ **Your machine** (done 2026-10-24): `bd`, the env lines and the
+   credentials file from the README ("The operator's machine"). The password
+   is the `beads-password` field.
 5. **Opting a repo in** is a deliberate, committed command -- README, "Opting a
    repo in". Necronia2.0 is the first candidate, under its own plan. ⚠️ Always an
-   explicit, unique `--prefix`.
+   explicit, unique `--prefix`, and 🔴 `BEADS_DOLT_PASSWORD=… bd init …` inline:
+   init ignores the credentials file and fails `Access denied` without it.
