@@ -59,6 +59,15 @@ spec:
             io.kubernetes.pod.namespace: claude-box-echo
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-foxtrot
+        # The Lanternfyre role boxes added 2026-10-25 (claude-boxes/golf = ops,
+        # hotel = implementer-1, india = implementer-2), reusing alpha's,
+        # bravo's and charlie's device tokens pairwise.
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-golf
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-hotel
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-india
 
     # Prometheus. Nothing scrapes auq today; allowed so that adding a
     # ServiceMonitor later is not a silent metrics gap.

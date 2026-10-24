@@ -427,6 +427,48 @@ protected:
       NONE, for the same reasons as alpha: reconstructible except UNPUSHED
       work, which the box is expected to push.
 
+  - namespace: claude-box-golf
+    claim: home-claude-box-golf-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      ops.lab.lanternfyre.dev's $HOME (claude-boxes/golf, a Lanternfyre role box,
+      clean side of the Necronia v2 clean room): the Anthropic OAuth credential,
+      shell history and skills, and checkouts of the repositories in its
+      chart-values.yaml. Born empty on 2026-10-25 -- it must never be swapped for
+      an older volume, which could carry v1 C++ material.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
+  - namespace: claude-box-hotel
+    claim: home-claude-box-hotel-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      implementer-1.lab.lanternfyre.dev's $HOME (claude-boxes/hotel, a Lanternfyre role box,
+      clean side of the Necronia v2 clean room): the Anthropic OAuth credential,
+      shell history and skills, and checkouts of the repositories in its
+      chart-values.yaml. Born empty on 2026-10-25 -- it must never be swapped for
+      an older volume, which could carry v1 C++ material.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
+  - namespace: claude-box-india
+    claim: home-claude-box-india-0
+    size: 20Gi
+    storageClass: qnap-iscsi
+    what: >-
+      implementer-2.lab.lanternfyre.dev's $HOME (claude-boxes/india, a Lanternfyre role box,
+      clean side of the Necronia v2 clean room): the Anthropic OAuth credential,
+      shell history and skills, and checkouts of the repositories in its
+      chart-values.yaml. Born empty on 2026-10-25 -- it must never be swapped for
+      an older volume, which could carry v1 C++ material.
+    backup: >-
+      NONE, for the same reasons as alpha: reconstructible except UNPUSHED
+      work, which the box is expected to push.
+
 unprotected:
   - namespace: immich
     claim: immich-machine-learning

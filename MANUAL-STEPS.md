@@ -1467,8 +1467,8 @@ client setup and runbook: `gitops/clusters/home/apps/beads/README.md`.
    docker-compendium #30 (expect `claude-workspace-v0.1.18`) and
    helm-compendium #44 (`claude-box`, expect `claude-box-v0.1.9`), then the
    home-lab PR that switches the boxes on.
-3. **Delete each box's pod when idle** once the boxes are switched on
-   (`OnDelete`). That also lands the pending Remote Control names from #250.
+3. ✅ **Box pod restarts** -- no longer manual: the role-box PR (2026-10-25) sets
+   every box to `updateStrategy: RollingUpdate`, so the merge restarts them.
 4. ✅ **Your machine** (done 2026-10-24): `bd`, the env lines and the
    credentials file from the README ("The operator's machine"). The password
    is the `beads-password` field.
@@ -1476,3 +1476,35 @@ client setup and runbook: `gitops/clusters/home/apps/beads/README.md`.
    repo in". Necronia2.0 is the first candidate, under its own plan. ⚠️ Always an
    explicit, unique `--prefix`, and 🔴 `BEADS_DOLT_PASSWORD=… bd init …` inline:
    init ignores the credentials file and fails `Access denied` without it.
+
+## 🟡 Lanternfyre role boxes -- operator, spec-writer, oracle-ops, ops, implementers (2026-10-25)
+
+The Necronia v2 plan's per-role boxes (O30). Layout, clean-room sides and why:
+`gitops/clusters/home/claude-boxes/README.md`, "The Lanternfyre boxes are ROLE
+boxes". alpha/bravo/charlie are renamed (`operator`, `spec-writer`,
+`oracle-ops`); golf/hotel/india are new (`ops`, `implementer-1`,
+`implementer-2`).
+
+1. **Merge helm-compendium #46 first** (claude-box `updateStrategy`; expect a
+   NEW tag `claude-box-v0.1.10`), then the home-lab role-box PR.
+2. 🔴 **That merge restarts all nine boxes at once** (RollingUpdate, plus a
+   changed pod spec on each). Push anything unpushed in alpha/bravo/charlie
+   first, and expect their running sessions to end.
+3. **Log Claude in on each NEW box**, once -- the login lives on the volume, and
+   golf/hotel/india start empty:
+   ```sh
+   kubectl exec -it -n claude-box-golf  claude-box-golf-0  -- attach   # then /login
+   kubectl exec -it -n claude-box-hotel claude-box-hotel-0 -- attach
+   kubectl exec -it -n claude-box-india claude-box-india-0 -- attach
+   ```
+   Use the SAME Anthropic account as the operator box, or ListAgents cannot see
+   them. On the first `/rc`, answer Claude's one-time Remote Control prompt.
+4. **Check window 0 on alpha/bravo/charlie after their restart.** Their
+   conversations carry a remote session recorded under the OLD name
+   (`Lanternfyre-box1..3`), and `--continue` reattaches to that. If window 0
+   shows the old title or `Previous session is unavailable`, type
+   `/rc Lanternfyre-<role>` once.
+5. **Not yet:** Necronia2.0 on the clean boxes (after M0/S03, as a history-cut
+   clone -- a claude-box chart change), per-box CPU/memory limits, read-only
+   mounts and per-role `.claude/roles/*.json` (plan S01 (8) / S04).
+

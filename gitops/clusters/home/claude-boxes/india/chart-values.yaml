@@ -1,0 +1,87 @@
+# india's values for the claude-box chart -- the implementer-2 box,
+# https://implementer-2.lab.lanternfyre.dev (Necronia v2 plan, O30; added 2026-10-25).
+#
+# A ROLE BOX: the second implementer, so two slices run in parallel. Same rules as
+# implementer-1 (hotel).
+#
+# 🔴 BORN CLEAN. A new box starts on a new, empty home volume -- no v1 checkout,
+# no old Claude transcripts -- which is why the clean-side roles are NEW boxes and
+# the C++-side ones (spec-writer = bravo, oracle-ops = charlie) are the boxes
+# that already held the v1 code. Never reuse an old volume for this box.
+#
+# bravo's shape otherwise: no shared ClusterRole, 20Gi, Lanternfyre installation
+# only, beads on, auq on a shared device token.
+
+# One `owner/repo` per entry: what seed-repos clones AND what the broker's token
+# covers. An edit rescopes the token within 45 minutes, with no restart.
+# 🔴 A PLACEHOLDER. The chart refuses an empty list, and the real working repo,
+# `Lanternfyre/Necronia2.0`, must not be cloned here before M0/S03 removes its
+# tainted docs -- and then only as a HISTORY-CUT clone, which seed-repos cannot do
+# yet (a claude-box chart change). Never `Lanternfyre/Necronia` (v1, GPL C++).
+#
+# Swapping repos: edit this list. A new entry is cloned at the next pod start and
+# the token rescopes within 45 minutes; a REMOVED entry's checkout stays on the
+# volume (seed-repos never deletes) -- delete it by hand if it must go.
+repos:
+  - Lanternfyre/github-actions-compendium
+
+console:
+  hostname: implementer-2.lab.lanternfyre.dev
+  homepageName: implementer-2
+
+# 🔴 Lanternfyre installation ONLY, as on alpha..charlie: with t3chy0n absent, an
+# edit that added a t3chy0n repo to `repos:` fails the render instead of quietly
+# widening this box's token.
+github:
+  installations:
+    - lanternfyre
+
+# 🔴 alpha owns the shared `claude-box-reader` ClusterRole; this release only binds.
+rbac:
+  clusterRole:
+    create: false
+
+# 20Gi, as bravo. To grow it, resize the CLAIM (bravo's chart-values.yaml says
+# how), never this value -- volumeClaimTemplates are immutable.
+storage:
+  size: 20Gi
+
+image:
+  tag: "0.1.18"
+
+# auq on charlie's paired device token, shared (operator, 2026-10-25: "We
+# don't mind same device tokens for now"). Its cards therefore show charlie's
+# device, and unpairing it cuts off both boxes. To split: pair a device
+# `claude-box-india`, store it as "Claude Box India auq", change this line.
+auqProxy:
+  enabled: true
+  onePasswordItem: "Claude Box Charlie auq"
+
+# window 0 registers as `Lanternfyre-implementer-2`; also its BEADS_ACTOR, so every bead
+# it claims or writes is recorded under the role name.
+remoteControl:
+  name: Lanternfyre-implementer-2
+
+beads:
+  enabled: true
+  onePasswordItem: "Beads Dolt"
+
+# Argo replaces the pod by itself on any spec change (claude-box >= 0.1.10;
+# operator decision 2026-10-25: session restarts are an accepted risk).
+updateStrategy: RollingUpdate
+
+# Only the operator box (alpha) may restart this one. The plan's rule is that
+# role boxes never act on each other; the operator drives them.
+restartableBy:
+  serviceAccounts:
+    - {namespace: claude-box-alpha, name: claude-box-alpha}
+
+# Actions LOG storage, so `gh run view --log-failed` works (the sa<N> prefix
+# rotates, hence matchPattern; same entry and reasoning as bravo's). Nothing
+# else beyond the chart's default egress.
+networkPolicy:
+  extraEgress:
+    - toFQDNs:
+        - matchPattern: "*.blob.core.windows.net"
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]

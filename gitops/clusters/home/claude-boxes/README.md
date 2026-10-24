@@ -16,12 +16,35 @@ carries only what differs per box.
 
 | dir | console | Remote Control name | repos | volume | auq |
 |---|---|---|---|---|---|
-| `alpha` | `https://box1.lab.lanternfyre.dev` | `Lanternfyre-box1` | Lanternfyre | 40Gi | on |
-| `bravo` | `https://box2.lab.lanternfyre.dev` | `Lanternfyre-box2` | Lanternfyre | 20Gi | on |
-| `charlie` | `https://box3.lab.lanternfyre.dev` | `Lanternfyre-box3` | Lanternfyre | 20Gi | on |
+| `alpha` | `https://operator.lab.lanternfyre.dev` | `Lanternfyre-operator` | Lanternfyre (all) | 40Gi | on |
+| `bravo` | `https://spec-writer.lab.lanternfyre.dev` | `Lanternfyre-spec-writer` | Lanternfyre (all) | 20Gi | on |
+| `charlie` | `https://oracle-ops.lab.lanternfyre.dev` | `Lanternfyre-oracle-ops` | Lanternfyre (all) | 20Gi | on |
+| `golf` | `https://ops.lab.lanternfyre.dev` | `Lanternfyre-ops` | Lanternfyre, clean | 20Gi | on (alpha's token) |
+| `hotel` | `https://implementer-1.lab.lanternfyre.dev` | `Lanternfyre-implementer-1` | placeholder, clean | 20Gi | on (bravo's token) |
+| `india` | `https://implementer-2.lab.lanternfyre.dev` | `Lanternfyre-implementer-2` | placeholder, clean | 20Gi | on (charlie's token) |
 | `delta` | `https://box1.lab.techyon.dev` | `Techyon-box1` | t3chy0n | 20Gi | on (alpha's token) |
 | `echo` | `https://box2.lab.techyon.dev` | `Techyon-box2` | t3chy0n | 20Gi | on (bravo's token) |
 | `foxtrot` | `https://box3.lab.techyon.dev` | `Techyon-box3` | t3chy0n | 20Gi | on (charlie's token) |
+
+**The Lanternfyre boxes are ROLE boxes (2026-10-25)** -- the Necronia v2 plan's
+clean room (O30, `~/.claude/plans/this-is-project-we-cheerful-pizza.md`,
+"Clean-room process"). Hostname and Remote Control name are the role; the
+directory stays the box's permanent identity (it names the namespace and the
+volume), so a role can move to another box without orphaning anything.
+
+- **C++ side** -- may read the v1 GPL code: `operator` (alpha: the
+  orchestrator, reads everything, drives the others, never runs slices),
+  `spec-writer` (bravo), `oracle-ops` (charlie). They kept their volumes.
+- **Clean side** -- must never see it: `ops` (golf), `implementer-1/2` (hotel,
+  india). **New boxes on new, empty volumes**, never an old one, and no
+  `Lanternfyre/Necronia` in `repos:`. `Lanternfyre/Necronia2.0` joins them only
+  after M0/S03 removes its tainted docs, as a history-cut clone (a chart change
+  still to come); until then the implementers hold a placeholder repo.
+- **Only the operator messages boxes**, and to clean boxes only bead ids and
+  commands, never C++ detail. Work itself is pulled from Beads by role label.
+- **Every box is `updateStrategy: RollingUpdate`** (chart >= 0.1.10, operator
+  2026-10-25): Argo replaces the pod as soon as a spec change syncs -- a merged
+  values edit **restarts that box's session**, unannounced.
 
 **Two groups, split by DNS domain (2026-10-22).** Lanternfyre work is on
 `lanternfyre.dev`, techyon work on `techyon.dev`. A group's boxes pin
@@ -30,7 +53,7 @@ render instead of quietly widening the token. The domain is only the
 hostname -- the gate, the Gateway and the listener are the same for both.
 
 What the two groups SHARE (operator, 2026-10-22): the GitHub App and its key,
-the console item (one ttyd credential and SSH host key for all six), the GHCR
+the console item (one ttyd credential and SSH host key for all nine), the GHCR
 pull secret, the github MCP proxy's PAT, and the auq device tokens -- each
 techyon box reuses its Lanternfyre counterpart's, so unpairing that device in
 auq cuts off both. What differs: repos, `github.installations`, hostname, and
@@ -202,11 +225,10 @@ Mechanics, measured on 2.1.268 (2026-10-23) before any of this shipped:
    operator's personal account (checked 2026-10-23); delta, echo and foxtrot
    have no login yet. A techyon box logged into a different account is
    invisible to an orchestrator on the first one.
-3. **A pod delete**, once the pins move: chart >= `0.1.8` in `app.yaml`, image
-   >= `0.1.17` in `chart-values.yaml` (now `0.1.9` / `0.1.18`, which also
-   switch beads on -- `apps/beads/README.md`). `OnDelete`, as ever -- pick the
-   moment. As of 2026-10-24 all six still run image `0.1.16`: one delete each
-   lands the Remote Control name AND beads.
+3. **A pod restart**, once the pins move: chart >= `0.1.8` in `app.yaml`, image
+   >= `0.1.17` in `chart-values.yaml`. Since 0.1.10 every box is
+   `updateStrategy: RollingUpdate`, so Argo does it by itself when the change
+   syncs -- no manual delete.
    To get a running box online now without losing its session, type
    `/rc Lanternfyre-box1` (its own name) in window 0; `--continue` reattaches
    to that same remote session at the next restart.
@@ -253,7 +275,7 @@ classes still means a new volume, and the login lives on the old one.
 kubectl exec -n claude-box-alpha claude-box-alpha-0 -- \
   bash -lc 'for d in ~/work/*/; do git -C "$d" status --porcelain; done'
 
-kubectl -n claude-box-alpha delete pod claude-box-alpha-0   # OnDelete: deliberate
+kubectl -n claude-box-alpha delete pod claude-box-alpha-0   # deliberate: the session ends here
 kubectl -n claude-box-alpha delete pvc home-claude-box-alpha-0
 # edit the storage class / placement, commit, let Argo sync, then re-login
 ```
