@@ -24,10 +24,13 @@ repos:
   - Lanternfyre/Necronia2.0
 
 console:
-  # Moved from box1.lab.techyon.dev on 2026-10-22: Lanternfyre work lives on
-  # lanternfyre.dev, and box1.lab.techyon.dev now belongs to a techyon box.
-  hostname: box1.lab.lanternfyre.dev
-  homepageName: box1
+  # 🔴 A ROLE BOX (Necronia v2 plan, O30; operator 2026-10-25): `operator` --
+  # the orchestrator: reads everything, drives the role boxes through Beads and
+  # ListAgents/SendMessage, and never runs slices itself.
+  # Was box1.lab.lanternfyre.dev. A hostname change needs its authentik
+  # redirect URI too (apps/authentik/manifests/blueprint-envoy-gateway...).
+  hostname: operator.lab.lanternfyre.dev
+  homepageName: operator
 
 # 🔴 lanternfyre boxes mint for the Lanternfyre installation ONLY (2026-10-22).
 # The chart default is both orgs; with t3chy0n listed, an edit that added a
@@ -52,12 +55,12 @@ auqProxy:
   onePasswordItem: "Claude Box Alpha auq"
 
 # Remote Control under this box's address (operator request 2026-10-23):
-# window 0 registers as `Lanternfyre-box1`, drivable from claude.ai/code and the app,
+# window 0 registers as `Lanternfyre-operator`, drivable from claude.ai/code and the app,
 # and reachable BY NAME from the operator's other sessions (ListAgents /
 # SendMessage). Brand from the console's domain, number from its hostname.
 # Needs chart >= 0.1.8 and image >= 0.1.17 -- see claude-boxes/README.md.
 remoteControl:
-  name: Lanternfyre-box1
+  name: Lanternfyre-operator
 
 # beads, the shared issue graph and memory (chart >= 0.1.9, image >= 0.1.18;
 # apps/beads/README.md). bd reaches beads-dolt.beads:3306 in-cluster, as user
@@ -70,6 +73,12 @@ remoteControl:
 beads:
   enabled: true
   onePasswordItem: "Beads Dolt"
+
+# Argo replaces the pod by itself on any spec change -- a new image, an env var,
+# a renamed Remote Control -- instead of waiting for a manual pod delete
+# (claude-box >= 0.1.10; operator decision 2026-10-25: session restarts are an
+# accepted risk). 🔴 Every such sync kills the running session unannounced.
+updateStrategy: RollingUpdate
 
 # Sibling-only restart rights (claude-box >= 0.1.6, helm-compendium#39): these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else. A box can never restart

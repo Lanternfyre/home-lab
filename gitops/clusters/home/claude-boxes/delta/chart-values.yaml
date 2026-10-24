@@ -81,6 +81,12 @@ beads:
   enabled: true
   onePasswordItem: "Beads Dolt"
 
+# Argo replaces the pod by itself on any spec change -- a new image, an env var,
+# a renamed Remote Control -- instead of waiting for a manual pod delete
+# (claude-box >= 0.1.10; operator decision 2026-10-25: session restarts are an
+# accepted risk). 🔴 Every such sync kills the running session unannounced.
+updateStrategy: RollingUpdate
+
 # Sibling-only restart rights, within the techyon group: these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else.
 restartableBy:

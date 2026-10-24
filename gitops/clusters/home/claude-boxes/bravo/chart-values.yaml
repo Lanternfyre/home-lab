@@ -1,4 +1,4 @@
-# bravo's values for the claude-box chart -- box2, https://box2.lab.lanternfyre.dev.
+# bravo's values for the claude-box chart -- the spec-writer box, https://spec-writer.lab.lanternfyre.dev.
 #
 # alpha's shape with three deliberate differences, each explained where it is
 # set: this release does not create the shared ClusterRole, the volume is 20Gi,
@@ -20,10 +20,13 @@ repos:
   - Lanternfyre/Necronia2.0
 
 console:
-  # Moved from box2.lab.techyon.dev on 2026-10-22: Lanternfyre work lives on
-  # lanternfyre.dev, and box2.lab.techyon.dev now belongs to a techyon box.
-  hostname: box2.lab.lanternfyre.dev
-  homepageName: box2
+  # 🔴 A ROLE BOX (Necronia v2 plan, O30; operator 2026-10-25): `spec-writer` --
+  # writes specs from the C++ oracle (rewrite/specs/**); it may read the GPL
+  # code, so it never talks to a clean box.
+  # Was box2.lab.lanternfyre.dev. A hostname change needs its authentik
+  # redirect URI too (apps/authentik/manifests/blueprint-envoy-gateway...).
+  hostname: spec-writer.lab.lanternfyre.dev
+  homepageName: spec-writer
 
 # 🔴 lanternfyre boxes mint for the Lanternfyre installation ONLY (2026-10-22).
 # The chart default is both orgs; with t3chy0n listed, an edit that added a
@@ -73,12 +76,12 @@ auqProxy:
   onePasswordItem: "Claude Box Bravo auq"
 
 # Remote Control under this box's address (operator request 2026-10-23):
-# window 0 registers as `Lanternfyre-box2`, drivable from claude.ai/code and the app,
+# window 0 registers as `Lanternfyre-spec-writer`, drivable from claude.ai/code and the app,
 # and reachable BY NAME from the operator's other sessions (ListAgents /
 # SendMessage). Brand from the console's domain, number from its hostname.
 # Needs chart >= 0.1.8 and image >= 0.1.17 -- see claude-boxes/README.md.
 remoteControl:
-  name: Lanternfyre-box2
+  name: Lanternfyre-spec-writer
 
 # beads, the shared issue graph and memory (chart >= 0.1.9, image >= 0.1.18;
 # apps/beads/README.md). bd reaches beads-dolt.beads:3306 in-cluster, as user
@@ -91,6 +94,12 @@ remoteControl:
 beads:
   enabled: true
   onePasswordItem: "Beads Dolt"
+
+# Argo replaces the pod by itself on any spec change -- a new image, an env var,
+# a renamed Remote Control -- instead of waiting for a manual pod delete
+# (claude-box >= 0.1.10; operator decision 2026-10-25: session restarts are an
+# accepted risk). 🔴 Every such sync kills the running session unannounced.
+updateStrategy: RollingUpdate
 
 # Sibling-only restart rights (claude-box >= 0.1.6, helm-compendium#39): these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else. A box can never restart
