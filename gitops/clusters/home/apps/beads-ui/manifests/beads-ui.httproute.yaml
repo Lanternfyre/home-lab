@@ -1,0 +1,45 @@
+# The beads board on the GATED Gateway: Google sign-in in front of an app that
+# has no authentication of its own (its README: "do NOT expose this app to
+# untrusted networks without auth"). Anyone past the gate can read AND write
+# every declared project -- the in-app read-only mode is a browser preference,
+# not access control.
+#
+# The hostname must also be in chart-values.yaml `allowedHosts`, or the app's
+# DNS-rebinding guard answers every page with a 403.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: beads-ui
+  namespace: beads-ui
+  annotations:
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: beads
+    gethomepage.dev/description: Agents' issue board (bead-me-up-scotty)
+    gethomepage.dev/group: Agents
+    gethomepage.dev/icon: mdi-view-column
+spec:
+  parentRefs:
+    - name: homelab-gated
+      namespace: gateway-envoy
+      sectionName: https
+  hostnames:
+    - beads-ui.lab.lanternfyre.dev
+  rules:
+    # ── The change stream (SSE) ────────────────────────────────────────────
+    # 🔴 `0s` DISABLES THE TIMEOUT. Envoy's default route timeout is 15s of
+    # TOTAL request time, so the stream would be cut and re-opened every 15s
+    # (the netbird-edge and auq lesson). The app sends a heartbeat every 25s,
+    # which keeps idle proxies open but does nothing against a total timeout.
+    - matches:
+        - path:
+            type: RegularExpression
+            value: "^/api/p/[^/]+/beads/stream$"
+      timeouts: {request: 0s}
+      backendRefs:
+        - {name: beads-ui-bead-me-up-scotty, port: 80}
+    # ── Everything else ────────────────────────────────────────────────────
+    # 60s, not the inherited 15s: a page load is several bd subprocesses, and
+    # the first one after a pod start is slow.
+    - timeouts: {request: 60s}
+      backendRefs:
+        - {name: beads-ui-bead-me-up-scotty, port: 80}

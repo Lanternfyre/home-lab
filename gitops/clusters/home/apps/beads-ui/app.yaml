@@ -1,0 +1,14 @@
+# beads-ui -- Bead Me Up, Scotty, the web board for beads, on the shared Dolt
+# server in apps/beads. Behind Google sign-in (the gated Gateway): the app has
+# no authentication of its own.
+#
+# The chart is helm-compendium's `bead-me-up-scotty/`; the image is
+# docker-compendium's `bead-me-up-scotty/` (upstream source, pinned commit,
+# our bd pin). Everything that says WHO may reach it is in manifests/.
+#
+#Notice chart name has to be a part of repoURL for oci
+repoURL: "ghcr.io/lanternfyre/charts"
+chart: "bead-me-up-scotty"
+targetRevision: "0.1.0"
+releaseName: "beads-ui"
+namespace: "beads-ui"

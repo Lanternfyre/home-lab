@@ -1,0 +1,19 @@
+# beads-ui
+#
+# The one app here: Bead Me Up, Scotty, the web board for beads (apps/beads-ui).
+#
+# Measured against the image the chart deploys, run in docker on 2026-10-24
+# under the chart's settings: non-root (uid 1001), all capabilities dropped,
+# no-new-privileges, read-only root filesystem with emptyDirs for /data, the
+# config dir and /tmp; no host namespaces or hostPath. That is `restricted`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: beads-ui
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: v1.35
