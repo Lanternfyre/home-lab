@@ -202,8 +202,11 @@ Mechanics, measured on 2.1.268 (2026-10-23) before any of this shipped:
    operator's personal account (checked 2026-10-23); delta, echo and foxtrot
    have no login yet. A techyon box logged into a different account is
    invisible to an orchestrator on the first one.
-3. **A pod delete**, once the pins move: chart `0.1.8` in `app.yaml`, image
-   `0.1.17` in `chart-values.yaml`. `OnDelete`, as ever -- pick the moment.
+3. **A pod delete**, once the pins move: chart >= `0.1.8` in `app.yaml`, image
+   >= `0.1.17` in `chart-values.yaml` (now `0.1.9` / `0.1.18`, which also
+   switch beads on -- `apps/beads/README.md`). `OnDelete`, as ever -- pick the
+   moment. As of 2026-10-24 all six still run image `0.1.16`: one delete each
+   lands the Remote Control name AND beads.
    To get a running box online now without losing its session, type
    `/rc Lanternfyre-box1` (its own name) in window 0; `--continue` reattaches
    to that same remote session at the next restart.

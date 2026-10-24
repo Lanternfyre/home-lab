@@ -43,7 +43,7 @@ github:
 # claude-workspace:<chart version>. Without this pin a pod delete rolls alpha
 # onto an unrelated, older image.
 image:
-  tag: "0.1.17"
+  tag: "0.1.18"
 
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
@@ -58,6 +58,18 @@ auqProxy:
 # Needs chart >= 0.1.8 and image >= 0.1.17 -- see claude-boxes/README.md.
 remoteControl:
   name: Lanternfyre-box1
+
+# beads, the shared issue graph and memory (chart >= 0.1.9, image >= 0.1.18;
+# apps/beads/README.md). bd reaches beads-dolt.beads:3306 in-cluster, as user
+# `beads` and as BEADS_ACTOR=<remoteControl.name>, so the audit trail and
+# `--claim` say which box did it. The password comes from the `Beads Dolt` item
+# through an ExternalSecret in this namespace; the chart adds the egress rule,
+# and the server's policy admits this namespace by name.
+# ⚠️ OnDelete and no Reloader: after a password rotation bd here fails with
+# "Access denied" until this pod is deleted (README, "Rotate a password").
+beads:
+  enabled: true
+  onePasswordItem: "Beads Dolt"
 
 # Sibling-only restart rights (claude-box >= 0.1.6, helm-compendium#39): these OTHER boxes'
 # service accounts may get/delete THIS box's pod, and nothing else. A box can never restart
