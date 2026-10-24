@@ -4,8 +4,12 @@
 # every declared project -- the in-app read-only mode is a browser preference,
 # not access control.
 #
-# The hostname must also be in chart-values.yaml `allowedHosts`, or the app's
-# DNS-rebinding guard answers every page with a 403.
+# 🔴 A NEW HOSTNAME HERE NEEDS TWO MORE EDITS, or it fails:
+#   * chart-values.yaml `allowedHosts`, or the app's DNS-rebinding guard
+#     answers every page with a 403;
+#   * its redirect URI in apps/authentik/manifests/
+#     blueprint-envoy-gateway.external-secret.yaml, or the gate's sign-in
+#     fails with authentik's "Redirect URI Error" (measured on first deploy).
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -17,6 +21,11 @@ metadata:
     gethomepage.dev/description: Agents' issue board (bead-me-up-scotty)
     gethomepage.dev/group: Agents
     gethomepage.dev/icon: mdi-view-column
+    # 🔴 Explicit, or the tile has NO link: homepage derives href from the
+    # FIRST rule's path, and that is the stream's RegularExpression match, which
+    # it cannot turn into a URL (measured: href null in /api/services). Same
+    # mechanism sends auq's tile to /api/events, its first rule.
+    gethomepage.dev/href: https://beads-ui.lab.lanternfyre.dev/
 spec:
   parentRefs:
     - name: homelab-gated
