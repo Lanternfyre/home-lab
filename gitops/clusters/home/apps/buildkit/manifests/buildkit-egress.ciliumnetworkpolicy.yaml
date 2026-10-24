@@ -158,6 +158,16 @@ spec:
         # served from the registry host itself (checked: the `dist.tarball` URL
         # is registry.npmjs.org), so there is no separate CDN name.
         - matchName: registry.npmjs.org
+        # ── Google Fonts, for Next.js builds (bead-me-up-scotty, 2026-10-24) ─
+        # `next/font/google` downloads the font at BUILD time and self-hosts it
+        # in the image, so the running app never contacts Google -- but without
+        # these the build FAILS: "next/font: error: Failed to fetch Geist from
+        # Google Fonts" (measured: docker build with both names pointed at
+        # 127.0.0.1). The CSS comes from fonts.googleapis.com and every url()
+        # in it is fonts.gstatic.com, which answers 200 with no redirect --
+        # traced 2026-10-24 for Geist and Geist Mono.
+        - matchName: fonts.googleapis.com
+        - matchName: fonts.gstatic.com
         # ── NuGet, for the auq-server image (claude-workbench) ─────────────
         # 🔴 mcr.microsoft.com above covers the .NET BASE IMAGES only. A build
         # that runs `dotnet restore` -- or `dotnet tool install --global
