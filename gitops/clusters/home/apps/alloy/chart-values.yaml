@@ -1,16 +1,38 @@
-# grafana/alloy chart — DaemonSet role: tails pod logs on every node and ships
-# them to the in-cluster Loki. This is the log-collection sidecar of the
-# observability stack. Traces and external-app ingest are handled by a separate
-# alloy-gateway Deployment (see ../alloy-gateway/).
+# grafana/alloy chart — DaemonSet role: tails every pod's logs and ships them to
+# the in-cluster Loki. This is the log-collection sidecar of the observability
+# stack. Traces and external-app ingest are handled by a separate alloy-gateway
+# Deployment (see ../alloy-gateway/).
 #
 # Config uses discovery.kubernetes to label log streams by namespace/pod/container/node
 # and loki.source.kubernetes to stream the logs directly via the Kubernetes API
 # (no hostPath mounts required).
+#
+# ── Clustered, NOT node-local ────────────────────────────────────────────────
+# Until 2026-10-25 every instance tailed EVERY pod: discovery is cluster-wide
+# and nothing split the targets, so all seven sent the same ~58 lines/s (409/s
+# out for 58/s of logs). Loki deduplicated it, which is why nobody saw it -- it
+# was 7x the API-server and Loki load, and 7x every re-sent line below.
+#
+# The obvious DaemonSet fix -- a spec.nodeName selector on discovery -- would
+# have silently stopped collecting k8s-edge1. Alloy does not tolerate the edge
+# taint, so no instance runs there, and the edge Envoy / cilium / trident logs
+# reach Loki ONLY because a home node tails them through the API server.
+# Clustering shards all targets across the peers instead, edge pods included.
+#
+# Read positions live in --storage.path=/tmp/alloy, the container filesystem,
+# so a restart -- or a target moving to another peer when membership changes --
+# re-reads that container's log from the start. Loki dedups or refuses the
+# overlap (too_far_behind); nothing is lost. AlloyLogDeliveryFailing's 15m is
+# there so that replay does not page.
 
 controller:
   type: daemonset
 
 alloy:
+  clustering:
+    # Without this the clustering block below is a documented no-op and every
+    # instance goes back to tailing everything.
+    enabled: true
   configMap:
     content: |
       discovery.kubernetes "pods" {
@@ -46,7 +68,32 @@ alloy:
 
       loki.source.kubernetes "pods" {
         targets    = discovery.relabel.pod_logs.output
+        forward_to = [loki.process.drop_too_old.receiver]
+
+        clustering {
+          enabled = true
+        }
+      }
+
+      // Every tailer reconnects at least hourly (maxTailerLifetime in Alloy's
+      // kubetail) and resumes AT its last line's timestamp, skipping only
+      // lines strictly older -- so that last line is sent again each time.
+      // Once a quiet container's last line passes Loki's
+      // reject_old_samples_max_age (1w), Loki refuses it, every hour, forever.
+      // That was all of AlloyLogDeliveryFailing's Pushover noise in Oct 2026;
+      // the refused line was checked and is already in Loki, once.
+      //
+      // Loki refuses these regardless, so dropping them here loses nothing and
+      // keeps loki_write_dropped_entries_total meaning "Loki refused something
+      // it should have taken". 167h: an hour inside Loki's limit, so batching
+      // delay cannot carry a line across it.
+      loki.process "drop_too_old" {
         forward_to = [loki.write.default.receiver]
+
+        stage.drop {
+          older_than          = "167h"
+          drop_counter_reason = "older_than_loki_accepts"
+        }
       }
 
       loki.write "default" {
@@ -71,8 +118,10 @@ serviceAccount:
 # found loki_write_dropped_entries_total{reason="ingester_error"} at 7.2 MILLION
 # against 13.2 million sent, on every node. (Measured further before panicking:
 # the counter has not moved in 60s, so it is a historical replay of entries
-# older than Loki's 14d retention -- "timestamp too old" -- not current loss.
-# Correct to drop; wrong that nobody could see it either way.)
+# older than Loki accepts -- "timestamp too old" -- not current loss.
+# Correct to drop; wrong that nobody could see it either way.) The cutoff is
+# reject_old_samples_max_age (1w), not the 14d retention; such lines are now
+# dropped before sending, by drop_too_old above.
 serviceMonitor:
   enabled: true
   additionalLabels:

@@ -2496,6 +2496,26 @@ correctly refused. Two lessons, both cheap: **alert on the rate, never the
 counter** (a rule on the total would have fired permanently on day one), and a
 seven-figure counter is a claim about all of history, not about now.
 
+**"Identically on all five nodes" was the clue, and it took until 2026-10-25 to
+read it.** Every Alloy instance was tailing *every* pod in the cluster —
+cluster-wide discovery, nothing splitting the targets — so seven instances each
+sent the same ~58 lines/s. Loki deduplicated it, so no query ever showed a
+double. Per-instance send rates that match to the decimal, on nodes whose
+workloads differ by an order of magnitude, cannot be per-node collection. Fixed
+with Alloy clustering, **not** the textbook DaemonSet `spec.nodeName` filter:
+Alloy does not run on `k8s-edge1`, and the edge node's logs reach Loki only
+because a home node tails them through the API server. The node filter would
+have dropped them without an error. Two corrections to the paragraph above
+came with it. The cutoff is `reject_old_samples_max_age` (1w), not the 14d
+retention. And the steady trickle that paged through Pushover was not a
+restart replay: each kubetail tailer reconnects hourly and resumes *at* its
+last line's timestamp, so a quiet container's last line is re-sent every hour
+until it ages past 1w and is refused from then on. Alloy now drops anything
+older than 167h before sending. Loki is now scraped too: Alloy reports every
+400 as `ingester_error` and counts the whole batch (5.3M "dropped" for ~450k
+lines Loki actually refused), so only `loki_discarded_samples_total{reason}`
+says what was refused and why.
+
 **node-exporter cannot see inside PVCs, and no amount of collector config
 changes that.** The 2026-08-16 fix admitted `/var/lib/kubelet/pods/...` to the
 filesystem collector so `node_filesystem_readonly` and
