@@ -1,99 +1,12 @@
-# home-lab
+# home-lab: agent instructions
 
-GitOps repo for an **8-node** k3s cluster (ArgoCD app-of-apps) plus the Ansible
-that manages the nodes:
+@README.md
 
-* **7 at home** -- 3 control-plane/etcd servers (k8s-1, k8s-2, k8s-3, the three
-  identical 4-CPU/16GB boxes) + 4 agents (k8s-4, k8s-5, k8s-6, k8s-7, the big
-  ones, which is where CI belongs).
-* **1 public edge** -- `edge-1.edge`, a VPS joined as an agent over WireGuard.
-  Tainted and labelled so only the edge Envoy lands on it; it is the ONLY node
-  in this fleet that is not trusted infrastructure. See
-  [EDGE-NODE.md](EDGE-NODE.md).
+The README above holds the overview, the invariants, the conventions and the map of the docs. Agents follow all of it. This file adds only the documentation rules.
 
-**Two DNS domains, same Gateways** (since 2026-10-22): `techyon.dev` and
-`lanternfyre.dev`. Each has `*.lab.<domain>` on the LAN Gateways (`homelab`,
-`homelab-gated`) and `*.<domain>` through the tunnel (`homelab-tunnel`). They
-share listeners -- no `hostname:`, one certificate per domain, picked by SNI --
-so a route's own `hostnames:` decides its domain. Rationale in
-`apps/envoy-gateway/manifests/homelab.gateway.yaml`. The `*.techyon.dev/...`
-label and annotation KEYS are a namespace, not DNS; they do not change.
+## Documentation
 
-⚠️ **Two naming schemes, same machines.** Inventory hostnames are `k8s-N` and
-`edge-1.edge`; the Kubernetes node names and OS hostnames are `k8s-labN` and
-`k8s-edge1`. `kubectl` shows the second set, Ansible takes the first.
-
-⚠️ The home topology used to read "3 servers (k8s-1, k8s-4, k8s-6) + 3 agents
-(k8s-2, k8s-3, k8s-5)". That was the 2026-08-19 target, REVISED on 2026-08-22
-after the k8s-5 incident and reached the same day; k8s-7 joined 2026-09-05 and
-the edge node 2026-09-06. Verify with `kubectl get nodes` rather than trusting
-any line here.
-
-## Read these first
-
-| file | what it holds |
-|---|---|
-| **[MODERNIZATION.md](MODERNIZATION.md)** | **Current state, remaining phases, and hard-won findings. Start here.** |
-| [MANUAL-STEPS.md](MANUAL-STEPS.md) | Actions needing a human: credentials, sudo, console, judgement calls |
-| [ansible/README.md](ansible/README.md) | Node config as code; why there is no state file |
-| [CLUSTER-TOKEN.md](CLUSTER-TOKEN.md) | The join token: how it is managed, and the rotation runbook |
-| [EDGE-NODE.md](EDGE-NODE.md) | The public edge node: raw TCP/UDP for game servers, and a VPN walled off from the LAN |
-| [CLUSTER-JOIN-HARDENING.md](CLUSTER-JOIN-HARDENING.md) | Threat model for a cluster with a public member, and what "safe to expose" has to mean. (The token it was written about was rotated 2026-09-06.) |
-| **[HARDENING.md](HARDENING.md)** | **What `H0`–`H5` mean.** Every CiliumNetworkPolicy header is tagged `H1` and every Kyverno pod-constraint `H3`; this is the file those tags resolve to |
-| **[KUBE-PROXY-REPLACEMENT.md](KUBE-PROXY-REPLACEMENT.md)** | **In progress, staged.** Why service traffic carries `world` instead of a workload identity, what that blocks, the verified mechanism, and the stage table with gates. Also carries the state of the NetBird reconciler work |
-
-If work was interrupted, `MODERNIZATION.md` → "Immediately next" is the resume
-point. Do not re-derive the "Hard-won findings" section — those cost real effort.
-
-## Layout
-
-```
-gitops/clusters/home/apps/<name>/    app.yaml (flat 5 keys) + chart-values.yaml + manifests/
-gitops/clusters/home/bootstrap/      the two ApplicationSets and the root Application
-ansible/                             site.yml converges; playbooks/ for deliberate ops
-scripts/audit-protected-volumes.py   read-only; verifies PV protection + Trident drift
-scripts/audit-dashboard-queries.py   read-only; every dashboard expr parsed + metric names checked
-scripts/diagnose-node-dns.sh         read-only; diagnoses node DNS, prints a verdict
-```
-
-Every app directory generates **two** Applications: `<name>` (Helm) and
-`<name>-manifests` (directory). All sync with `ServerSideApply=true`,
-`prune: true`, `selfHeal: true`.
-
-## Invariants — violating these causes real damage
-
-- **Never `kubectl patch` chart-managed resources.** `selfHeal` silently
-  reverts it and you will believe a change landed when it did not. Change git.
-- **PVs are `reclaimPolicy: Retain`.** A deleted test PVC leaks the PV *and*
-  the backend volume — clean up with `tridentctl delete volume`.
-- **`flannel-backend: none` is not a config change.** In k3s flannel runs
-  inside the server process, so setting it removes the CNI. Cleanup phase only,
-  all nodes at once.
-- **k3s CLI args in the systemd unit take precedence over `config.yaml`.**
-  "Ansible owns config.yaml" does not reach anything baked into `ExecStart`.
-- **Do not uncordon a node until a storage proof passes on it.** `Ready` is not
-  sufficient — k8s-lab4 sat Ready and schedulable with zero CSI drivers.
-- **k3s upgrades stop at 1.35.** The QNAP CSI driver declares no 1.36 support.
-- **A node's role is its inventory GROUP, and changing it is not a converge.**
-  `k3s_servers` vs `k3s_agents` in `ansible/inventory/homelab.yml` is the
-  toggle, but k3s cannot convert a node in place -- only
-  `playbooks/45-change-node-role.yml` may act on it, one node per run. Agents
-  run `k3s-agent.service`, have no etcd, no local kubeconfig and no
-  `/var/lib/rancher/k3s/server/`, so anything shelling `k3s kubectl` must
-  delegate to a server.
-- **A Cilium datapath-mode change resets every established pod connection.**
-  Flipping `kubeProxyReplacement` (or socket LB) regenerates pod programs
-  without the reverse NAT their conntrack entries relied on; clients reconnect,
-  servers keep zombies. PostgreSQL ran out of slots in minutes. Treat it like a
-  rolling reboot of every client, never as a config change.
-- **A `toServices` rule's `toPorts` names the BACKEND port.** Policy sees the
-  connection after socket LB rewrote it. Envoy Gateway's `:443` is `10443`.
-- **Assert values and behaviour, never file presence.** Three separate bugs
-  here were "the file exists and has never worked".
-
-## Conventions
-
-- Ansible: `cd ansible` first (paths in `ansible.cfg` are relative). Changing
-  playbooks need `--ask-become-pass`; `90-preflight.yml` needs no sudo.
-- Verify against the live cluster rather than assuming — most of this repo's
-  history is things that looked correct and were not.
+- Docs are for people: the operator first, then anyone joining or running the cluster. Agents are tools that write and read them. If something helps agents but makes a page harder for a person, don't do it, or keep it off the page.
+- Every page answers one reader's question. Load the `docs:write` skill before creating or substantially changing a page. Standard: claude-shared-skills `docs` 0.3.1.
+- **Top-level docs move when touched.** The topic files at the repo root stay where they are until someone substantially edits one. That change moves it into its `docs/` section with `git mv` and updates every reference to it in manifests, scripts and docs. New pages go straight into `docs/<section>/`.
+- **Things waiting on the operator** stay in MANUAL-STEPS.md until its open items move to Beads, which is tracked as its own change.
