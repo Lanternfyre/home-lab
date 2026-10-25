@@ -40,6 +40,7 @@ any line here.
 - **Resuming work?** Open [Modernization: status and plan](MODERNIZATION.md); its "Immediately next" section is the resume point. Its "Hard-won findings" cost real effort: read them, don't re-derive them.
 - **About to change something?** Read the [invariants](#invariants--violating-these-causes-real-damage) first. Breaking them has caused real damage.
 - **What is waiting on you:** beads labelled `human`, the actions that need a human: credentials, sudo, console, judgement calls. Run `bd human list`, or open the [beads board](https://beads-ui.lab.lanternfyre.dev).
+- **A word you don't know?** The [glossary](docs/domain/glossary.md) gives each term these docs use one meaning, from CNPG and KPR to the storage proof and the sign-in gate.
 
 ## Operate
 
