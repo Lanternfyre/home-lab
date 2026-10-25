@@ -45,9 +45,9 @@ any line here.
 
 - [Cluster join token](CLUSTER-TOKEN.md): how the token is managed, and the rotation runbook.
 - [Restoring data](docs/operate/restore.md): what can be restored today, and how. **Unverified:** the docs disagree on whether backups run; the runbook records what a live check found on 2026-10-25. Check the cluster before relying on a restore.
-- [Standing warnings](docs/operate/standing-warnings.md): the facts that cause damage when forgotten, and the procedures that go with them.
+- [Standing warnings](docs/operate/standing-warnings.md): the facts that cause damage when forgotten, and the procedures that go with them: storage, releasing a NodePort, DNS, CI runners, sign-in, Silo, NetBird, the edge game ports, and pairing a device with auq.
 - [Ansible](ansible/README.md): node configuration as code, and why there is no state file.
-- Read-only diagnostics in `scripts/`: protected-volume audit, dashboard-query audit, node DNS diagnosis.
+- Read-only diagnostics in `scripts/`: protected-volume audit, dashboard-query audit, edge-exposure audit, node DNS diagnosis.
 
 ## Architecture and security
 
@@ -75,6 +75,7 @@ gitops/clusters/home/bootstrap/      the two ApplicationSets and the root Applic
 ansible/                             site.yml converges; playbooks/ for deliberate ops
 scripts/audit-protected-volumes.py   read-only; verifies PV protection + Trident drift
 scripts/audit-dashboard-queries.py   read-only; every dashboard expr parsed + metric names checked
+scripts/audit-edge-exposure.py       read-only; what the edge node publishes, and whether each published namespace is contained
 scripts/diagnose-node-dns.sh         read-only; diagnoses node DNS, prints a verdict
 ```
 
@@ -86,6 +87,8 @@ Every app directory generates **two** Applications: `<name>` (Helm) and
 
 - **Never `kubectl patch` chart-managed resources.** `selfHeal` silently
   reverts it and you will believe a change landed when it did not. Change git.
+  The one exception, releasing an allocated NodePort, is in
+  [Standing warnings](docs/operate/standing-warnings.md#network-exposure).
 - **PVs are `reclaimPolicy: Retain`.** A deleted test PVC leaks the PV *and*
   the backend volume — clean up with `tridentctl delete volume`.
 - **`flannel-backend: none` is not a config change.** In k3s flannel runs
