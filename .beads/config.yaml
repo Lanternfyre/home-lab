@@ -72,4 +72,17 @@
 # - github.token    → use GITHUB_TOKEN env var instead
 
 sync:
-    # remote: "git+ssh://git@github.com/Lanternfyre/home-lab.git"
+lint:
+    sections:
+        task: Task, Guardrails
+        bug: Task, Guardrails
+        chore: Task, Guardrails, Acceptance Criteria
+        spike: Task, Guardrails, Variants, Measurements, Acceptance Criteria
+        decision: Question, Options, Recommendation, Default, If overturned, Level
+        epic: Goal, Scope, Tripwires
+validation:
+    on-create: error
+prime:
+    max-memory-chars: 2000
+
+# remote: "git+ssh://git@github.com/Lanternfyre/home-lab.git"
