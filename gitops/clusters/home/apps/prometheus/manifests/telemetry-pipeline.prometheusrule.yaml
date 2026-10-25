@@ -20,6 +20,9 @@
 #   DaemonSet   loki_write_{sent,dropped}_entries_total   (Loki push API)
 #   gateway     otelcol_receiver_*, otelcol_exporter_send_failed_log_records_total,
 #               prometheus_remote_storage_samples_{total,failed_total}
+#   loki        loki_build_info, loki_discarded_samples_total{reason}
+#               (scraped since 2026-10-25; the receiving end's account of
+#               what it refused and why)
 #
 # Deliberately NOT alerted on: otelcol_exporter_send_failed_spans_total, which
 # does not exist yet because no span export has ever failed. A rule against an
@@ -65,6 +68,24 @@ spec:
               apps/alloy-gateway chart-values.yaml, and that both carry
               release: prometheus-operator.
 
+        # Same idea for Loki's own scrape. The chart renders its ServiceMonitor
+        # only when Helm is told the ServiceMonitor kind exists, so this flag
+        # could be true and render nothing -- the "file exists and has never
+        # worked" shape. absent() is the check that cannot be fooled by that.
+        - alert: LokiMetricsAbsent
+          expr: absent(loki_build_info)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No Loki metrics — Loki's side of log ingest is unmonitored"
+            description: >-
+              loki_build_info has no series, so Prometheus is not scraping Loki
+              and loki_discarded_samples_total (what Loki refused, and why) is
+              invisible. Check monitoring.serviceMonitor in apps/loki
+              chart-values.yaml, that the ServiceMonitor object exists, and
+              that it carries release: prometheus-operator.
+
         - alert: AlloyConfigLoadFailing
           expr: alloy_config_last_load_successful == 0
           for: 5m
@@ -102,12 +123,14 @@ spec:
             summary: "Alloy is dropping logs on {{ $labels.node }} ({{ $labels.reason }})"
             description: >-
               {{ $value | printf "%.2f" }} entries/s are being dropped on the way
-              into Loki. `reason` distinguishes the cases that matter:
-              rate_limited and stream_limited mean Loki's limits need raising;
-              queue_is_full means Alloy cannot keep up; ingester_error is
-              usually "timestamp too old", which is a replay of pre-retention
-              history rather than live loss. 15m so a restart replay does not
-              page.
+              into Loki. rate_limited / stream_limited: Loki's limits need
+              raising (429s are retried first; this is what retries gave up
+              on). queue_is_full: Alloy cannot keep up. ingester_error: Loki
+              answered 400 and Alloy counts the WHOLE batch, so this overstates
+              the loss -- loki_discarded_samples_total{reason} says which lines
+              and why. Lines older than Loki accepts are dropped in Alloy before
+              sending, so the usual ingester_error now is too_far_behind from a
+              restart or rebalance replay; the 15m is there so that does not page.
 
         # --- OTLP path: external senders -> gateway -> Tempo/Loki/Prometheus
         - alert: AlloyOtlpIngestRefusing

@@ -63,8 +63,8 @@ test:
 lokiCanary:
   enabled: false
 
-# Self-monitoring off — we already have kube-prometheus-stack scraping metrics,
-# and ServiceMonitor wiring can be turned on later with a label match.
+# Self-monitoring (Grafana Agent Operator) off -- kube-prometheus-stack scrapes
+# Loki through the ServiceMonitor below instead.
 monitoring:
   selfMonitoring:
     enabled: false
@@ -72,5 +72,20 @@ monitoring:
       installOperator: false
   lokiCanary:
     enabled: false
+  # Off until 2026-10-25, and Loki's own counters held the numbers that
+  # mattered: over 31 days loki_discarded_samples_total showed 471k lines
+  # rate_limited, 326k too_far_behind and 127k greater_than_max_sample_age.
+  # Alloy cannot tell those apart -- every 400 is reason=ingester_error, and it
+  # counts the WHOLE batch (5.3M "dropped" across 53k 400s, for the ~450k lines
+  # Loki actually refused). Loki is the only place that says which lines and why.
+  #
+  # The chart renders this only if the API list Helm is given contains
+  # monitoring.coreos.com/v1/ServiceMonitor. ArgoCD passes kind-qualified
+  # versions; a local `helm template` needs
+  # --api-versions monitoring.coreos.com/v1/ServiceMonitor or shows nothing.
   serviceMonitor:
-    enabled: false
+    enabled: true
+    labels:
+      # Mandatory -- the Prometheus CR's serviceMonitorSelector matches on this.
+      # Without it the object exists, reads correctly, and is loaded by nobody.
+      release: prometheus-operator
