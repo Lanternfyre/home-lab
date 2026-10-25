@@ -3,7 +3,8 @@
 **Living document. Update it as things land.** This is the reference to re-read
 when picking the work back up, or after a context reset.
 
-Companions: [`MANUAL-STEPS.md`](MANUAL-STEPS.md) (actions needing a human),
+Companions: beads labelled `human` (actions needing a human; `bd human list`),
+[Standing warnings](docs/operate/standing-warnings.md),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).
 
@@ -466,8 +467,8 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
 
    🔵 **Optional follow-up, not required:** `kubectl` OIDC is installed
    (`playbooks/16-kubectl-oidc.yml`, context `homelab-oidc`) but needs
-   `http://localhost:8000` registered on the Google client — `MANUAL-STEPS.md`
-   §9d — before `kubectl --context homelab-oidc auth can-i list nodes` will
+   `http://localhost:8000` registered on the Google client — `human` bead
+   home-lab-vgu — before `kubectl --context homelab-oidc auth can-i list nodes` will
    work. The certificate context still works regardless, so nothing is blocked
    on this.
 
@@ -488,7 +489,7 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
    no in-cluster check can exercise. It needs a real browser sign-in at
    https://headlamp.lab.techyon.dev. Interpreting the result:
    - *works* → done;
-   - `redirect_uri_mismatch` from Google → `MANUAL-STEPS.md` §9a was not done;
+   - `redirect_uri_mismatch` from Google → `human` bead home-lab-2am was not done;
    - *login succeeds, then only 401s* → the token is fine but the username did
      not match the binding, i.e. the `email` claim is not what we think.
 
@@ -508,7 +509,7 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
    - `k3s_oidc_*` vars set, and `20-config-converge.yml` gained
      `order: reverse_inventory` so **k8s-1 rolls LAST** rather than first.
 
-   ✅ The Google Console redirect URI (`MANUAL-STEPS.md` §9a) was registered
+   ✅ The Google Console redirect URI (formerly `MANUAL-STEPS.md` §9a, now `human` bead home-lab-2am) was registered
    and **the browser login is confirmed working** — which is the acceptance
    test, since it is the only thing that exercises the token → username
    mapping.
@@ -565,7 +566,7 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
      to review. Headlamp's own SA (`headlamp/headlamp`) has *no* RoleBinding
      or ClusterRoleBinding at all, deliberately, so with that SA gone the UI
      has no authority to hand anyone. The app is still Synced/Healthy; it
-     simply cannot log you in. Recreate commands are in `MANUAL-STEPS.md` §9c
+     simply cannot log you in. Recreate commands are in [Standing warnings](docs/operate/standing-warnings.md#sign-in)
      if you need it before OIDC lands. Deleting it was cheap because there was
      no long-lived token Secret and minting one already required cluster-admin
      kubectl access — it granted nothing its user did not already have.
@@ -655,7 +656,7 @@ and stays gone, that is worth chasing.
   it look like litter to tidy. It is not: `Prune=false,Delete=false` is
   deliberate, and clearing it is a decision about the rollback point, not
   about sync status. 📌 **DEFERRED BY DECISION 2026-08-03** — both routes to
-  green are written up in `MANUAL-STEPS.md` §9b. Note the retire route needs
+  green are written up in `human` bead home-lab-c48. Note the retire route needs
   **three** steps: unlabel PVC *and* PV, delete both, then `rm -rf` the
   directory on k8s-lab3 by hand, because local-path has no `tridentctl`
   equivalent.
@@ -2057,7 +2058,7 @@ Working recovery, in order of preference:
    must return nothing before scaling up.
 2. StatefulSet/CNPG: delete the pod (one at a time, and see the CNPG caveat).
 3. If it still returns EIO after a confirmed unmount+remount, the on-disk fs
-   is genuinely damaged and needs `e2fsck` — needs sudo, see MANUAL-STEPS.md.
+   is genuinely damaged and needs `e2fsck` — needs sudo, see [Standing warnings](docs/operate/standing-warnings.md#nodes-and-storage).
 
 **`multipathd show config | grep no_path_retry` lies.** It prints the built-in
 hwtable for dozens of other vendors' arrays, so it happily reported
@@ -2459,7 +2460,7 @@ was a silent no-op that reported success. The force flag now short-circuits
 the changed-check entirely.
 
 **`--check` silently skips `command:`/`shell:` tasks and returns an EMPTY
-stdout, rc=0.** So the "review what would change" step in `MANUAL-STEPS.md`
+stdout, rc=0.** So the "review what would change" step then in `MANUAL-STEPS.md`
 reported `sysctls=BROKEN, services=BROKEN` on **all five** nodes and
 `liveLUNs=0` on lab1/2/3 (which carry 4 LUNs each) — then `node_verify`
 hard-failed asserting `"" >= 1048576` against sysctls that were correct. A

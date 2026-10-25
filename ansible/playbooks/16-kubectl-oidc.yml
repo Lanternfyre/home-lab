@@ -56,7 +56,7 @@
 # The API server must already trust this issuer and client id
 # (k3s_oidc_* in inventory/group_vars/all.yml, applied by 20-config-converge.yml),
 # and Google Console must list http://localhost:8000 as an authorised redirect
-# URI for the client -- see MANUAL-STEPS.md. Without the latter, the browser
+# URI for the client -- `human` bead home-lab-vgu. Without the latter, the browser
 # step fails with redirect_uri_mismatch before the cluster is involved.
 
 - name: kubectl OIDC credential plugin

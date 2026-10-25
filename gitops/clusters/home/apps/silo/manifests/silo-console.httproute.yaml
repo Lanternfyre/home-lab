@@ -9,7 +9,7 @@
 #
 # ⚠️ A gated hostname needs https://silo.lab.techyon.dev/oauth2/callback added as
 # an authorized redirect URI on the Google OAuth client before it will load. That
-# is a human step and is listed in MANUAL-STEPS.md.
+# is a human step, tracked as `human` bead home-lab-uiq.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

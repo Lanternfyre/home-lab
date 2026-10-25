@@ -39,12 +39,13 @@ any line here.
 
 - **Resuming work?** Open [Modernization: status and plan](MODERNIZATION.md); its "Immediately next" section is the resume point. Its "Hard-won findings" cost real effort: read them, don't re-derive them.
 - **About to change something?** Read the [invariants](#invariants--violating-these-causes-real-damage) first. Breaking them has caused real damage.
-- **What is waiting on you:** [Manual steps](MANUAL-STEPS.md), the actions that need a human: credentials, sudo, console, judgement calls.
+- **What is waiting on you:** beads labelled `human`, the actions that need a human: credentials, sudo, console, judgement calls. Run `bd human list`, or open the [beads board](https://beads-ui.lab.lanternfyre.dev).
 
 ## Operate
 
 - [Cluster join token](CLUSTER-TOKEN.md): how the token is managed, and the rotation runbook.
-- [Restore procedures](MANUAL-STEPS.md#restore-procedures--how-to-actually-use-the-backups): how to use the backups. **Unverified:** the docs disagree on whether backups run today. That section describes nightly backups; its own standing warnings and the modernization status say there are none. Check the cluster before relying on a restore.
+- [Restoring data](docs/operate/restore.md): what can be restored today, and how. **Unverified:** the docs disagree on whether backups run; the runbook records what a live check found on 2026-10-25. Check the cluster before relying on a restore.
+- [Standing warnings](docs/operate/standing-warnings.md): the facts that cause damage when forgotten, and the procedures that go with them.
 - [Ansible](ansible/README.md): node configuration as code, and why there is no state file.
 - Read-only diagnostics in `scripts/`: protected-volume audit, dashboard-query audit, node DNS diagnosis.
 
