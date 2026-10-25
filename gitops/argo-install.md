@@ -1,4 +1,6 @@
 
+
+> **Unverified.** These are the original install notes. They predate the Ansible setup in `ansible/`, and their steps have not been tested since. Check against Ansible and the live cluster before following any of them.
 # Kubernetes Home Lab
 
 > ⚠️ **`$K3S_TOKEN` is a placeholder — never paste a real token here.**
