@@ -26,6 +26,8 @@ beads:
 projects:
   - {database: necronia, name: Necronia2.0}
   - {database: pilot, name: pilot}
+  - {database: home_lab, name: Home Lab}
+  - {database: skills, name: Claude Shared Skills}
 
 allowedHosts:
   - beads-ui.lab.lanternfyre.dev
