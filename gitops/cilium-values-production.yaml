@@ -130,7 +130,7 @@ socketLB:
 #   * the edge's PUBLIC address on eth0. Under kube-proxy replacement BPF
 #     NodePort runs at tc ingress, BEFORE nftables, so edge_firewall could never
 #     close a NodePort there. (kube-proxy on the edge DID forward argocd-server's
-#     NodePorts to the internet until 2026-09-07 -- MANUAL-STEPS.md 0c.)
+#     NodePorts to the internet until 2026-09-07 -- docs/operate/standing-warnings.md, "Network exposure".)
 #   * the API VIP 192.168.32.2, a secondary address on lab2's eno1 that floats.
 #   * flannel.1's 10.42.x address, a dead interface Cilium still auto-detects.
 # Set while kubeProxyReplacement is still "false" (it renders, does nothing yet)

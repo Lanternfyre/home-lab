@@ -15,7 +15,7 @@
 #
 # ⚠️ `import_tasks`, NEVER `include_tasks`. import is STATIC, so the
 # `tags: [storage]` below still register with `--list-tags` and
-# `--tags storage` still selects them -- which is what MANUAL-STEPS.md and
+# `--tags storage` still selects them -- which is what docs/operate/standing-warnings.md and
 # README.md tell you to run. A dynamic include applies the INCLUDE's own tags
 # to its children instead, and the storage-only converge would silently select
 # nothing at all.

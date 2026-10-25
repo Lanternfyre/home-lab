@@ -572,7 +572,7 @@ def check_nodeports(r: Report, public_ip: str | None, probe: bool, quiet: bool) 
     Under Cilium's kube-proxy replacement BPF NodePort runs at tc ingress,
     BEFORE nftables, so a firewall can never close this. The only fix is at
     the source: no allocated NodePort at all. `loadbalancer-no-nodeports`
-    (Kyverno) stops new allocations; MANUAL-STEPS.md 0c releases old ones.
+    (Kyverno) stops new allocations; the one-update patch in docs/operate/standing-warnings.md, "Network exposure" releases old ones.
     """
     svcs = kubectl("get", "services", "-A")
     if svcs is None:
@@ -598,14 +598,14 @@ def check_nodeports(r: Report, public_ip: str | None, probe: bool, quiet: bool) 
                 f"{ns}/{name} port {port}/{proto} allocates NodePort {nodeport} with "
                 f"externalTrafficPolicy={etp}. That answers on EVERY node address, "
                 f"including the edge's public one, and no firewall rule sees it. "
-                f"Release it: MANUAL-STEPS.md 0c.",
+                f"Release it: docs/operate/standing-warnings.md, Network exposure.",
             )
         else:
             r.warn(
                 "NODEPORT",
                 f"{ns}/{name} port {port}/{proto} allocates NodePort {nodeport} "
                 f"(externalTrafficPolicy=Local). Closed on the edge only while no "
-                f"endpoint is scheduled there. Release it: MANUAL-STEPS.md 0c.",
+                f"endpoint is scheduled there. Release it: docs/operate/standing-warnings.md, Network exposure.",
             )
     if not probe:
         return

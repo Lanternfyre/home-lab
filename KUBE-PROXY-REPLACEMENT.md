@@ -149,7 +149,7 @@ Do **not** batch these. Each is separately reversible; the combination is not.
 
 | stage | what | sudo? | landed |
 |---|---|---|---|
-| **0** | close the public NodePort door: every LoadBalancer NodePort released (MANUAL-STEPS §0c form), `pihole-dhcp` off, `NODEPORT` check + `--probe` in `audit-edge-exposure.py` | no | 2026-09-07, #153 |
+| **0** | close the public NodePort door: every LoadBalancer NodePort released (the form in [Standing warnings](docs/operate/standing-warnings.md#network-exposure)), `pihole-dhcp` off, `NODEPORT` check + `--probe` in `audit-edge-exposure.py` | no | 2026-09-07, #153 |
 | **A** | NetBird bootstrap: wipe the management PVC, reconciler becomes owner, routing peer re-enrols, routes created, operator promoted to admin, phone enrolled | no | 2026-09-07 (charts 0.1.10→0.1.14, #155–#171) |
 | **B1** | prerequisites in git: `roles/cilium` verify assert, server-only `disable-kube-proxy` in the k3s template, `nodePort.addresses` in the Cilium values, before-picture captured | no | 2026-09-07, #154 (helm rev 7) |
 | **B2a** | `kubeProxyReplacement: "true"` — DaemonSet roll on 8, kube-proxy stays and becomes redundant | no | 2026-09-07, #157 (helm rev 8) — see the finding below |

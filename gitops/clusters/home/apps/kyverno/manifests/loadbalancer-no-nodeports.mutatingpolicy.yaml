@@ -30,13 +30,13 @@
 # It stops ports being ALLOCATED. It does not release ones already allocated:
 # upstream keeps existing node ports when the flag flips, verified here by
 # server-side dry-run (the flag read false while nodePort: 30669 stayed put).
-# Clearing those is a one-time patch per service -- MANUAL-STEPS.md step 0c.
+# Clearing those is a one-time patch per service -- docs/operate/standing-warnings.md, "Network exposure".
 #
 # ── failurePolicy: Ignore, deliberately ──────────────────────────────────────
 # This matches every Service in the cluster. With Fail, Kyverno being unhealthy
 # would block Service creation cluster-wide -- an outage far worse than the
 # thing being prevented. Ignoring means a Service created while Kyverno is down
-# gets a node port; the audit query in MANUAL-STEPS.md step 0c is what catches
+# gets a node port; the audit query in docs/operate/standing-warnings.md, "Network exposure" is what catches
 # that, and reopening a port is recoverable where a wedged admission path is not.
 #
 # ⚠️ Unlike protect-volumes.validatingpolicy.yaml, this canNOT be compiled to a

@@ -53,8 +53,9 @@ the proof target for the thing that replaced them.
 
 ✅ **RETIRED 2026-09-06**, once a real client connected to
 `edge-1.techyon.dev:7171` through the edge Gateway. ⚠️ Their DNS records were
-made by `cloudflared tunnel route dns` and survive the removal; they must be
-deleted by hand in Cloudflare. See `MANUAL-STEPS.md`.
+made by `cloudflared tunnel route dns` and survive the removal; they had to be
+deleted by hand in Cloudflare (both returned NXDOMAIN on 2026-10-25). Why
+records outlive their routes: [Standing warnings](docs/operate/standing-warnings.md#dns).
 
 So: a VPS with a public IP, joined as a k3s **agent**, carrying the Envoy data
 plane for a Gateway whose listeners are real TCP/UDP ports.
@@ -583,7 +584,7 @@ Never open 5060/udp to the world.
 not bind the same ports, and two registrations would split the calls.
 
 Operator steps (1Password item `voip-asterisk`, the firewall run, the ElevenLabs
-trunk): `MANUAL-STEPS.md`.
+trunk): the `human` bead home-lab-20a (`bd show home-lab-20a`).
 
 ---
 

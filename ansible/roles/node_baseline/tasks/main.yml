@@ -31,7 +31,7 @@
 # ⚠️ Every detect task is tagged `always`, and that is load-bearing. They carry
 # no other tag, so `--tags storage` would SKIP them -- leaving needs_multipath
 # and has_luns undefined and blowing up the first `when:` that reads them. The
-# documented storage-only converge in MANUAL-STEPS.md runs exactly that way.
+# documented storage-only converge in ansible/README.md runs exactly that way.
 # Tasks here are read-only, so running them unconditionally costs nothing.
 
 - name: "detect | can this node resolve public DNS?"

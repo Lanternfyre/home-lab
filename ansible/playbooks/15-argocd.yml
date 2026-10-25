@@ -44,7 +44,7 @@
 #      Node baseline: DNS, sysctls, multipath, CoreDNS HA.
 #   3. The GCP service-account key for External Secrets, which can only be
 #      created AFTER ArgoCD has deployed external-secrets -- a genuine
-#      chicken-and-egg, documented in MANUAL-STEPS.md:
+#      chicken-and-egg:
 #        kubectl create secret generic gsm-sa-key -n secrets \
 #          --from-file=key.json=eso-gsm-key.json
 

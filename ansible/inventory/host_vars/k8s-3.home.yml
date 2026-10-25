@@ -11,5 +11,5 @@ node_nic: eno1
 # preserves the PV OBJECT, while k3s-uninstall.sh deletes the DATA under
 # /var/lib/rancher/k3s/storage/. Demoting this node therefore destroys it and
 # leaves an unbindable tombstone that still reads as Bound.
-# Retire the PVC and the PV BEFORE any role change here (MANUAL-STEPS §9b);
+# Retire the PVC and the PV BEFORE any role change here (`human` bead home-lab-c48);
 # 45-change-node-role.yml refuses to proceed until that is done.

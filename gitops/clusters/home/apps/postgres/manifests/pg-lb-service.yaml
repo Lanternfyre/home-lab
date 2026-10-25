@@ -25,7 +25,7 @@ spec:
   #
   # ⚠️ Setting this to false does NOT release a node port that is already
   # allocated -- upstream only stops allocating NEW ones. The existing 30669
-  # needs one explicit clear after this syncs. See MANUAL-STEPS.md.
+  # needs one explicit clear after this syncs. See docs/operate/standing-warnings.md, "Network exposure".
   allocateLoadBalancerNodePorts: false
   ports:
     - name: postgresql

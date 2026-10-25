@@ -14,7 +14,7 @@ controller:
     # it. Verified against the live cluster rather than assumed from the
     # migration's phase notes.
     #
-    # ⚠️ Does not release the already-allocated ports. See MANUAL-STEPS.md.
+    # ⚠️ Does not release the already-allocated ports. See docs/operate/standing-warnings.md, "Network exposure".
     allocateLoadBalancerNodePorts: false
 
   # maxUnavailable MUST be an absolute 1, not the chart default of 25%.

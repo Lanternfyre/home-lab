@@ -219,7 +219,7 @@ running server never re-reads its credential.
   print `certificates saved to datastore`). See "What 2026-09-07 taught us"
   below for why every server's next restart dies without it.
 - Replace the plaintext token in `gitops/argo-install.md` with a pointer to the
-  1Password item, and update MANUAL-STEPS §8.
+  1Password item, and close any `human` bead that tracks the rotation.
 - Note honestly: the old token remains in git history and cannot be removed
   from a public repo in any way that matters. **Rotation is what makes that
   moot** — it is the reason to rotate, not a side effect.
