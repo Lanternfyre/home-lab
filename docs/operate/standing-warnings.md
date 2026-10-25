@@ -2,7 +2,7 @@
 
 This page is for whoever operates the cluster. It collects the facts that cause damage when they are forgotten, with the few procedures that go with them, grouped by topic. Each entry says how we know it: a check, a measurement or a date.
 
-Work that is waiting on the operator is not kept here. Each item is a bead labelled `human`: run `bd human list`, or open the beads board at <https://beads-ui.lab.lanternfyre.dev>.
+Terms such as KPR and the storage proof are in the [glossary](../domain/glossary.md). Work that is waiting on the operator is not kept here. Each item is a bead labelled `human`: run `bd human list`, or open the beads board at <https://beads-ui.lab.lanternfyre.dev>.
 
 ## Nodes and storage
 
@@ -13,7 +13,7 @@ Work that is waiting on the operator is not kept here. Each item is a bead label
 - **A QNAP volume freezes for up to ten minutes when the NAS is unreachable.** Every LUN carries `no_path_retry 120` (verified on all 12 LUNs on 2026-08-17), so I/O queues instead of erroring and taking the ext4 journal down with it. The cost: during a partition, pods touching those volumes hang, and a process in uninterruptible sleep cannot be killed, so an outage longer than about ten minutes can leave pods stuck until the node reboots. That is the chosen failure: a ten-minute freeze is recoverable, and an aborted journal cost a week. During such an outage expect the alert `VolumeHealthProbeStale` rather than `VolumeFilesystemStatfsFailing`; both page.
   - Check it, read-only: `cd ansible && ansible-playbook playbooks/90-preflight.yml`. `mpath queueing:` must read `mpathX|120` for every LUN (`-` means unprotected), and `wedged ext4:` must be empty.
   - Re-apply after a node rebuild or a reverted config: `ansible-playbook site.yml --tags storage --ask-become-pass`. It reloads multipathd in place, with no I/O interruption. More in [Ansible](../../ansible/README.md).
-- **A volume that still returns `Input/output error` after a confirmed unmount and remount has a damaged filesystem.** The first recovery (scale the workload to 0, confirm the unmount, scale up) needs no sudo and is in [Modernization](../../MODERNIZATION.md). If that is not enough, repair it with root and the volume detached. Get `<mpathX>` from `findmnt -rno SOURCE,TARGET | grep <pvc-uid>` before scaling down, and never run this against a mounted filesystem:
+- **A volume that still returns `Input/output error` after a confirmed unmount and remount has a damaged filesystem.** The first recovery needs no sudo: get the volume unmounted, confirm it, and let it mount again; the steps are in [Modernization](../../MODERNIZATION.md). They use `kubectl scale`, which selfHeal reverts where ArgoCD owns `replicas`, so check that first. If that is not enough, repair it with root and the volume detached. Get `<mpathX>` from `findmnt -rno SOURCE,TARGET | grep <pvc-uid>` before scaling down, and never run this against a mounted filesystem:
   ```bash
   # with the workload scaled to 0 and the volume confirmed unmounted:
   ssh <node> sudo e2fsck -fy /dev/mapper/<mpathX>

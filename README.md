@@ -54,7 +54,7 @@ any line here.
 
 - [Edge node](EDGE-NODE.md): the public node, raw TCP/UDP for game servers, and a VPN walled off from the LAN.
 - [Cluster join hardening](CLUSTER-JOIN-HARDENING.md): the threat model for a cluster with a public member. The token it was written about was rotated on 2026-09-06.
-- [Hardening levels H0–H5](HARDENING.md): what the `H1` tag on every network policy and the `H3` tag on every Kyverno pod constraint mean.
+- [Hardening levels H0–H5](HARDENING.md): what the six markers mean, from H0 (backups, deferred) to the `H1` tag on every network policy and the `H3` tag on every Kyverno pod constraint.
 - Documented next to their manifests: [beads](gitops/clusters/home/apps/beads/README.md), [Claude Code workspace boxes](gitops/clusters/home/claude-boxes/README.md), [namespace policy](gitops/clusters/home/bootstrap/namespaces/README.md).
 
 ## Plans and status
