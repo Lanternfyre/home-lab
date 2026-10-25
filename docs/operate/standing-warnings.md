@@ -21,11 +21,18 @@ Work that is waiting on the operator is not kept here. Each item is a bead label
 
 ## Network exposure
 
-- **A LoadBalancer Service would also open a NodePort on every node, the public edge node included.** On 2026-09-07 such ports answered on the edge's public address: kube-proxy forwards them before the edge firewall ever sees the packet. The Kyverno policy `loadbalancer-no-nodeports` now sets `allocateLoadBalancerNodePorts: false` on every LoadBalancer Service at admission, and every existing allocation was released that day. Under Cilium's kube-proxy replacement, BPF NodePort runs before nftables, so releasing the port is the only fix. `scripts/audit-edge-exposure.py` checks for any that remain (`NODEPORT`, and `--probe` connects to each one on the public address).
-- **To release a NodePort that is already allocated, change both fields in one update.** Setting the flag alone keeps the port, and removing the port alone gets it re-assigned while the flag is still `true`. Build the `ports` list from the live object, so `targetPort` names cannot drift. This form keeps the MetalLB address, so no DNS record churns:
+- **A LoadBalancer Service would also open a NodePort on every node, the public edge node included.** On 2026-09-07 such ports answered on the edge's public address. Cilium's kube-proxy replacement is on (`kube-proxy-replacement=true` and no kube-proxy DaemonSet, checked 2026-10-25), so NodePorts are handled in BPF before nftables, and no firewall rule on any node can close one: releasing the port is the only fix. The Kyverno policy `loadbalancer-no-nodeports` sets `allocateLoadBalancerNodePorts: false` on every LoadBalancer Service at admission, and every existing allocation was released on 2026-09-07. [`scripts/audit-edge-exposure.py`](../../scripts/audit-edge-exposure.py) reports any that remain; its `--probe` flag also connects to each one on the public address.
+- **An allocated NodePort today means the policy missed a Service.** Either the Service was created while Kyverno was down or restarting (its webhooks are torn down during a restart, and `failurePolicy: Ignore` lets the Service through), or the policy is broken. Run the policy check at the end of this section first, then release the port.
+- **To release a NodePort that is already allocated, change both fields in one update.** Setting the flag alone keeps the port, and removing the port alone gets it re-assigned while the flag is still `true`. This form keeps the MetalLB address, so no DNS record churns:
   ```sh
   kubectl -n databases patch svc postgres-ha-lb --type=merge -p \
     '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":[{"name":"postgresql","port":5432,"targetPort":5432,"protocol":"TCP"}]}}'
+  ```
+  A merge patch replaces the whole `ports` list, so a port left out of it is deleted. Print the live list without its node ports, and put that into the patch unchanged; it keeps every port, its protocol and its `targetPort` name:
+  ```sh
+  kubectl -n <namespace> get svc <name> -o json | jq -c '[.spec.ports[] | del(.nodePort)]'
+  kubectl -n <namespace> patch svc <name> --type=merge -p \
+    '{"spec":{"allocateLoadBalancerNodePorts":false,"ports":<the list printed above>}}'
   ```
   This is the one legitimate exception to "never `kubectl patch`": `nodePort` is allocated by the API server and declared in no git file, so `selfHeal` has nothing to revert it to. Afterwards, this must print nothing:
   ```sh
@@ -36,8 +43,8 @@ Work that is waiting on the operator is not kept here. Each item is a bead label
       np = [p.get("nodePort") for p in s["spec"]["ports"] if p.get("nodePort")]
       if np: print(s["metadata"]["namespace"], s["metadata"]["name"], np)'
   ```
-  Then connect to the Service on its LoadBalancer address. `Ready` is not the test; a connection is.
-- **Check that the policy still mutates** (a server-side dry run creates nothing). It must print `False` and no `nodePort`; `True` means the policy is doing nothing, and with `failurePolicy: Ignore` a broken policy fails silently:
+  Then connect to the Service on its LoadBalancer address. `Ready` is not the test; a connection is. Get the address with `kubectl -n <namespace> get svc <name> -o jsonpath='{.status.loadBalancer.ingress[0].ip}'`, then use `nc -zv <address> <port>` for TCP, or a real query for UDP (for Pi-hole's DNS, `dig @<address> techyon.dev`).
+- **Check that the policy still mutates** (a server-side dry run creates nothing). It must print `False` and no `nodePort`. `True` means the policy is doing nothing, and with `failurePolicy: Ignore` a broken policy fails silently: look at `kubectl get mpol loadbalancer-no-nodeports -o yaml` and Kyverno's pods, and fix the policy before releasing ports, or the next Service gets a NodePort again.
   ```sh
   kubectl -n default create service loadbalancer np-probe --tcp=8080:8080 \
     --dry-run=server -o json | python3 -c '
@@ -112,19 +119,19 @@ Work that is waiting on the operator is not kept here. Each item is a bead label
 
 ## auq
 
-auq runs on two LAN hostnames: `auq.lab.techyon.dev` (the broker) and `auq-mobile.lab.techyon.dev` (the Expo dev server for the mobile app).
+auq is the question inbox: agent sessions post questions to it, and the operator answers them in the phone app or with the `auq` command-line client. It runs on two LAN hostnames, under `techyon.dev` only (checked 2026-10-25): `auq.lab.techyon.dev` (the broker that holds the questions) and `auq-mobile.lab.techyon.dev` (the Expo dev server that loads the mobile app).
 
-- **Both hostnames are un-gated, by design.** The gated Gateway would answer the pairing request with a redirect to authentik, which the mobile app cannot follow. The security boundary is auq's own per-device tokens; the full reasoning is at the top of `gitops/clusters/home/apps/auq/manifests/auq.httproute.yaml`.
+- **Both hostnames skip the sign-in gate, by design.** The gated Gateway would answer the pairing request with a redirect to authentik, which the mobile app cannot follow. The security boundary is auq's own per-device tokens; the full reasoning is at the top of [auq.httproute.yaml](../../gitops/clusters/home/apps/auq/manifests/auq.httproute.yaml).
 - **The first pairing code needs a port-forward; `kubectl exec` cannot work.** The endpoint that mints codes trusts only loopback while no device exists, and the server image has no shell to exec into. A port-forward lands in the pod's network namespace, so the server sees `127.0.0.1`. A code is good once, for five minutes:
   ```bash
   kubectl -n auq port-forward deploy/auq-auq-server 5577:5577 &
   curl -s -X POST http://127.0.0.1:5577/api/pairing-codes
   kill %1
   ```
-  After the first device exists, `auq pair` on the laptop mints codes normally.
-- **The CLI and the MCP server (auq-rs) pair the same way as the phone.** There is no self-pair command, and `auq pair` is not it: that mints a code for someone else. A bearer token is a device token. Give each client its own, so unpairing one leaves the others working:
+  After the first device exists, any paired client can mint codes for other devices with `auq pair`.
+- **The `auq` CLI and the MCP server `auq-mcp` (both from auq-rs) pair the same way as the phone.** There is no self-pair command, and `auq pair` is not it: that mints a code for someone else. A bearer token is a device token. Give each client its own, so unpairing one leaves the others working:
   ```bash
-  # 1. Mint a code (loopback only, so port-forward).
+  # 1. Mint a code through the port-forward (or with `auq pair` on a paired client, see below).
   kubectl -n auq port-forward deploy/auq-auq-server 5577:5577 &
   CODE=$(curl -s -X POST http://127.0.0.1:5577/api/pairing-codes | jq -r .code)
 
@@ -139,5 +146,6 @@ auq runs on two LAN hostnames: `auq.lab.techyon.dev` (the broker) and `auq-mobil
   export AUQ_BEARER_TOKEN=<the token from step 2>
   auq watch
   ```
+  Step 1 can also be `auq pair` on a client that is already paired, which prints a code and a QR. The port-forward works even before any device exists, but needs kubectl access to the cluster. Steps 1 and 2 need not run on the same machine: carry the code across within its five minutes, and type it in place of `$CODE`. `auq watch` opens the inbox, a terminal UI listing the open questions; it is also what `auq` runs with no subcommand. Export both variables in every shell that runs `auq`, and keep the token out of anything you commit.
 - **The token is shown once.** It is stored hashed, and no endpoint shows it again, so put it in 1Password as you read it. Lost means re-pairing.
 - **A Claude box never gets the token as an environment variable.** Anything in the workspace container's environment is readable by the agent. Set `device_name` to the box, store the token in a 1Password item, and point the chart's `auqProxy.onePasswordItem` at it: the `auq-proxy` sidecar is the only container that mounts it. Renaming or deleting that item leaves the box stuck in `ContainerCreating` on its next start.
