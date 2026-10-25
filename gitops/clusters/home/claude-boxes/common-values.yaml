@@ -1,0 +1,28 @@
+# Values EVERY claude box shares, read before the box's own chart-values.yaml
+# (bootstrap/claude-boxes.appset.yaml lists this file first, so a box can still
+# override any key). Maps deep-merge across the two files; a LIST in a box's file
+# replaces the list here, so keep shared settings in maps.
+#
+# Needs claude-box chart >= 0.1.11 (claudeCode.managedSettings, extraEnv). An
+# older chart ignores these keys.
+
+claudeCode:
+  managedSettings:
+    # The shared skills (Lanternfyre/claude-shared-skills, public): the Beads
+    # work loop and the documentation standard. Claude Code installs both at
+    # session start, with no trust prompt, from the managed-settings drop-in the
+    # chart mounts. Box sessions see four skills: bead, question, adr, write.
+    extraKnownMarketplaces:
+      claude-shared-skills:
+        # 🔴 `git` with https, NOT `github`: the github source clones over SSH,
+        # and the box has no SSH key. Public, so no token scope is involved --
+        # which is what lets the t3chy0n boxes use it too.
+        source: {source: git, url: "https://github.com/Lanternfyre/claude-shared-skills.git"}
+        # Follow the latest release (operator, 2026-10-25). An update is picked
+        # up after a session's first message (random delay up to 10 min) and
+        # loads at the next session or on /reload-plugins. A box moves only
+        # when a plugin's `version` changes, which that repo bumps per change.
+        autoUpdate: true
+    enabledPlugins:
+      beadwork@claude-shared-skills: true
+      docs@claude-shared-skills: true
