@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_user": "beads",
+  "dolt_database": "home_lab",
+  "project_id": "f9f13082-1a55-4bf2-bdc4-de8e2a651e56"
+}
