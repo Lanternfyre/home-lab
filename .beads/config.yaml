@@ -78,7 +78,7 @@ lint:
         bug: Task, Guardrails
         chore: Task, Guardrails, Acceptance Criteria
         spike: Task, Guardrails, Variants, Measurements, Acceptance Criteria
-        decision: Question, Options, Recommendation, Default, If overturned, Level
+        decision: Question, Default, If overturned, Level
         epic: Goal, Scope, Tripwires
 validation:
     on-create: error
