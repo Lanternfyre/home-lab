@@ -65,3 +65,31 @@ spec:
               protocol: TCP
             - port: "80"
               protocol: TCP
+
+    # 🔴 AUTHENTIK, AS THE DATAPATH SEES IT. Immich's OAuth discovery fetches
+    # https://authentik.lab.techyon.dev/application/o/immich/..., which resolves
+    # to the `homelab` Gateway's LoadBalancer (192.168.32.18). Since kube-proxy
+    # replacement (B4, 2026-09-07) Cilium socket LB rewrites that connection to
+    # the Envoy BACKEND pod before this policy runs -- so it is no longer
+    # `world:443` and the rule above does not match. Envoy binds privileged
+    # listeners +10000: the Gateway's :443 is :10443 in the pod.
+    #
+    # Measured 2026-10-25: login failed with "Unable to login with OAuth"; the
+    # server logged `Error in OAuth discovery: TypeError: fetch failed`, and
+    # Hubble showed `immich-server -> gateway-envoy/...homelab...:10443 EGRESS
+    # DENIED`. A standalone allow CNP with exactly this rule took the fetch to
+    # `200 in 324ms`. Same rule, same reason as silo-egress (the 2026-09-08 audit
+    # missed this policy: its broad `world` rule hid the exposure).
+    - toServices:
+        - k8sServiceSelector:
+            namespace: gateway-envoy
+            selector:
+              matchExpressions:
+                - key: gateway.envoyproxy.io/owning-gateway-name
+                  operator: In
+                  values:
+                    - homelab
+      toPorts:
+        - ports:
+            - port: "10443"
+              protocol: TCP
