@@ -151,8 +151,8 @@ secret unless three things change with it:
 
 ### Before you start
 
-- 🔴 **Take an etcd snapshot** (`k3s etcd-snapshot save`). With H0 deferred there
-  are no other backups, so this is the only rollback for a rotation gone wrong.
+- 🔴 **Take an etcd snapshot** (`k3s etcd-snapshot save`). With H0
+  ([backups](HARDENING.md)) deferred there are no other backups, so this is the only rollback for a rotation gone wrong.
 - 🔴 **Keep the old token.** Per the k3s docs: *"Snapshots taken before the
   rotation will require the old server token when restoring the cluster."*
   Archive it in 1Password marked as the pre-rotation value — **do not delete

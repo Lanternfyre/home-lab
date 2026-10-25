@@ -1,6 +1,6 @@
 # Restoring data: what you can restore from today
 
-This runbook is for the operator after data loss or a broken cluster. It says what restore sources exist today, and the steps for each one. The steps that overwrite data are marked; none of them has been rehearsed here.
+This runbook is for the operator after data loss or a broken cluster. It says what restore sources exist today, and the steps for each one. The steps that overwrite data are marked; none of them has been rehearsed here. Terms such as CNPG are in the [glossary](../domain/glossary.md).
 
 ## What exists today
 
@@ -57,7 +57,7 @@ First, make sure the data is really lost. A volume returning `Input/output error
 If you go ahead:
 
 1. **Find the dump.** The backup volumes are SMB shares on the QNAP (StorageClass `qnap-samba`), one per database: `pg-backup` for postgres-ha and `immich-db-backup` for immich-db. Browse the share in the QNAP web interface, which works without a healthy cluster, and copy the file to your workstation.
-2. **Stop the writers, through git.** ArgoCD owns `spec.replicas` on these Deployments, so `kubectl scale` is reverted by selfHeal within minutes. Set ReportPortal's replicas to 0 in `gitops/clusters/home/apps/reportportal/chart-values.yaml` (that file sets none today; unverified which chart keys do), merge, and confirm with `kubectl -n reportportal get deploy` that every Deployment reads `0/0`. Note the counts you changed, for step 6.
+2. **Stop the writers, through git.** The chart renders a replica count even where the values file sets none, and ArgoCD's server-side apply owns that field (`spec.replicas` in the Deployment's managed fields, checked 2026-10-25), so selfHeal reverts a `kubectl scale`. Set ReportPortal's replicas to 0 in `gitops/clusters/home/apps/reportportal/chart-values.yaml` (that file sets none today; unverified which chart keys do), merge, and confirm with `kubectl -n reportportal get deploy` that every Deployment reads `0/0`. Note the counts you changed, for step 6.
 3. **Keep a copy of what is there now**, so the restore can be undone. Find the primary with `kubectl -n databases get pods -l cnpg.io/cluster=postgres-ha,cnpg.io/instanceRole=primary`, then:
    ```bash
    kubectl -n databases exec <primary> -c postgres -- pg_dumpall | gzip > postgres-ha-before-restore.sql.gz

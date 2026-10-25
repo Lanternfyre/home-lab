@@ -4,7 +4,7 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 
 **Contexts:** GitOps (how git becomes the running cluster) · Nodes (the k3s machines and how they join) · Storage (volumes, the NAS, databases) · Network (traffic in and out, the Gateways) · Policy (admission rules and hardening) · Tooling (the operator's and agents' own tools).
 
-**Terms:** [App-of-apps](#app-of-apps) · [auq](#auq) · [Bootstrap data](#bootstrap-data) · [Captured unit files](#captured-unit-files) · [Claude box](#claude-box) · [CNPG](#cnpg) · [cred/passwd](#credpasswd) · [Edge node](#edge-node) · [Hardening levels](#hardening-levels) · [Human bead](#human-bead) · [KPR](#kpr) · [Kyverno](#kyverno) · [MetalLB](#metallb) · [Protected volume](#protected-volume) · [QNAP](#qnap) · [selfHeal](#selfheal) · [Sign-in gate](#sign-in-gate) · [Storage proof](#storage-proof) · [Trident](#trident) · [VAP](#vap) · [Velero](#velero)
+**Terms:** [App-of-apps](#app-of-apps) · [auq](#auq) · [Bootstrap data](#bootstrap-data) · [Captured unit files](#captured-unit-files) · [Claude box](#claude-box) · [CNPG](#cnpg) · [cred/passwd](#credpasswd) · [Edge node](#edge-node) · [Hardening levels](#hardening-levels) · [Human bead](#human-bead) · [KPR](#kpr) · [Kyverno](#kyverno) · [MetalLB](#metallb) · [Operator](#operator) · [Protected volume](#protected-volume) · [QNAP](#qnap) · [selfHeal](#selfheal) · [Sign-in gate](#sign-in-gate) · [Storage gate](#storage-proof) · [Storage proof](#storage-proof) · [Trident](#trident) · [VAP](#vap) · [Velero](#velero)
 
 ## App-of-apps
 - **Context:** GitOps
@@ -37,8 +37,8 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 
 ## CNPG
 - **Context:** Storage
-- **Means:** CloudNativePG, the operator that runs this cluster's PostgreSQL: `databases/postgres-ha` (authentik and ReportPortal) and `immich/immich-db`.
-- **Rules:** each cluster gets the Services `<cluster>-rw` (the primary), `<cluster>-ro` and `<cluster>-r`; its replicas are not a backup → [Restoring data](../operate/restore.md)
+- **Means:** CloudNativePG, the Kubernetes controller that runs this cluster's PostgreSQL: `databases/postgres-ha` (authentik and ReportPortal) and `immich/immich-db`.
+- **Rules:** each cluster gets the Services `<cluster>-rw` (read-write: the primary), `<cluster>-ro` (read-only: the replicas) and `<cluster>-r` (any instance); its replicas are not a backup → [Restoring data](../operate/restore.md)
 - **Code:** `clusters.postgresql.cnpg.io`, label `cnpg.io/cluster`
 
 ## cred/passwd
@@ -81,6 +81,11 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 - **Means:** gives each `LoadBalancer` Service a LAN address, from the pool `lb-pool-32` (192.168.32.10–192.168.32.250).
 - **Rules:** a LoadBalancer Service must not allocate NodePorts → [Standing warnings](../operate/standing-warnings.md#network-exposure)
 
+## Operator
+- **Context:** Tooling
+- **Means:** the person who owns and runs this cluster: answers the agents' questions, does the `human` beads, merges the PRs.
+- **Not:** a Kubernetes operator such as [CNPG](#cnpg); call those controllers. Not the `operator` role box, which is an agent working for the operator.
+
 ## Protected volume
 - **Context:** Storage
 - **Means:** a PVC that must survive mistakes. Its PV is `reclaimPolicy: Retain`; both carry `homelab.techyon.dev/protect: "true"`, so deleting them is refused at admission; and the PVC carries Argo's `Prune=false,Delete=false`. "Layers 1–3" in the docs means these three; no page numbers them.
@@ -107,7 +112,7 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 - **Context:** Nodes
 - **Means:** the test that a node can mount storage: a test PVC on `qnap-iscsi`, used by a pod pinned to the node, must mount. Run by `40-add-node.yml` and `45-change-node-role.yml`, or alone by `46-prove-node-storage.yml`.
 - **Not:** the storage gate, which is the rule that uses it: a node stays cordoned until its storage proof passes. `Ready` is not proof.
-- **Code:** `ansible/playbooks/tasks/storage-proof.yml`
+- **Code:** `ansible/playbooks/tasks/prove-and-uncordon.yml`, which runs `storage-proof.yml` and uncordons only if it passes
 
 ## Trident
 - **Context:** Storage
