@@ -3,7 +3,7 @@
 # override any key). Maps deep-merge across the two files; a LIST in a box's file
 # replaces the list here, so keep shared settings in maps.
 #
-# Needs claude-box chart >= 0.1.11 (claudeCode.managedSettings, extraEnv). An
+# Needs claude-box chart >= 0.1.12 (publicRepos, Codex settings and MCPs). An
 # older chart ignores these keys.
 
 claudeCode:
@@ -26,3 +26,28 @@ claudeCode:
     enabledPlugins:
       beadwork@claude-shared-skills: true
       docs@claude-shared-skills: true
+
+# Public checkout for editing the skills. This list is separate from `repos:`:
+# the GitHub App broker keeps each box's existing org-specific token scope.
+publicRepos:
+  - Lanternfyre/claude-shared-skills
+
+codex:
+  # System defaults in these Kubernetes-constrained boxes. The pod still has
+  # non-root execution, no extra capabilities, RuntimeDefault seccomp and its
+  # existing network policy. Codex's inner bubblewrap cannot create a user
+  # namespace here, so the operator chose full access with no CLI approvals.
+  configToml: |
+    sandbox_mode = "danger-full-access"
+    approval_policy = "never"
+
+    [marketplaces.claude-shared-skills]
+    source_type = "git"
+    source = "https://github.com/Lanternfyre/claude-shared-skills.git"
+    ref = "main"
+
+    [plugins."beadwork@claude-shared-skills"]
+    enabled = true
+
+    [plugins."docs@claude-shared-skills"]
+    enabled = true

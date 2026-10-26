@@ -32,6 +32,28 @@ keeps the chart/image pins and window 0 unchanged.
 | `echo` | `https://box2.lab.techyon.dev` | `Techyon-box2` | t3chy0n | 20Gi | on (bravo's token) |
 | `foxtrot` | `https://box3.lab.techyon.dev` | `Techyon-box3` | t3chy0n | 20Gi | on (charlie's token) |
 
+## Shared skills in both CLIs
+
+`common-values.yaml` gives all nine boxes the Beadwork and Docs plugins. Claude
+Code reads its managed marketplace settings at session start; a box that has not
+logged in or started a new session may show no installed Claude plugins yet.
+Codex reads the system marketplace and enabled plugin defaults from
+`/etc/codex/config.toml`. Start a new Codex session after the chart rollout to
+load the skills. The chart renders Codex's MCP entries from the same `mcp.servers`
+map Claude uses, adding `auq` only where that box has its proxy sidecar.
+
+The same common values seed a public `claude-shared-skills` working checkout in
+`~/work/` on workspace startup. Seeding skips an existing directory; it never
+fetches or resets work in progress. `publicRepos` does not enter the GitHub App
+broker's token list. Keep the token-scoped `repos:` list for each box's own org.
+
+The operator chose Codex `danger-full-access` and `approval_policy = "never"`
+inside these boxes because the pod blocks Codex's inner bubblewrap namespace.
+The pod remains non-root with all capabilities dropped, RuntimeDefault seccomp,
+its existing network policy and the read-only cluster token. This removes
+Codex's own file and network sandbox within that pod; use an isolated worktree
+for a bead and keep review before integration.
+
 **The Lanternfyre boxes are ROLE boxes (2026-10-25)** -- the Necronia v2 plan's
 clean room (O30, `~/.claude/plans/this-is-project-we-cheerful-pizza.md`,
 "Clean-room process"). Hostname and Remote Control name are the role; the

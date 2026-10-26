@@ -46,7 +46,7 @@ github:
 # claude-workspace:<chart version>. Without this pin a pod delete rolls alpha
 # onto an unrelated, older image.
 image:
-  tag: "0.1.18"
+  tag: "0.1.19"
 
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
