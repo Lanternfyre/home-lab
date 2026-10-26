@@ -4,7 +4,7 @@ For the operator: run an approved bead with Claude or Codex in a separate worktr
 and tmux window, while golf's Remote Control session stays in window 0. The
 [project helper](../../scripts/agent-pilot.py) calls the shared beadwork runner;
 it does not copy its workflow or choose credentials, model access or permissions.
-The [shared runtime guide](https://github.com/Lanternfyre/claude-shared-skills/blob/feat/codex-shared-workflow/plugins/beadwork/runtime.md#conversations-and-recovery)
+The [shared runtime guide](https://github.com/Lanternfyre/claude-shared-skills/blob/feat/shared-worker-sessions/plugins/beadwork/runtime.md#conversations-and-recovery)
 defines its session and recovery behavior; this link uses the workflow branch
 until that change is merged.
 
@@ -73,7 +73,12 @@ so both hosts get one source of project instructions.
    the operator runs `codex login --device-auth` at the console and completes
    the browser step. This is the documented [headless login flow](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
    Never copy login files or tokens between boxes.
-4. Claude's chart-managed MCP configuration is supplied by its CLI shim.
+4. Claude's chart-managed MCP configuration is supplied by its CLI shim. Keep
+   the normal pod PATH: `command -v claude` should resolve to
+   `/usr/local/sbin/claude`. A login shell such as `bash -lc` can reset PATH
+   and select the raw binary, omitting the chart-managed tool configuration.
+   Invoke the helper directly through `kubectl exec … -- python3 …` or from a
+   shell with the normal pod PATH.
    Codex does not inherit that JSON file: explicitly configure any required
    MCP servers in its own configuration. The existing `auq-mcp` executable uses
    the local proxy; it needs no copied bearer token. `codex mcp add auq -- auq-mcp`
