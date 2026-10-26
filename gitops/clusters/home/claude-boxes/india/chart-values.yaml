@@ -46,9 +46,6 @@ rbac:
 storage:
   size: 20Gi
 
-image:
-  tag: "0.1.20"
-
 # auq on charlie's paired device token, shared (operator, 2026-10-25: "We
 # don't mind same device tokens for now"). Its cards therefore show charlie's
 # device, and unpairing it cuts off both boxes. To split: pair a device
