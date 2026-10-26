@@ -4,42 +4,35 @@ For the operator: run an approved bead with Claude or Codex in a separate worktr
 and tmux window, while golf's Remote Control session stays in window 0. The
 [project helper](../../scripts/agent-pilot.py) calls the shared beadwork runner;
 it does not copy its workflow or choose credentials, model access or permissions.
-The [shared runtime guide](https://github.com/Lanternfyre/claude-shared-skills/blob/feat/shared-worker-sessions/plugins/beadwork/runtime.md#conversations-and-recovery)
-defines its session and recovery behavior; this link uses the workflow branch
-until that change is merged.
+The [shared runtime guide](https://github.com/Lanternfyre/claude-shared-skills/blob/main/plugins/beadwork/runtime.md#conversations-and-recovery)
+defines its session and recovery behavior.
 
-**Prepared, not deployed.** The values change admits only `auth.openai.com` and
-`chatgpt.com` on HTTPS for golf. Chart `0.1.11` and image `0.1.18` stay pinned.
-Offline rendering of both values with chart `0.1.11` changed only the Cilium
-policy; the StatefulSet was identical. No live
-model pilot has been verified; track its outcome and operator actions in the
-pilot bead rather than this page.
+**Rollout pending:** the shared plugin checkout, Codex system settings and MCPs,
+and newer CLI pins are in [draft homelab PR #267](https://github.com/Lanternfyre/home-lab/pull/267).
+Its image and chart changes restart the boxes when synced. An earlier Codex
+pilot used a temporary CLI in golf, separate from the shared runner, and opened
+[draft runbook PR #268](https://github.com/Lanternfyre/home-lab/pull/268).
+It proved skill discovery and a fresh-session bead checkpoint; it did not prove
+the full runner launch path. Do not treat the draft rollout as live configuration.
 
 ## Check the runtime first
 
-Read-only checks on golf with image `0.1.18` measured Claude `2.1.268`, Codex
-`0.155.0`, Beads `1.3.1` and tmux `3.3a`. Codex supports native plugins,
-`exec`, exact-session resume and final-message output. Beads supports guarded
-updates and unclaims. The existing Claude window showed an input prompt; that
-is a snapshot, so check ownership again before starting work.
-
-**Codex is blocked at these pins by its workspace sandbox.** This model-free
-check reproduces the failure:
+The current pod blocks the namespace creation used by Codex's `workspace-write`
+sandbox. This model-free check reproduces the failure:
 
 ```sh
 codex -c 'sandbox_mode="workspace-write"' sandbox -- /bin/true
 ```
 
-It exits 1 because bubblewrap cannot create a namespace in the current pod.
-`features.use_legacy_landlock=true` is not a verified workaround: with
-`workspace-write` or the named `:workspace` profile it panics, reporting that
-direct runtime enforcement is incompatible with legacy Landlock. A bare
-Landlock no-op succeeding does not verify the workspace restrictions. Resolve
-this under an explicit sandbox/runtime decision before a Codex run; the helper
-stops on it. Do not disable sandboxing or change pod privileges to pass the check.
+It exits 1 because bubblewrap cannot create a namespace. The operator approved
+`danger-full-access` and `approval_policy = "never"` **inside these hardened
+pods**; the proposed common values in PR #267 select them for Codex. The pod's
+non-root user, dropped capabilities, seccomp and network policy remain. After
+that rollout, `codex sandbox -- /bin/true` checks the configured mode without
+a model. The pilot helper uses this check; it must not force `workspace-write`.
 
-Both engines use the same runner and bounded work contract. Start with Claude
-if its prerequisites pass; switching to Codex requires its own completed checks.
+Both engines use the same bounded runner contract. Select the engine that has
+a working login and the required tools in the box.
 
 ## Prepare once, outside the running agent
 
@@ -49,43 +42,25 @@ no v1 or tainted checkouts, transcripts or memories. Keep
 box's volume or credential cache. `AGENTS.md` links to the existing `CLAUDE.md`
 so both hosts get one source of project instructions.
 
-1. **Codex only:** let the reviewed golf-only network policy sync through GitOps.
-   Claude does not require these OpenAI endpoints. Do not patch
-   it live. Before and after, check that window 0 and the pod remain in place.
-   An unauthenticated `curl --connect-timeout 3 --max-time 5 -o /dev/null
-   https://auth.openai.com/` (and `https://chatgpt.com/`) should establish a
-   connection; an HTTP rejection alone does not mean networking failed.
-2. Update/install the shared plugins in a new session, leaving window 0 alone.
-   Golf's measured managed Claude cache was beadwork `0.4.0` / docs `0.3.1`,
-   which predates `scripts/run.py`. Use an approved shared-skills revision that
-   contains the runner. Supply its exact `run.py` path to the helper below.
-   For Codex's native package registration, run:
-
-   ```sh
-   codex plugin marketplace add https://github.com/Lanternfyre/claude-shared-skills.git
-   codex plugin add beadwork@claude-shared-skills
-   codex plugin add docs@claude-shared-skills
-   ```
-
-   Review bundled hooks through normal Codex trust. The runner can read the
-   installed startup script explicitly if its context is absent; no bypass is needed.
-3. Check `claude auth status` or `codex login status`. If Codex needs login,
+1. Let the reviewed network policy and PR #267 sync through GitOps before using
+   the chart-managed Codex settings. Check the actual pod and window 0 afterward;
+   a merged PR or render does not prove a live rollout. The common values declare
+   both plugins for Claude and Codex, and the chart supplies the same MCP roster
+   to both. Start a new session to load refreshed plugin files. Use the installed
+   `beadwork` plugin's exact `scripts/run.py` path below.
+2. Check `claude auth status` or `codex login status`. If Codex needs login,
    the operator runs `codex login --device-auth` at the console and completes
    the browser step. This is the documented [headless login flow](https://learn.chatgpt.com/docs/auth#login-on-headless-devices).
    Never copy login files or tokens between boxes.
-4. Claude's chart-managed MCP configuration is supplied by its CLI shim. Keep
+3. Claude's chart-managed MCP configuration is supplied by its CLI shim. Keep
    the normal pod PATH: `command -v claude` should resolve to
    `/usr/local/sbin/claude`. A login shell such as `bash -lc` can reset PATH
    and select the raw binary, omitting the chart-managed tool configuration.
    Invoke the helper directly through `kubectl exec … -- python3 …` or from a
    shell with the normal pod PATH.
-   Codex does not inherit that JSON file: explicitly configure any required
-   MCP servers in its own configuration. The existing `auq-mcp` executable uses
-   the local proxy; it needs no copied bearer token. `codex mcp add auq -- auq-mcp`
-   is an operator configuration action, not something the helper does.
-   Confirm required tools before an unattended run; do not send a test question.
-   Codex shell commands also need authorized network access to remote Beads,
-   within the existing Cilium policy. Make that policy choice explicit.
+   Codex reads the chart's `/etc/codex/config.toml` after rollout. Confirm the
+   required MCP tools before an unattended run; the chart shares configuration,
+   while each tool's actual connection still needs verification.
 
 ## Create a separate project worktree
 

@@ -46,7 +46,8 @@ with pathlib.Path(os.environ['TEST_CALLS']).open('a') as stream:
  stream.write(json.dumps([name,*sys.argv[1:]])+'\\n')
 if name=='claude': print('{"loggedIn":true}')
 if name=='codex' and 'sandbox' in sys.argv:
- print('fixture: workspace sandbox unavailable',file=sys.stderr); sys.exit(1)
+ if not os.environ.get('TEST_CODEX_SANDBOX_OK'):
+  print('fixture: configured sandbox unavailable',file=sys.stderr); sys.exit(1)
 if name=='tmux' and 'new-window' in sys.argv and os.environ.get('TEST_FAIL_TMUX'):
  print(os.environ['BEADS_DOLT_PASSWORD'],file=sys.stderr); sys.exit(1)
 '''
@@ -88,10 +89,18 @@ if name=='tmux' and 'new-window' in sys.argv and os.environ.get('TEST_FAIL_TMUX'
     def test_codex_sandbox_failure_prevents_runner_and_tmux_launch(self):
         result = self.run_helper(engine='codex')
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn('workspace sandbox unavailable', result.stderr)
+        self.assertIn('configured sandbox unavailable', result.stderr)
+        self.assertIn(['codex', 'sandbox', '--', '/bin/true'], self.invocations())
         self.assertNotIn('Command:', result.stdout)
         self.assertFalse(self.logs.exists())
         self.assertFalse(any(call[0] == 'tmux' for call in self.invocations()))
+
+    def test_codex_uses_host_selected_sandbox_when_available(self):
+        self.env['TEST_CODEX_SANDBOX_OK'] = '1'
+        result = self.run_helper(engine='codex', check=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(['codex', 'sandbox', '--', '/bin/true'], self.invocations())
+        self.assertFalse(any('-c' in call for call in self.invocations() if call[0] == 'codex'))
 
     def test_launch_quotes_paths_and_preserves_only_named_config(self):
         result = self.run_helper()

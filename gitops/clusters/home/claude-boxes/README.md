@@ -14,9 +14,10 @@ carries only what differs per box.
 
 To try the shared Beads runner with either engine in golf, follow
 [Run one Beads pilot on golf](../../../../docs/operate/agent-box-pilot.md).
-It uses a separate worktree and tmux window; the current Codex sandbox blocker
-and setup requirements are explicit there. The prepared network-only change
-keeps the chart/image pins and window 0 unchanged.
+It uses a separate worktree and tmux window. The Codex pilot used full access
+inside the hardened pod to work around its inner sandbox restriction and opened
+[draft runbook PR #268](https://github.com/Lanternfyre/home-lab/pull/268).
+The pilot left window 0 unchanged; the chart rollout below still needs review.
 
 ## The boxes
 

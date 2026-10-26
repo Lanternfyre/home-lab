@@ -94,10 +94,10 @@ def main():
             raise RuntimeError('Claude is not logged in; complete login at the console')
     else:
         checked(['codex', 'login', 'status'], cwd=root, env=env)
-        # Exercise the same workspace sandbox required by run.py, without a model.
-        # A bare/default sandbox is insufficient evidence of workspace compatibility.
-        checked(['codex', '-c', 'sandbox_mode="workspace-write"', 'sandbox', '--', '/bin/true'],
-                cwd=root, env=env)
+        # Probe the host-selected sandbox without a model. The runner honors the
+        # same Codex configuration; these boxes may select danger-full-access
+        # because their pod cannot create the namespace workspace-write needs.
+        checked(['codex', 'sandbox', '--', '/bin/true'], cwd=root, env=env)
     command = [sys.executable, str(runner), '--engine', args.engine, *forwarded]
     print(f'Checkout: {root}\nCommand: {shlex.join(command)}', flush=True)
     if args.check:
