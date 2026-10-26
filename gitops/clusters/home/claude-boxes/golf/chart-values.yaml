@@ -79,11 +79,19 @@ restartableBy:
 
 # Actions LOG storage, so `gh run view --log-failed` works (the sa<N> prefix
 # rotates, hence matchPattern; same entry and reasoning as bravo's). Nothing
-# else beyond the chart's default egress.
+# else beyond the chart's default egress and the Codex pilot below.
 networkPolicy:
   extraEgress:
     - toFQDNs:
         - matchPattern: "*.blob.core.windows.net"
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
+    # Golf-only Codex pilot: device login and ChatGPT-backed model requests.
+    # Both hosts timed out from this box under the previous policy (2026-10-26).
+    # No API-key endpoint, wildcard OpenAI access, image or pod-spec change.
+    - toFQDNs:
+        - matchName: auth.openai.com
+        - matchName: chatgpt.com
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
 

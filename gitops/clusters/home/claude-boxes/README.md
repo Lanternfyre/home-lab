@@ -12,6 +12,12 @@ The objects, the probes, the network policy and the reasoning behind each
 literal now live in the chart's templates and `values.yaml`; this directory
 carries only what differs per box.
 
+To try the shared Beads runner with either engine in golf, follow
+[Run one Beads pilot on golf](../../../../docs/operate/agent-box-pilot.md).
+It uses a separate worktree and tmux window; the current Codex sandbox blocker
+and setup requirements are explicit there. The prepared network-only change
+keeps the chart/image pins and window 0 unchanged.
+
 ## The boxes
 
 | dir | console | Remote Control name | repos | volume | auq |
