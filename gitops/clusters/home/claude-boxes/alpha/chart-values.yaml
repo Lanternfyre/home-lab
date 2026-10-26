@@ -41,13 +41,6 @@ github:
     - lanternfyre
 
 # 🔴 Pin the workspace image. The chart's default is Chart.appVersion, but the
-# shared publish step stamps appVersion with the CHART version when no
-# app-version is passed, so every published claude-box defaults to
-# claude-workspace:<chart version>. Without this pin a pod delete rolls alpha
-# onto an unrelated, older image.
-image:
-  tag: "0.1.20"
-
 # auq through the sidecar. The bearer is this box's paired device token, and
 # only the auq-proxy container mounts it; the workspace gets no auq env at all.
 auqProxy:

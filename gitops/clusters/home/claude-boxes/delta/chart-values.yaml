@@ -43,11 +43,6 @@ rbac:
 storage:
   size: 20Gi
 
-# Same pin, and the same reason, as alpha's chart-values.yaml: the chart's
-# default image tag follows the chart version, not the workspace release.
-image:
-  tag: "0.1.20"
-
 # auq through the sidecar, on a token SHARED with claude-box-alpha: the item
 # "Claude Box Alpha auq" (operator, 2026-10-22 -- one auq, reuse the tokens rather
 # than pair three more devices). The cost is the one bravo's comment names the
