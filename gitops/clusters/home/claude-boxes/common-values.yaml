@@ -9,7 +9,7 @@
 # Keep one published workspace image pin for all boxes. Advance only after the
 # registry tag exists; a missing tag restarts every box into ImagePullBackOff.
 image:
-  tag: "0.1.18"
+  tag: "0.1.19"
 
 claudeCode:
   managedSettings:
