@@ -119,6 +119,13 @@ restartableBy:
   serviceAccounts:
     - {namespace: claude-box-alpha, name: claude-box-alpha}
     - {namespace: claude-box-bravo, name: claude-box-bravo}
+
+# K0 operator access to Charlie's pod through the Kubernetes API. The chart
+# grants pods/exec only on claude-box-charlie-0 to alpha's ServiceAccount.
+# Exec can reach any container in that pod, so this is trusted operator access.
+operatorExec:
+  serviceAccount: {namespace: claude-box-alpha, name: claude-box-alpha}
+
 # Codex egress. Opened 2026-09-22 (operator decision) because `codex login`
 # needs a browser and `codex login --device-auth` HUNG on the box: every
 # OpenAI host timed out exactly like the known-blocked ghcr.io, while
