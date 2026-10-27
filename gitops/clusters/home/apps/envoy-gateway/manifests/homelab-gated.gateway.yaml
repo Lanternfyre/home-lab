@@ -199,6 +199,19 @@ spec:
       - email
       - profile
 
+    # Browser fetch, XHR and EventSource requests have no document to navigate
+    # through the login flow. Once a session expires, their polling otherwise
+    # starts a new OAuth attempt on every request, minting a new pair of CSRF
+    # cookies each time. Eventually the Cookie header exceeds Envoy's HTTP/2
+    # limit and Chrome reports ERR_HTTP2_PROTOCOL_ERROR (seen on beads-ui).
+    # Return 401 for those requests without starting OAuth. A page navigation
+    # has Sec-Fetch-Dest: document and still redirects to authentik as usual.
+    denyRedirect:
+      headers:
+        - name: sec-fetch-dest
+          type: Exact
+          value: empty
+
     # ⚠️ LOAD-BEARING. The jwt provider below reads the ID token out of a
     # cookie and can only address it if the name is pinned. Left unset, Envoy
     # Gateway appends a random per-policy suffix and the token becomes
@@ -239,9 +252,9 @@ spec:
     # window 5x. SHORTENING IT IS MORE SECURE, not less -- it narrows the
     # window in which a stolen state parameter can be replayed.
     #
-    # ⚠️ THIS IS A MITIGATION, NOT A CURE. It divides the rate by five; it does
-    # not change the shape. The cure is upstream (a bounded cookie count) or
-    # not polling a gated host from a logged-out tab.
+    # The denyRedirect matcher above now stops browser background polls from
+    # starting OAuth attempts. Keep this short TTL to bound cookies from
+    # separate login navigations that were never completed.
     csrfTokenTTL: 2m
 
   # ⚠️ `oidc` alone does NOT verify the ID token signature (envoy gateway
