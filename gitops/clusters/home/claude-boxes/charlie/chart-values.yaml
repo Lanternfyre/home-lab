@@ -200,6 +200,15 @@ networkPolicy:
         - matchName: center2.conan.io
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    # Conan Center's bzip2/1.0.8 recipe fetches source from these exact HTTPS
+    # hosts. Charlie reached the recipe after the Conan remote was allowed, then
+    # sourceware was unreachable and both mirrors timed out (2026-10-27).
+    - toFQDNs:
+        - matchName: sourceware.org
+        - matchName: mirrors.kernel.org
+        - matchName: www.mirrorservice.org
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
