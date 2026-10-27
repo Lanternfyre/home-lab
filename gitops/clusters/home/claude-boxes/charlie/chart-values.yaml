@@ -192,6 +192,14 @@ networkPolicy:
         - matchName: sh.rustup.rs
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    # Conan 2's conancenter remote is the reference oracle's dependency source.
+    # Charlie's remote connection stalled and a direct curl timed out on
+    # 2026-10-27; the live containment policy has no rule for this host.
+    # Keep the exception on oracle-ops, where the reference build runs.
+    - toFQDNs:
+        - matchName: center2.conan.io
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
