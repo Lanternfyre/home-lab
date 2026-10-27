@@ -1,0 +1,62 @@
+# K0-only MySQL fixture. The empty root password is contained by the Cilium
+# ingress rule: only Charlie's named pod can reach TCP/3306. No public Service.
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: necronia-k0-mysql
+  namespace: necronia-k0-mysql
+spec:
+  serviceName: necronia-k0-mysql
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: necronia-k0-mysql}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: necronia-k0-mysql}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: mysql
+          image: docker.io/library/mysql:8.4.11
+          imagePullPolicy: IfNotPresent
+          args: ["--skip-name-resolve"]
+          env:
+            - {name: MYSQL_ALLOW_EMPTY_PASSWORD, value: "yes"}
+            - {name: MYSQL_DATABASE, value: necronia}
+            - {name: MYSQL_INITDB_SKIP_TZINFO, value: "yes"}
+          ports:
+            - {name: mysql, containerPort: 3306, protocol: TCP}
+          resources:
+            requests: {cpu: 250m, memory: 512Mi}
+            limits: {cpu: "2", memory: 2Gi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          startupProbe:
+            exec:
+              command: [mysqladmin, ping, -h, 127.0.0.1, -uroot]
+            periodSeconds: 5
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command: [mysqladmin, ping, -h, 127.0.0.1, -uroot]
+            periodSeconds: 5
+          livenessProbe:
+            exec:
+              command: [mysqladmin, ping, -h, 127.0.0.1, -uroot]
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/mysql}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: qnap-iscsi
+        resources:
+          requests: {storage: 5Gi}

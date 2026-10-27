@@ -1,0 +1,26 @@
+# Alpha imports the reference SQL fixture and inspects the test DB. Charlie's
+# worker only connects through TCP/3306; it cannot exec into the database pod.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: necronia-k0-mysql-operator-exec
+  namespace: necronia-k0-mysql
+rules:
+  - apiGroups: [""]
+    resources: [pods/exec]
+    resourceNames: [necronia-k0-mysql-0]
+    verbs: [get, create]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: necronia-k0-mysql-operator-exec
+  namespace: necronia-k0-mysql
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: necronia-k0-mysql-operator-exec
+subjects:
+  - kind: ServiceAccount
+    namespace: claude-box-alpha
+    name: claude-box-alpha
