@@ -10,8 +10,10 @@ image:
 auth:
   existingSecret: beads-dolt      # manifests/beads-dolt.external-secret.yaml
 
-# The one app user. Every box and the operator's machine connect as `beads`;
-# BEADS_ACTOR (set per client) is what tells them apart in the audit trail.
+# The original app user remains for other boxes. K0 adds two users for the
+# operator and oracle-ops boxes. Both use the SAME `beads-password` field in
+# the existing `Beads Dolt` item. The usernames improve the SQL audit trail
+# and set privilege defaults; shared credentials are not hard role isolation.
 # The list is the narrowed grant measured on 2026-10-23: every bd command works
 # under it -- init (CREATE DATABASE), dep, ready, remember, claim, close,
 # `admin compact --analyze`. No FILE/SUPER/GRANT/CREATE USER.
@@ -23,6 +25,19 @@ users:
                  REFERENCES, CREATE VIEW, SHOW VIEW, TRIGGER, EXECUTE,
                  CREATE ROUTINE, ALTER ROUTINE, EVENT, LOCK TABLES,
                  CREATE TEMPORARY TABLES]
+  - name: bd_operator
+    host: "%"
+    passwordKey: beads-password
+    on: "necronia.*"
+    privileges: [SELECT, INSERT, UPDATE, DELETE, CREATE, DROP, ALTER, INDEX,
+                 REFERENCES, CREATE VIEW, SHOW VIEW, TRIGGER, EXECUTE,
+                 CREATE ROUTINE, ALTER ROUTINE, EVENT, LOCK TABLES,
+                 CREATE TEMPORARY TABLES]
+  - name: bd_oracle
+    host: "%"
+    passwordKey: beads-password
+    on: "necronia.*"
+    privileges: [SELECT, INSERT, UPDATE, DELETE, EXECUTE, LOCK TABLES]
 
 # For the operator's machine, which connects by name and verifies (bd checks
 # chain AND hostname -- measured). In-cluster clients stay plaintext: a public

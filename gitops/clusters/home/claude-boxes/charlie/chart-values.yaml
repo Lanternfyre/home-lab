@@ -89,6 +89,22 @@ remoteControl:
 beads:
   enabled: true
   onePasswordItem: "Beads Dolt"
+  user: bd_oracle
+  actor: oracle-ops-charlie
+
+# K0 role control is limited to this oracle-ops box and alpha. The shared
+# password provides audit identity, not hard cross-role SQL isolation.
+roleControl:
+  role: oracle-ops
+  bdGuardSha256: 1f0da5cc4108c2c98141c7f8c02c06ca6c23d3897b76d6fd7229f30c619052a4
+claudeCode:
+  managedSettings:
+    hooks:
+      PreToolUse:
+        - matcher: "*"
+          hooks:
+            - type: command
+              command: /etc/necronia/pre-tool
 
 # Argo replaces the pod by itself on any spec change -- a new image, an env var,
 # a renamed Remote Control -- instead of waiting for a manual pod delete
