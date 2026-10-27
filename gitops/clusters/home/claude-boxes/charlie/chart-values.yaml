@@ -223,6 +223,8 @@ networkPolicy:
         - matchName: archives.boost.io
         - matchName: cmake.org
         - matchName: dev.mysql.com
+        # Observed redirect for libmysqlclient/8.1.0's dev.mysql.com source.
+        - matchName: cdn.mysql.com
         - matchName: distfiles.ariadne.space
         - matchName: download.gnome.org
         - matchName: ftpmirror.gnu.org
