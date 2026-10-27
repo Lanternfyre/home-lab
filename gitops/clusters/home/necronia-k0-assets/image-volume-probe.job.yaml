@@ -1,0 +1,51 @@
+# One bounded Charlie-only probe of Kubernetes' read-only OCI artifact volume.
+# It mounts no workspace or home claim and uses the existing GHCR pull secret.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: necronia-k0-image-volume-probe-v1
+  namespace: claude-box-charlie
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: necronia-k0-assets}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-docker
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: check
+          image: ghcr.io/oras-project/oras:v1.3.5
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              test -s /assets/betamap.otbm
+              test -s /assets/necronia.otbm
+              sha256sum /assets/*.otbm /assets/*-house.xml /assets/*-spawn.xml
+              if touch /assets/.write-probe 2>/dev/null; then
+                echo 'asset volume was writable' >&2
+                exit 1
+              fi
+              echo 'asset volume read-only: verified'
+          resources:
+            requests: {cpu: 25m, memory: 32Mi}
+            limits: {cpu: 250m, memory: 128Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - {name: assets, mountPath: /assets, readOnly: true}
+      volumes:
+        - name: assets
+          image:
+            reference: ghcr.io/lanternfyre/necronia-assets@sha256:7d1cdbe25c7ef434d100162daea5e70b3a13de68922a3dbde5314721387d8244
+            pullPolicy: IfNotPresent
