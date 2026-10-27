@@ -75,7 +75,7 @@ beads:
 # reused through the chart's unchanged ExternalSecret.
 roleControl:
   role: operator
-  bdGuardSha256: 62b0ada76f95e0208e7842ae67f3216e57f756ec7aba7f001afa1c35943db102
+  bdGuardSha256: 2827cd7001ee1942596877af9c36920bb9df03326a3f87a531ffdb81bca595f0
 claudeCode:
   managedSettings:
     hooks:
