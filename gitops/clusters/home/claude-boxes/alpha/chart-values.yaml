@@ -25,6 +25,10 @@ repos:
   - Lanternfyre/Necronia
   - Lanternfyre/Necronia2.0
 
+# The shared skills checkout is now in alpha's token-scoped repos list above.
+# Avoid also seeding it through the common publicRepos list.
+publicRepos: []
+
 console:
   # 🔴 A ROLE BOX (Necronia v2 plan, O30; operator 2026-10-25): `operator` --
   # the orchestrator: reads everything, drives the role boxes through Beads and
