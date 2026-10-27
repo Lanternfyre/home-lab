@@ -161,3 +161,7 @@ networkPolicy:
         - matchName: sh.rustup.rs
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+
+# Explicit alpha operator access to this box's named pod only.
+operatorExec:
+  serviceAccount: {namespace: claude-box-alpha, name: claude-box-alpha}
