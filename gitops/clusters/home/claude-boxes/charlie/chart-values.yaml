@@ -220,6 +220,8 @@ networkPolicy:
         - matchName: download.gnome.org
         - matchName: ftpmirror.gnu.org
         - matchName: ftp.gnu.org
+        # Observed 302 target of ftpmirror.gnu.org for libiconv/1.17.
+        - matchName: ftp.man.poznan.pl
         - matchName: gmplib.org
         - matchName: sourceforge.net
         - matchName: www.lua.org
