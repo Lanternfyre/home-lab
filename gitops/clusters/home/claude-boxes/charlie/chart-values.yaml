@@ -96,7 +96,7 @@ beads:
 # password provides audit identity, not hard cross-role SQL isolation.
 roleControl:
   role: oracle-ops
-  bdGuardSha256: 2827cd7001ee1942596877af9c36920bb9df03326a3f87a531ffdb81bca595f0
+  bdGuardSha256: 95114da6a3bd41841085e8dd611dbc5a0cc6455313b86514504f4c2b0517da77
 claudeCode:
   managedSettings:
     hooks:
