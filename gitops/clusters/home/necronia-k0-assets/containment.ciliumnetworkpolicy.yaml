@@ -1,0 +1,27 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: necronia-k0-assets-containment
+  namespace: claude-box-charlie
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: necronia-k0-assets}
+  enableDefaultDeny: {ingress: true, egress: true}
+  ingress: []
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - {port: "53", protocol: UDP}
+            - {port: "53", protocol: TCP}
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toFQDNs:
+        - matchName: ghcr.io
+        - matchName: pkg-containers.githubusercontent.com
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
