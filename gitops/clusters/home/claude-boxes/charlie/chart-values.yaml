@@ -244,6 +244,13 @@ networkPolicy:
             app.kubernetes.io/name: necronia-k0-mysql
       toPorts:
         - ports: [{port: "3306", protocol: TCP}]
+    # The pinned, gitignored reference world map is pulled as an OCI artifact
+    # from GHCR into Charlie's temporary run directory. The shared GitHub
+    # egress rule already covers pkg-containers.githubusercontent.com blobs.
+    - toFQDNs:
+        - matchName: ghcr.io
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
