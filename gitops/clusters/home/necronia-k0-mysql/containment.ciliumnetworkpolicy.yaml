@@ -1,0 +1,17 @@
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: necronia-k0-mysql-containment
+  namespace: necronia-k0-mysql
+spec:
+  endpointSelector:
+    matchLabels: {app.kubernetes.io/name: necronia-k0-mysql}
+  enableDefaultDeny: {ingress: true, egress: true}
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: claude-box-charlie
+            app.kubernetes.io/name: claude-box-charlie
+      toPorts:
+        - ports: [{port: "3306", protocol: TCP}]
+  egress: []

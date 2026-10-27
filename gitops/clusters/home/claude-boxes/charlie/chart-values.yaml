@@ -237,6 +237,13 @@ networkPolicy:
         - matchName: zlib.net
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    # Only Charlie's oracle-ops pod may reach the isolated K0 MySQL fixture.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: necronia-k0-mysql
+            app.kubernetes.io/name: necronia-k0-mysql
+      toPorts:
+        - ports: [{port: "3306", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.

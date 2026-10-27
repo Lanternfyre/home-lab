@@ -1,0 +1,26 @@
+# A standalone manifests Application. The K0 fixture has no general-purpose
+# Helm chart and must remain separate from the agent box releases.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: necronia-k0-mysql
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Lanternfyre/home-lab.git
+    targetRevision: master
+    path: gitops/clusters/home/necronia-k0-mysql
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: necronia-k0-mysql
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true
