@@ -96,3 +96,7 @@ networkPolicy:
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
 extraEnv:
   BEADWORK_NO_MEMORIES: "1"
+
+# Explicit alpha operator access to this box's named pod only.
+operatorExec:
+  serviceAccount: {namespace: claude-box-alpha, name: claude-box-alpha}
