@@ -1,0 +1,25 @@
+# One pinned OCI asset stage into Charlie's persistent operator cache.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: necronia-k0-assets
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    argocd.argoproj.io/compare-options: ServerSideDiff=true
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/Lanternfyre/home-lab.git
+    targetRevision: master
+    path: gitops/clusters/home/necronia-k0-assets
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: claude-box-charlie
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - ServerSideApply=true

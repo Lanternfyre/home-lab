@@ -1,0 +1,62 @@
+# Pull the pinned reference map with the existing GHCR pull credential. The
+# credential is mounted only in this one-shot pod, never Charlie's workspace.
+# Both pods mount the same RWO home claim on one node; the job writes only to
+# the operator cache and leaves the source checkout untouched.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: necronia-k0-assets-v1
+  namespace: claude-box-charlie
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: necronia-k0-assets}
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: ghcr-docker
+      affinity:
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels: {app.kubernetes.io/name: claude-box-charlie}
+              topologyKey: kubernetes.io/hostname
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: oras
+          image: ghcr.io/oras-project/oras:v1.3.5
+          imagePullPolicy: IfNotPresent
+          command: [/bin/sh, -ec]
+          args:
+            - |
+              out=/home/agent/.cache/necronia/k0-assets/v1
+              mkdir -p "$out"
+              oras pull ghcr.io/lanternfyre/necronia-assets:v1 -o "$out"
+              test -s "$out/necronia.otbm"
+              sha256sum "$out"/* > "$out/SHA256SUMS"
+          env:
+            - {name: DOCKER_CONFIG, value: /run/ghcr}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          volumeMounts:
+            - {name: home, mountPath: /home/agent}
+            - {name: ghcr-auth, mountPath: /run/ghcr, readOnly: true}
+      volumes:
+        - name: home
+          persistentVolumeClaim: {claimName: home-claude-box-charlie-0}
+        - name: ghcr-auth
+          secret:
+            secretName: ghcr-docker
+            items:
+              - {key: .dockerconfigjson, path: config.json, mode: 0444}
