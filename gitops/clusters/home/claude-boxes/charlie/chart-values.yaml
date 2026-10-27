@@ -209,6 +209,23 @@ networkPolicy:
         - matchName: www.mirrorservice.org
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+    # Exact HTTPS source hosts from the resolved K0 server Conan graph
+    # (Linux x86_64, GCC 12, Debug). Includes cached tools for a fresh cache;
+    # client-only sources stay outside this oracle-ops policy.
+    - toFQDNs:
+        - matchName: archives.boost.io
+        - matchName: cmake.org
+        - matchName: dev.mysql.com
+        - matchName: distfiles.ariadne.space
+        - matchName: download.gnome.org
+        - matchName: ftpmirror.gnu.org
+        - matchName: ftp.gnu.org
+        - matchName: gmplib.org
+        - matchName: sourceforge.net
+        - matchName: www.lua.org
+        - matchName: zlib.net
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
