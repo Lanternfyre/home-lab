@@ -298,14 +298,23 @@ if ! dotnet "$console" /CreateProject /work/Probe.ndproj \
   echo 'FAIL: NDepend could not create a project. Its output is in /work/create-project.log.' >&2
   exit 1
 fi
-echo 'PASS NDepend activation: CreateProject succeeded'
+echo 'PASS NDepend project creation'
 rc=0
-dotnet "$console" /work/Probe.ndproj /OutDir /work/report /Silent \
-  > /work/analysis.log 2>&1 || rc=$?
+# Keep console output: the source-parsing check below needs it. Close stdin
+# instead of using /Silent so an interactive console prompt cannot hang us.
+dotnet "$console" /work/Probe.ndproj /OutDir /work/report \
+  > /work/analysis.log 2>&1 < /dev/null || rc=$?
+printf 'NDepend analysis exited with code %s\n' "$rc"
 test "$rc" -le 1 || { echo "FAIL: analyser exit $rc; see /work/analysis.log" >&2; exit 1; }
-test -s /work/report/NDependReport.html
-test -n "$(find /work/report -name '*.ndar' -type f -size +0c -print -quit)"
-grep -qE '(^|[^0-9])[1-9][0-9]* source files? parsed' /work/analysis.log
+test -s /work/report/NDependReport.html || {
+  echo 'FAIL: analysis did not produce a nonempty /work/report/NDependReport.html' >&2; exit 1;
+}
+test -n "$(find /work/report -name '*.ndar' -type f -size +0c -print -quit)" || {
+  echo 'FAIL: analysis did not produce a nonempty .ndar under /work/report' >&2; exit 1;
+}
+grep -qE '(^|[^0-9])[1-9][0-9]* source files? parsed' /work/analysis.log || {
+  echo 'FAIL: analysis log does not confirm any source files parsed' >&2; exit 1;
+}
 echo "PASS native analysis: source parsed, HTML and .ndar produced (console exit $rc)."
 echo 'This tests identity and activation only; it is not a Necronia quality-gate verdict.'
 SH
@@ -334,9 +343,21 @@ kubectl -n "$namespace" wait --for=condition=Ready externalsecret/activation ext
 kubectl apply -f "$scratch/pod.yaml"
 
 phase=''
+previous_state=''
+status_query='{.status.phase}{"\n"}{range .status.initContainerStatuses[*]}{.name}{": "}{.state.waiting.reason}{" "}{.state.waiting.message}{"\n"}{end}{range .status.containerStatuses[*]}{.name}{": "}{.state.waiting.reason}{" "}{.state.waiting.message}{"\n"}{end}'
 for ((attempt=0; attempt<160; attempt++)); do
-  phase=$(kubectl -n "$namespace" get pod probe -o jsonpath='{.status.phase}')
+  state=$(kubectl -n "$namespace" get pod probe -o "jsonpath=$status_query")
+  phase=${state%%$'\n'*}
+  if [[ "$state" != "$previous_state" ]] || ((attempt % 15 == 0)); then
+    printf 'Probe status (%ss elapsed): %s\n' "$((attempt * 2))" "$state"
+    previous_state=$state
+  fi
   case "$phase" in Succeeded|Failed) break ;; esac
+  case "$state" in
+    *ErrImagePull*|*ImagePullBackOff*|*InvalidImageName*|*CreateContainerConfigError*|*CreateContainerError*)
+      echo 'Pod startup failed; see the status above and events below.' >&2
+      break ;;
+  esac
   sleep 2
 done
 kubectl -n "$namespace" logs probe -c identity || true
