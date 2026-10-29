@@ -176,6 +176,58 @@ networkPolicy:
         - matchName: sh.rustup.rs
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
+  # Certificate revocation and issuer lookups, for NuGet package signatures.
+  # Opened 2026-10-29 (operator request, from alpha's Necronia2.0 session). On
+  # Linux, `dotnet restore` and `dotnet tool restore` verify each package's
+  # signature when they first extract it, and the chain check looks up
+  # revocation online, over plain HTTP on port 80: the first http:// CRL URL
+  # of each certificate, then OCSP if the CRL is inconclusive, 15 s each.
+  # Neither those names nor that port is open above, so each lookup HANGS to
+  # its timeout instead of failing. On alpha's cold cache, `dotnet nuget verify`
+  # of one package took 2 min 1 s (two chains x two certificates x CRL and
+  # OCSP x 15 s) and warned NU3018 and NU3028 ("the revocation server could not
+  # be reached"); the solution's restore took 4 minutes and a three-tool
+  # `dotnet tool restore` about 6, while api.nuget.org:443 answered at once.
+  #
+  # The hosts are every CRL, OCSP and issuer (AIA) URL in the signatures of the
+  # 164 packages (167 .nupkg files) in alpha's ~/.nuget/packages, read from the
+  # certificates with `openssl x509 -ext crlDistributionPoints,authorityInfoAccess`
+  # -- found, not guessed, though not hubble verdicts either (no hubble CLI in
+  # the box). If a new package still hangs, read its signature the same way.
+  # The ARC runner policies open :80 to the same CAs, from hubble drops.
+  #   ocsp.digicert.com              OCSP for the DigiCert chains every package uses
+  #   crl3.digicert.com, crl4.digicert.com
+  #                                  CRLs for the same chains (crl4 is the first
+  #                                  CRL URL on the SHA2 Assured ID CAs)
+  #   cacerts.digicert.com           issuer certificates, fetched when a chain lacks one
+  #   www.microsoft.com              /pkiops CRLs and issuers of the Microsoft
+  #                                  timestamp chain (coverlet, Newtonsoft.Json 13.0.4)
+  #   ts-ocsp.ws.symantec.com, ts-crl.ws.symantec.com, ts-aia.ws.symantec.com,
+  #   s.symcd.com, s.symcb.com       the Symantec timestamp chain on older packages
+  #                                  (Newtonsoft.Json 13.0.1, xunit.abstractions,
+  #                                  Microsoft.Extensions.* 6.0); DigiCert serves them now
+  #
+  # ⚠️ RESIDUAL RISK, STATED: this is port 80 to the IPs these names resolve to,
+  # not to "these names only". Cilium enforces toFQDNs as an L3 rule on the
+  # learned IPs, and every name here is a CNAME onto a shared CDN edge (Akamai,
+  # and Cloudflare for some DigiCert answers), where a plain-HTTP Host header
+  # picks the site. So other tenants of those edges answer on :80 -- the same
+  # reach registry.npmjs.org, chatgpt.com and api.nuget.org already give on 443.
+  # CAs serve signed revocation data over plain HTTP by design. An L7 Host rule
+  # could narrow it; none exists in the estate yet, so it is not done here.
+    - toFQDNs:
+        - matchName: ocsp.digicert.com
+        - matchName: crl3.digicert.com
+        - matchName: crl4.digicert.com
+        - matchName: cacerts.digicert.com
+        - matchName: www.microsoft.com
+        - matchName: ts-ocsp.ws.symantec.com
+        - matchName: ts-crl.ws.symantec.com
+        - matchName: ts-aia.ws.symantec.com
+        - matchName: s.symcd.com
+        - matchName: s.symcb.com
+      toPorts:
+        - ports: [{port: "80", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
