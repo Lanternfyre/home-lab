@@ -4,16 +4,15 @@ Use this experiment to check whether NDepend can run inside a non-root agent
 workspace with the workstation's identity. It needs an operator with
 cluster-admin `kubectl` access. It does not update or restart any agent box.
 
-**Live result: identity and project creation passed; full analysis is still
-unverified.** In namespace `ndepend-probe-20261029123829-1192197`, the root init
-set the hostname successfully. The reader confirmed the hostname, MAC, .NET
-machine name and its own non-root, zero-capability restrictions, then created
-an NDepend project. The probe subsequently failed with an empty analysis log.
-It incorrectly used `/Silent` while requiring source-parsing evidence in that
-log. The revised script retains console output and names each failed analysis
-check; it needs another live run to verify the report and parsed source.
-This box cannot create namespaces or pods. This is not a production rollout
-procedure.
+**Live result: passed on 2026-10-29.** The operator ran workspace preview
+`ghcr.io/lanternfyre/claude-workspace:0.1.22-pr36.1.g5d75364` in namespace
+`ndepend-probe-20261029124924-1194591`. The reader confirmed hostname `TarjeiPC`,
+MAC `50:eb:f6:77:84:3a`, the .NET machine name and its own non-root,
+zero-capability restrictions. NDepend created the project, parsed source and
+produced nonempty HTML and `.ndar` output with analysis exit code 0. The probe
+then deleted its namespace. Native NDepend works with this image and activation;
+this does not yet verify Necronia's source, coverage or quality gates.
+This is not a production rollout procedure.
 
 ## Before running it
 
@@ -106,7 +105,7 @@ that exact namespace. `--keep` also retains a successful probe for inspection.
 The probe refuses to adopt an existing namespace and never deletes one that it
 did not create. Its pod has a five-minute active deadline.
 
-## What happens after a successful probe
+## Prepared integration, not deployed
 
 The prepared [workspace image change](https://github.com/Lanternfyre/docker-compendium/pull/36) copies the
 complete `/opt/ndepend` directory from `ghcr.io/lanternfyre/ndepend:latest` at
@@ -115,13 +114,34 @@ and does not execute the NDepend image's entrypoint. Publishing NDepend alone
 does not rebuild the workspace; an existing workspace image keeps its bundled
 version until rebuilt and rolled out.
 
-Run the same probe again with `--image <published-workspace-preview>` to test
-that packaging. Then add the optional identity init container, Cilium
-annotation and mounted activation to the `claude-box` chart. A production
-namespace policy exception needs a matching admission rule that restricts the
-extra capability to that exact init container. Those chart and policy changes
-are not included in this experiment. The workspace itself must keep its
-current non-root and capability settings.
+The successful probe tested that workspace packaging. The optional
+[chart change](https://github.com/Lanternfyre/helm-compendium/pull/60) is now
+prepared with `ndepend.enabled: false` by default. When enabled, a completed
+hostname init runs before the credential sidecars. A second, non-root init
+checks identity and copies activation into a memory-backed directory mounted
+at `/home/agent/.config/NDepend`. No activation is written into the home PVC.
+Replacing the pod refreshes this copy after a 1Password change. The workspace
+keeps its current non-root and capability settings.
+
+The proposed
+[admission rule](../../gitops/clusters/home/apps/kyverno/manifests/claude-box-ndepend.validatingpolicy.yaml)
+covers only `claude-box-alpha`, including debug containers. It limits the
+hostname exception to `ndepend-identity` in `claude-box-alpha-0`, with the tested
+preview image, exact hostname command, no mounts or environment credentials,
+and only `SYS_ADMIN`. Other containers remain unprivileged. It accepts the
+current alpha pod in offline validation; API-server enforcement is still
+unverified. This branch keeps alpha's namespace at `restricted`, so merely
+merging the preparation does not permit the init or restart the box.
+
+Rollout has three ordered stages: publish the image and chart changes; install
+the admission rule and verify its generated admission policy and binding are
+enforcing; then enable the feature and relax PSA enforcement for alpha in a
+separate GitOps change. Keep restricted audit/warn labels. The rule's image pin
+must match the selected workspace image. Do not relax PSA while the rule is
+absent or unverified. Alpha uses `RollingUpdate`, so enabling the feature
+restarts its session. Rollback disables the feature and restores restricted
+enforcement; keep the admission rule until the replacement pod is restricted
+again. No live rollout is included in these draft PRs.
 
 Necronia2.0 can then use its existing [verification script](https://github.com/Lanternfyre/Necronia2.0/blob/main/build/verify.sh)
 with `build/verify.sh --ndepend`. Its CI currently pins the
@@ -141,3 +161,11 @@ fails to synchronize, an image cannot be pulled, or a run succeeds. A simulated
 console checks that success requires both artifacts and source-parsing evidence,
 including when the sample returns the quality-gate exit code 1. They mock
 Kubernetes and NDepend; none claims to prove live activation or networking.
+
+For the admission rule, `scripts/test_ndepend_admission_policy.py --pod
+<rendered-alpha-pod.yaml>` uses the real Kyverno CLI to evaluate the enabled
+chart pod and mutations of it. Supply a Pod extracted from the chart's
+StatefulSet template, with name `claude-box-alpha-0` and namespace
+`claude-box-alpha`; the test checks the rule's namespace scope too. This needs
+Kyverno 1.18.2 (or a compatible CLI) and PyYAML. It performs no cluster writes
+and does not replace API-server admission tests before rollout.
