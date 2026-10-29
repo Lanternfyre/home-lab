@@ -229,8 +229,48 @@ networkPolicy:
         - matchName: s.symcb.com
       toPorts:
         - ports: [{port: "80", protocol: TCP}]
+  # NDepend licence activation, for the console and MCP server under
+  # ~/tools (see podAnnotations below). Opened 2026-10-29 (operator decision).
+  # `NDepend.Console.MultiOS.dll --RegLic <key>` registers a seat online, and
+  # every NDepend host in the redistributable's assemblies is under
+  # ndepend.com (www.ndepend.com/activation is the activation page); with no
+  # rule, https://www.ndepend.com/ times out from the box like any missing
+  # name. If activation still hangs, NDepend also documents an offline
+  # activation procedure.
+    - toFQDNs:
+        - matchName: www.ndepend.com
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
 extraEnv:
   BEADWORK_NO_MEMORIES: "1"
+  # The NDepend console under ~/tools (podAnnotations below). Necronia2.0's
+  # build/verify.sh runs NDepend whenever this is set, so it is part of green
+  # before every push, not only in CI.
+  NDEPEND_CONSOLE: /home/agent/tools/ndepend/net10.0/NDepend.Console.MultiOS.dll
+
+# NDepend on this box (operator decision 2026-10-29): the console and the
+# NDepend MCP server live in the persistent $HOME under ~/tools, and NDepend is
+# activated on THIS machine with a seat of its own (`--RegLic`). NDepend binds
+# that seat to a fingerprint of the hostname and the MAC addresses. The
+# StatefulSet keeps the hostname (claude-box-alpha-0), but Cilium gives eth0 a
+# fresh MAC with every pod, so the MAC is pinned to the one the pod had when the
+# seat was registered. Needs claude-box chart >= 0.1.19 (podAnnotations).
+# ⚠️ Like the rest of the pod spec, this reaches the box only when its pod is
+# replaced (updateStrategy: OnDelete), and Cilium reads the MAC only then.
+# ⚠️ Change the MAC and the seat no longer matches: NDepend then needs a new
+# activation, which costs a seat.
+podAnnotations:
+  cni.cilium.io/mac-address: "f2:cd:75:4c:85:b2"
+
+mcp:
+  servers:
+    # NDepend.MCP.Server (github.com/ndepend/NDepend.MCP.Server, built on the box
+    # into ~/tools/src). Through the wrapper, never the dll: the wrapper exits at
+    # once with a reason when the server is not built or NDepend is not
+    # activated, instead of hanging every session start.
+    ndepend:
+      type: stdio
+      command: /home/agent/tools/bin/ndepend-mcp
