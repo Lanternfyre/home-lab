@@ -4,14 +4,16 @@ Use this experiment to check whether NDepend can run inside a non-root agent
 workspace with the workstation's identity. It needs an operator with
 cluster-admin `kubectl` access. It does not update or restart any agent box.
 
-**Live result: first probe failed at hostname setup.** In namespace
-`ndepend-probe-20261029121936-1183325`, both ExternalSecrets synchronized and the
-workspace preview image pulled. The init container inherited UID 1000 and
-`hostname` was denied despite `SYS_ADMIN` in its PodSpec; the reader never
-started. The revised probe runs only the hostname init as UID 0 and logs its
-capability sets. That revision still needs a live run to prove the hostname
-reaches the reader and the activation works. This box cannot create namespaces
-or pods. This is not a production rollout procedure.
+**Live result: identity and project creation passed; full analysis is still
+unverified.** In namespace `ndepend-probe-20261029123829-1192197`, the root init
+set the hostname successfully. The reader confirmed the hostname, MAC, .NET
+machine name and its own non-root, zero-capability restrictions, then created
+an NDepend project. The probe subsequently failed with an empty analysis log.
+It incorrectly used `/Silent` while requiring source-parsing evidence in that
+log. The revised script retains console output and names each failed analysis
+check; it needs another live run to verify the report and parsed source.
+This box cannot create namespaces or pods. This is not a production rollout
+procedure.
 
 ## Before running it
 
@@ -92,6 +94,11 @@ does **not** count as Necronia passing. Real source, coverage and gate enforceme
 still need testing against Necronia after the workspace integration is ready.
 The script never registers a trial or re-registers the license.
 
+While waiting, the script prints pod status changes and a status update about
+every 30 seconds. An image-pull or container-configuration error stops the wait
+early and prints the reason. The analysis prints its exit code and identifies
+any missing report, analysis result or source-parsing evidence.
+
 On failure, the script prints console diagnostics and pod events and retains
 the namespace. Send the printed namespace and PASS/FAIL output to the agent;
 do not send the secret contents. The final line gives the cleanup command for
@@ -130,5 +137,7 @@ bash -n scripts/probe-ndepend-workspace.sh
 
 The tests need PyYAML. They check input validation, the rendered security and
 secret configuration, and behavior when a namespace already exists, a secret
-fails to synchronize, or a run succeeds. They mock Kubernetes; none claims to
-prove live activation or networking.
+fails to synchronize, an image cannot be pulled, or a run succeeds. A simulated
+console checks that success requires both artifacts and source-parsing evidence,
+including when the sample returns the quality-gate exit code 1. They mock
+Kubernetes and NDepend; none claims to prove live activation or networking.

@@ -89,7 +89,10 @@ elif args[:1] == ['create'] and os.environ['PROBE_TEST_MODE'] == 'exists':
 elif 'wait' in args and os.environ['PROBE_TEST_MODE'] == 'secret-failure':
     sys.exit(1)
 elif 'get' in args and 'pod' in args:
-    print('Succeeded', end='')
+    if os.environ['PROBE_TEST_MODE'] == 'image-failure':
+        print('Pending\\nidentity: ImagePullBackOff image not found\\nreader: PodInitializing')
+    else:
+        print('Succeeded', end='')
 """)
             fake.chmod(0o755)
             log = Path(directory) / "calls.jsonl"
@@ -123,6 +126,57 @@ elif 'get' in args and 'pod' in args:
         result, calls = self.fake_cluster("success", "--keep")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertFalse(any("delete" in c for c in calls))
+
+    def test_bad_image_reports_the_reason_without_waiting_for_deadline(self):
+        result, calls = self.fake_cluster("image-failure")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("ImagePullBackOff image not found", result.stdout)
+        self.assertIn("Probe retained", result.stderr)
+        self.assertFalse(any("delete" in c for c in calls))
+
+    def test_analysis_requires_artifacts_and_source_evidence(self):
+        rendered = self.run_probe("--mac", "02:11:22:33:44:55", "--render")
+        config = next(x for x in yaml.safe_load_all(rendered.stdout) if x["kind"] == "ConfigMap")
+        # Run the actual analysis/check section without needing a licensed
+        # installation, cluster, or the workstation's identity on this machine.
+        analysis = config["data"]["run.sh"].split("console=", 1)[1]
+        for mode, expected in [
+            ("success", None), ("quality-gate", None),
+            ("missing-report", "nonempty"), ("missing-ndar", "nonempty .ndar"),
+            ("no-sources", "does not confirm any source"), ("error", "analyser exit 2"),
+        ]:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                fake = Path(directory) / "dotnet"
+                fake.write_text('''#!/usr/bin/env python3
+import os, pathlib, sys
+args = sys.argv[1:]
+if '/CreateProject' in args:
+    print('Project file successfully created')
+    sys.exit(0)
+out = pathlib.Path(args[args.index('/OutDir') + 1])
+out.mkdir()
+mode = os.environ['PROBE_ANALYSIS_MODE']
+if mode != 'missing-report':
+    (out / 'NDependReport.html').write_text('<html>report</html>')
+if mode != 'missing-ndar':
+    (out / 'Probe.ndar').write_text('mock analysis result')
+if '/Silent' not in args:
+    print(('0' if mode == 'no-sources' else '1') + ' source files parsed')
+sys.exit(2 if mode == 'error' else 1 if mode == 'quality-gate' else 0)
+''')
+                fake.chmod(0o755)
+                script = "set -euo pipefail\nconsole=" + analysis.replace("/work/", directory + "/")
+                result = subprocess.run(
+                    ["bash"], input=script, text=True, capture_output=True, timeout=10,
+                    env=dict(os.environ, PATH=directory + os.pathsep + os.environ["PATH"],
+                             PROBE_ANALYSIS_MODE=mode),
+                )
+                if expected is None:
+                    self.assertEqual(0, result.returncode, result.stderr)
+                    self.assertIn("PASS native analysis", result.stdout)
+                else:
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(expected, result.stderr)
 
 
 if __name__ == "__main__":
