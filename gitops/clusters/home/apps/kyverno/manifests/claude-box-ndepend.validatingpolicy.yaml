@@ -1,0 +1,103 @@
+# Install and verify this policy BEFORE relaxing alpha's namespace PSA level.
+# The namespace remains restricted in this PR. The only proposed exception is
+# the tested, completed hostname setter; the workspace keeps zero capabilities.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: claude-box-ndepend
+spec:
+  failurePolicy: Fail
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  validationActions: [Deny]
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: claude-box-alpha
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  variables:
+    - name: init
+      expression: 'has(object.spec.initContainers) ? object.spec.initContainers : []'
+    - name: ordinary
+      expression: >-
+        object.spec.containers +
+        variables.init.filter(c, c.name != 'ndepend-identity') +
+        (has(object.spec.ephemeralContainers) ? object.spec.ephemeralContainers : [])
+    - name: identity
+      expression: "variables.init.filter(c, c.name == 'ndepend-identity')"
+    - name: allContainers
+      expression: variables.ordinary + variables.identity
+  validations:
+    - expression: >-
+        (!has(object.spec.hostNetwork) || !object.spec.hostNetwork) &&
+        (!has(object.spec.hostPID) || !object.spec.hostPID) &&
+        (!has(object.spec.hostIPC) || !object.spec.hostIPC) &&
+        (!has(object.spec.shareProcessNamespace) || !object.spec.shareProcessNamespace) &&
+        has(object.spec.automountServiceAccountToken) && !object.spec.automountServiceAccountToken
+      message: Agent boxes must not share host/process namespaces or automount a service-account token.
+    - expression: >-
+        has(object.spec.securityContext) &&
+        has(object.spec.securityContext.runAsNonRoot) && object.spec.securityContext.runAsNonRoot &&
+        has(object.spec.securityContext.runAsUser) && object.spec.securityContext.runAsUser == 1000 &&
+        has(object.spec.securityContext.runAsGroup) && object.spec.securityContext.runAsGroup == 1000 &&
+        has(object.spec.securityContext.seccompProfile) &&
+        object.spec.securityContext.seccompProfile.type == 'RuntimeDefault' &&
+        (!has(object.spec.securityContext.appArmorProfile) || object.spec.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+        !has(object.spec.securityContext.seLinuxOptions) &&
+        !has(object.spec.securityContext.windowsOptions) &&
+        (!has(object.spec.securityContext.sysctls) || size(object.spec.securityContext.sysctls) == 0)
+      message: Agent pods must retain UID/GID 1000, non-root defaults, RuntimeDefault seccomp and no security-profile overrides.
+    - expression: >-
+        !has(object.spec.volumes) || object.spec.volumes.all(v,
+          has(v.configMap) || has(v.secret) || has(v.emptyDir) || has(v.projected) ||
+          has(v.persistentVolumeClaim) || has(v.downwardAPI))
+      message: Agent boxes may use only config, secret, temporary, projected or existing PVC volumes; host mounts are forbidden.
+    - expression: >-
+        variables.allContainers.all(c,
+          has(c.securityContext) &&
+          (!has(c.securityContext.privileged) || !c.securityContext.privileged) &&
+          has(c.securityContext.capabilities) &&
+          has(c.securityContext.capabilities.drop) && c.securityContext.capabilities.drop == ['ALL'] &&
+          (!has(c.securityContext.procMount) || c.securityContext.procMount == 'Default') &&
+          (!has(c.securityContext.seccompProfile) || c.securityContext.seccompProfile.type == 'RuntimeDefault') &&
+          (!has(c.securityContext.appArmorProfile) || c.securityContext.appArmorProfile.type == 'RuntimeDefault') &&
+          !has(c.securityContext.seLinuxOptions) && !has(c.securityContext.windowsOptions) &&
+          (!has(c.ports) || c.ports.all(p, !has(p.hostPort) || p.hostPort == 0)))
+      message: Every container, including debug containers, must drop ALL capabilities and keep the pod's isolation profiles and host-port restrictions.
+    - expression: >-
+        !has(object.metadata.annotations) ||
+        object.metadata.annotations.all(k, !k.startsWith('container.apparmor.security.beta.kubernetes.io/'))
+      message: Legacy AppArmor annotations may not override the agent pod's profile.
+    - expression: >-
+        variables.ordinary.all(c,
+          has(c.securityContext.allowPrivilegeEscalation) && !c.securityContext.allowPrivilegeEscalation &&
+          (!has(c.securityContext.capabilities.add) || size(c.securityContext.capabilities.add) == 0) &&
+          (!has(c.securityContext.runAsNonRoot) || c.securityContext.runAsNonRoot) &&
+          (!has(c.securityContext.runAsUser) || c.securityContext.runAsUser == 1000) &&
+          (!has(c.securityContext.runAsGroup) || c.securityContext.runAsGroup == 1000))
+      message: Workspace, sidecars, activation copier and debug containers must remain UID/GID 1000 with no added capabilities or privilege escalation.
+    - expression: >-
+        variables.identity.all(c,
+          object.metadata.name == 'claude-box-alpha-0' &&
+          object.spec.serviceAccountName == 'claude-box-alpha' &&
+          c.image == 'ghcr.io/lanternfyre/claude-workspace:0.1.22-pr36.1.g5d75364' &&
+          object.spec.containers.exists(w, w.name == 'workspace' && w.image == c.image) &&
+          c.command == ['sh', '-ec', 'hostname "$1"; test "$(hostname)" = "$1"', 'identity', 'TarjeiPC'] &&
+          (!has(c.args) || size(c.args) == 0) &&
+          (!has(c.env) || size(c.env) == 0) &&
+          (!has(c.envFrom) || size(c.envFrom) == 0) &&
+          (!has(c.volumeMounts) || size(c.volumeMounts) == 0) &&
+          (!has(c.volumeDevices) || size(c.volumeDevices) == 0) &&
+          !has(c.restartPolicy) && !has(c.lifecycle) &&
+          !has(c.livenessProbe) && !has(c.startupProbe) && !has(c.readinessProbe) &&
+          has(c.securityContext.runAsNonRoot) && !c.securityContext.runAsNonRoot &&
+          has(c.securityContext.runAsUser) && c.securityContext.runAsUser == 0 &&
+          has(c.securityContext.runAsGroup) && c.securityContext.runAsGroup == 0 &&
+          has(c.securityContext.readOnlyRootFilesystem) && c.securityContext.readOnlyRootFilesystem &&
+          has(c.securityContext.capabilities.add) && c.securityContext.capabilities.add == ['SYS_ADMIN'])
+      message: Only alpha's pinned NDepend hostname init may run as root with SYS_ADMIN; its command, image and lack of mounts/credentials are fixed.
