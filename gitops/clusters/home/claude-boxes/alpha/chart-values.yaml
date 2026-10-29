@@ -243,6 +243,42 @@ networkPolicy:
         - matchName: s.symcb.com
       toPorts:
         - ports: [{port: "80", protocol: TCP}]
+  # Hugging Face, for semble's embedding model. Opened 2026-10-29 (operator
+  # request, from alpha's Necronia2.0 session). The image installs semble
+  # (docker-compendium claude-workspace) but not its model: on first use semble
+  # downloads minishlab/potion-code-16M-v2 (model.safetensors, 32,490,072
+  # bytes) into ~/.cache/huggingface. No egress list in this repo or in the
+  # chart has ever named a Hugging Face host (`git log -S huggingface` finds
+  # none), so this is not a stale entry: the download never worked. Three small
+  # files arrived on 2026-10-26; the safetensors blob has sat at 0 bytes as
+  # `.incomplete` since, and semble's MCP server fails every search with an
+  # incomplete snapshot. Presented like every other missing FQDN: DNS resolves,
+  # the TCP connect hangs (`curl` exit 28 to all four names below, while
+  # api.nuget.org and pypi.org answer 200).
+  #
+  # What each one is for (the model is Xet-backed, so the hf_xet client is used):
+  #   huggingface.co           model metadata, `resolve/`, and the Xet read token
+  #                            whose casUrl names the CAS server below
+  #   *.xethub.hf.co           cas-server.xethub.hf.co: reconstruction calls. hf_xet's
+  #                            logs show 234 `Connect, TimedOut` to it on this box,
+  #                            the one hostname actually observed failing.
+  #                            transfer.xethub.hf.co: the chunk data plane the
+  #                            reconstruction points at (Hugging Face staff name both
+  #                            for firewall allowlists). cas-bridge.xethub.hf.co: the
+  #                            redirect for non-Xet clients. One label, so matchPattern.
+  # Found from hf_xet's own logs and Hugging Face's allowlist guidance, not from
+  # hubble verdicts (no hubble CLI in the box). If a download still hangs, read
+  # the newest ~/.cache/huggingface/xet/logs/*.log for the next host.
+  #
+  # ⚠️ RESIDUAL RISK, STATED: huggingface.co hosts arbitrary user uploads, code
+  # included, the same class of reach pypi.org and registry.npmjs.org already
+  # give. Baking the model into the image (HF_HUB_OFFLINE for semble) would close
+  # this again; that is a docker-compendium change, not done here.
+    - toFQDNs:
+        - matchName: huggingface.co
+        - matchPattern: "*.xethub.hf.co"
+      toPorts:
+        - ports: [{port: "443", protocol: TCP}]
 
 # The Necronia v2 plan keeps bd memories out of every session (clean room):
 # the beadwork session hook reads this and runs `bd prime --no-memories`.
