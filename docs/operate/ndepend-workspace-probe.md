@@ -40,8 +40,17 @@ bash scripts/probe-ndepend-workspace.sh --mac "$ndepend_probe_mac"
 The first invocation prints the manifests without contacting Kubernetes. The
 second creates a unique `ndepend-probe-...` namespace. Missing or malformed MAC
 values fail before any cluster changes. If GitHub CLI cannot read the variable,
-copy its value from the organization's Actions variables and pass it to `--mac`.
+copy its value from the organization's
+[Actions variables page](https://github.com/organizations/Lanternfyre/settings/variables/actions)
+and pass it directly to `--mac`.
 `--hostname` overrides `TarjeiPC` if the CI variable has changed.
+
+A GitHub administrator account can still get HTTP 403 here: the CLI credential
+also needs permission to read organization variables. Classic/OAuth tokens need
+`admin:org`; fine-grained tokens need organization Variables read permission.
+An exported `GH_TOKEN` or `GITHUB_TOKEN` overrides the account stored by `gh auth
+login`. Reading the value in the browser avoids changing CLI token permissions.
+An empty MAC from a failed lookup stops the probe before creating a namespace.
 
 The namespace temporarily allows the `SYS_ADMIN` capability required by
 `hostname`. Only the one-shot `identity` init container receives it. That init
