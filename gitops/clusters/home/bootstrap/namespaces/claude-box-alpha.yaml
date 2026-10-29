@@ -1,15 +1,16 @@
 # claude-box-alpha
 #
-# Apps in this namespace: one Claude Code workspace box (the `alpha` directory
-# under gitops/clusters/home/claude-boxes/). It runs on k8s-edge1, the public
-# VPS -- the one node in this fleet that is not trusted infrastructure.
+# Apps in this namespace: the alpha Claude Code workspace box, configured in
+# gitops/clusters/home/claude-boxes/alpha/.
 #
-# Measured against the pod spec this namespace is built for: uid 1000, all
-# capabilities dropped, allowPrivilegeEscalation false, seccomp RuntimeDefault,
-# no host namespaces, no hostPath. That is `restricted`, and unlike most
-# namespaces here it is restricted BY CONSTRUCTION rather than by measurement --
-# the image and the pod were written to this level on purpose, because the
-# workload is an agent with a shell.
+# NDepend needs the workstation's mixed-case hostname. A completed root init
+# sets it with SYS_ADMIN, then exits before credentials are mounted into the
+# sidecars. PSA cannot exempt just this init, so enforcement is privileged here
+# and the claude-box-ndepend admission policy supplies the scoped constraints.
+# It fixes the init's image/command, forbids its mounts and credentials, and
+# retains UID/GID 1000, zero capabilities, no privilege escalation and
+# RuntimeDefault seccomp for the workspace and every other container.
+# Verify the generated admission policy and binding before applying this label.
 #
 # 🔴 A CONSEQUENCE WORTH KNOWING BEFORE IT SURPRISES SOMEONE. Under
 # `restricted`, seccomp RuntimeDefault filters clone(CLONE_NEWUSER), so Claude
@@ -17,7 +18,7 @@
 # disabled in the image's managed-settings.json. That is the design, not a
 # regression: this deployment is the Kubernetes port of `claude-box`, and here
 # the POD plus the CiliumNetworkPolicy egress allowlist ARE the sandbox.
-# Do not add capabilities to "fix" it.
+# The workspace still has no capability to create such namespaces.
 #
 # ⚠️ This namespace must NEVER carry homelab.techyon.dev/edge-publish: "true".
 # It would look like the right label for a workload on the edge node, and it is
@@ -31,7 +32,7 @@ kind: Namespace
 metadata:
   name: claude-box-alpha
   labels:
-    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/enforce-version: v1.35
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/audit-version: v1.35

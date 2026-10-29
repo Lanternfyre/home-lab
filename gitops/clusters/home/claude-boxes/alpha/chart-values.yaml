@@ -29,6 +29,20 @@ repos:
 # Avoid also seeding it through the common publicRepos list.
 publicRepos: []
 
+# Native NDepend pilot on alpha only. These published versions include the
+# tested console and opt-in identity init. The namespace exception is enforced
+# by claude-box-ndepend; its image pin must match this value. RollingUpdate
+# replaces alpha's pod when these values sync, ending its active sessions.
+image:
+  tag: "0.1.22"
+ndepend:
+  enabled: true
+  hostname: TarjeiPC
+  mac: "50:eb:f6:77:84:3a"
+  onePasswordItem: Ndepend
+  activationProperty: ActivationLic
+  markerProperty: H
+
 console:
   # 🔴 A ROLE BOX (Necronia v2 plan, O30; operator 2026-10-25): `operator` --
   # the orchestrator: reads everything, drives the role boxes through Beads and

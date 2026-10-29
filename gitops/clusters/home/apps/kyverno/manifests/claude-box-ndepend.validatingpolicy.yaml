@@ -1,6 +1,6 @@
-# Install and verify this policy BEFORE relaxing alpha's namespace PSA level.
-# The namespace remains restricted in this PR. The only proposed exception is
-# the tested, completed hostname setter; the workspace keeps zero capabilities.
+# Verify this policy and its generated admission binding BEFORE relaxing alpha's
+# namespace PSA level. Only the completed hostname setter has an exception;
+# the workspace keeps zero capabilities. The image pin matches alpha's values.
 apiVersion: policies.kyverno.io/v1
 kind: ValidatingPolicy
 metadata:
@@ -85,7 +85,7 @@ spec:
         variables.identity.all(c,
           object.metadata.name == 'claude-box-alpha-0' &&
           object.spec.serviceAccountName == 'claude-box-alpha' &&
-          c.image == 'ghcr.io/lanternfyre/claude-workspace:0.1.22-pr36.1.g5d75364' &&
+          c.image == 'ghcr.io/lanternfyre/claude-workspace:0.1.22' &&
           object.spec.containers.exists(w, w.name == 'workspace' && w.image == c.image) &&
           c.command == ['sh', '-ec', 'hostname "$1"; test "$(hostname)" = "$1"', 'identity', 'TarjeiPC'] &&
           (!has(c.args) || size(c.args) == 0) &&
