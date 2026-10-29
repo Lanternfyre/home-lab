@@ -157,7 +157,12 @@ containers completed, the workspace is Ready, `hostname` returns `TarjeiPC`,
 and `NDEPEND_CONSOLE` points to the bundled console. Read neither activation
 file into logs. Rollback reverts the alpha values/chart pin and restores
 restricted enforcement; keep the admission rule until the replacement pod is
-restricted again. Rollback also restarts alpha.
+restricted again. If the new pod never became Ready, first confirm the reverted
+StatefulSet template has synced. A StatefulSet can remain stuck after that
+revert; if it does, delete only the failed `claude-box-alpha-0` pod so the
+controller recreates it from the reverted template. Retain its PVC. See
+[Kubernetes forced rollback](https://kubernetes.io/docs/concepts/workloads/controllers/statefulset/#forced-rollback).
+Any rollback replacement also ends alpha's sessions.
 
 Necronia2.0 can then use its existing [verification script](https://github.com/Lanternfyre/Necronia2.0/blob/main/build/verify.sh)
 with `build/verify.sh --ndepend`. Its CI currently pins the
