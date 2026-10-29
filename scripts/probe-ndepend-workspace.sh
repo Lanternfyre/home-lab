@@ -183,8 +183,23 @@ spec:
     - name: identity
       image: $image
       imagePullPolicy: Always
-      command: [hostname, "$machine"]
+      command:
+        - sh
+        - -ec
+        - |
+          id
+          awk '/^(Cap|NoNewPrivs|Seccomp)/' /proc/self/status
+          hostname "\$1"
+          test "\$(hostname)" = "\$1"
+        - identity
+        - "$machine"
       securityContext:
+        # The first live probe inherited uid 1000 and hostname returned EPERM
+        # despite SYS_ADMIN in the PodSpec. Run this one-shot setter as root;
+        # the reader below still inherits uid 1000 and drops every capability.
+        runAsNonRoot: false
+        runAsUser: 0
+        runAsGroup: 0
         allowPrivilegeEscalation: true
         readOnlyRootFilesystem: true
         capabilities: {drop: [ALL], add: [SYS_ADMIN]}

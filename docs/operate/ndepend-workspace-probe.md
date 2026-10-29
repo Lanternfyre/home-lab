@@ -4,10 +4,14 @@ Use this experiment to check whether NDepend can run inside a non-root agent
 workspace with the workstation's identity. It needs an operator with
 cluster-admin `kubectl` access. It does not update or restart any agent box.
 
-**Live result unverified:** the script's local manifest, validation and cleanup
-checks pass, but this box cannot create namespaces or pods. The pending live
-test must prove that the init container's hostname reaches the reader and that
-the existing activation works. This is not a production rollout procedure.
+**Live result: first probe failed at hostname setup.** In namespace
+`ndepend-probe-20261029121936-1183325`, both ExternalSecrets synchronized and the
+workspace preview image pulled. The init container inherited UID 1000 and
+`hostname` was denied despite `SYS_ADMIN` in its PodSpec; the reader never
+started. The revised probe runs only the hostname init as UID 0 and logs its
+capability sets. That revision still needs a live run to prove the hostname
+reaches the reader and the activation works. This box cannot create namespaces
+or pods. This is not a production rollout procedure.
 
 ## Before running it
 
@@ -53,9 +57,10 @@ login`. Reading the value in the browser avoids changing CLI token permissions.
 An empty MAC from a failed lookup stops the probe before creating a namespace.
 
 The namespace temporarily allows the `SYS_ADMIN` capability required by
-`hostname`. Only the one-shot `identity` init container receives it. That init
-container has no volume mounts or service-account token and exits before the
-reader starts. The reader runs as UID 1000, with all capabilities dropped,
+`hostname`. Only the one-shot `identity` init container receives it and runs as
+UID/GID 0, with every other capability dropped. That init container has no
+volume mounts or service-account token and exits before the reader starts.
+The reader runs as UID 1000, with all capabilities dropped,
 privilege escalation disabled and a read-only root filesystem. It explicitly
 tests that changing its hostname is denied.
 
