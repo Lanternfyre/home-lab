@@ -110,6 +110,24 @@ host-side GitHub App token minter and a CONNECT-only egress allowlist; here the
 mount/netns machinery collapses into a PodSpec and a CiliumNetworkPolicy, and
 the minter becomes a sidecar.
 
+## The Anthropic API pool for supplementary runs
+
+Every box gets `ANTHROPIC_POOL_API_KEY`, an Anthropic Console API key with about $200 of credit (operator,
+2026-10-29), from the `api-token` field of the 1Password item `Claude Workspace Console`. It is for extra headless
+Claude runs, the way agents already use Codex: an independent second review, or more parallel read-only work when
+the box's claude.ai limits are the bottleneck. The box's own sessions keep using the claude.ai login.
+
+An agent opts in for one run at a time, with a spending cap:
+
+```bash
+ANTHROPIC_API_KEY="$ANTHROPIC_POOL_API_KEY" claude -p --max-budget-usd 2 "…"
+```
+
+Never export it as `ANTHROPIC_API_KEY` in a shell profile or a settings `env` block. Claude Code ranks that
+variable above the claude.ai login and always uses it with `-p`, so every session on the box would bill the pool,
+and Remote Control, which needs the login, would stop working. Spend is visible in the Claude Console under the
+key's workspace.
+
 ## The three properties worth knowing
 
 **One session, three doors.** ttyd in a browser, ssh, and `kubectl exec` all

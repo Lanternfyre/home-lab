@@ -56,3 +56,22 @@ codex:
 
     [plugins."docs@claude-shared-skills"]
     enabled = true
+
+# The Anthropic Console API pool (operator, 2026-10-29: about $200 of credit) for
+# SUPPLEMENTARY headless runs, the way agents already use Codex. Needs claude-box
+# chart >= 0.1.12 for secretEnv (0.1.18 has it). The chart puts it in the workspace
+# container's environment only; sidecars never see it.
+#
+# 🔴 NOT `ANTHROPIC_API_KEY`. Claude Code ranks that variable above the claude.ai
+# login and always uses it under `-p`, so exporting it would bill every session on
+# the box to the pool and switch off features that need the login (Remote Control).
+# An agent opts in per run instead:
+#   ANTHROPIC_API_KEY="$ANTHROPIC_POOL_API_KEY" claude -p --max-budget-usd 2 "…"
+#
+# ⚠️ The 1Password field label must exist exactly as written: a wrong label leaves
+# the ExternalSecret unsynced, and a box that restarts then cannot start
+# (CreateContainerConfigError on the missing key).
+secretEnv:
+  ANTHROPIC_POOL_API_KEY:
+    onePasswordItem: Claude Workspace Console
+    onePasswordProperty: api-token
