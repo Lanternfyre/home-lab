@@ -12,6 +12,10 @@ The objects, the probes, the network policy and the reasoning behind each
 literal now live in the chart's templates and `values.yaml`; this directory
 carries only what differs per box.
 
+For the pending native NDepend integration, use the
+[disposable identity probe](../../../../docs/operate/ndepend-workspace-probe.md)
+first. It leaves the running boxes and their namespace policies untouched.
+
 To try the shared Beads runner with either engine in golf, follow
 [Run one Beads pilot on golf](../../../../docs/operate/agent-box-pilot.md).
 It uses a separate worktree and tmux window. The Codex pilot used full access
