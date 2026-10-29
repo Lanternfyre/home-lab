@@ -105,43 +105,59 @@ that exact namespace. `--keep` also retains a successful probe for inspection.
 The probe refuses to adopt an existing namespace and never deletes one that it
 did not create. Its pod has a five-minute active deadline.
 
-## Prepared integration, not deployed
+## Alpha rollout
 
-The prepared [workspace image change](https://github.com/Lanternfyre/docker-compendium/pull/36) copies the
+The merged [workspace image change](https://github.com/Lanternfyre/docker-compendium/pull/36) copies the
 complete `/opt/ndepend` directory from `ghcr.io/lanternfyre/ndepend:latest` at
 workspace **build time**, and sets `NDEPEND_CONSOLE`. It copies no activation
 and does not execute the NDepend image's entrypoint. Publishing NDepend alone
 does not rebuild the workspace; an existing workspace image keeps its bundled
 version until rebuilt and rolled out.
 
-The successful probe tested that workspace packaging. The optional
+The successful probe tested that workspace packaging. Release image `0.1.22`
+used the same NDepend base digest as the successful preview, confirmed in the
+[release build](https://github.com/Lanternfyre/docker-compendium/actions/runs/40877883471)
+and [preview build](https://github.com/Lanternfyre/docker-compendium/actions/runs/40870040374).
+The optional
 [chart change](https://github.com/Lanternfyre/helm-compendium/pull/60) is now
-prepared with `ndepend.enabled: false` by default. When enabled, a completed
+published in chart `0.1.20`, with `ndepend.enabled: false` by default. When enabled, a completed
 hostname init runs before the credential sidecars. A second, non-root init
 checks identity and copies activation into a memory-backed directory mounted
 at `/home/agent/.config/NDepend`. No activation is written into the home PVC.
 Replacing the pod refreshes this copy after a 1Password change. The workspace
 keeps its current non-root and capability settings.
 
-The proposed
+The installed
 [admission rule](../../gitops/clusters/home/apps/kyverno/manifests/claude-box-ndepend.validatingpolicy.yaml)
 covers only `claude-box-alpha`, including debug containers. It limits the
-hostname exception to `ndepend-identity` in `claude-box-alpha-0`, with the tested
-preview image, exact hostname command, no mounts or environment credentials,
-and only `SYS_ADMIN`. Other containers remain unprivileged. It accepts the
-current alpha pod in offline validation; API-server enforcement is still
-unverified. This branch keeps alpha's namespace at `restricted`, so merely
-merging the preparation does not permit the init or restart the box.
+hostname exception to `ndepend-identity` in `claude-box-alpha-0`, with an explicit
+workspace image pin, exact hostname command, no mounts or environment
+credentials, and only `SYS_ADMIN`. Other containers remain unprivileged.
+Argo reported the preparation synced, but that alone does not prove admission
+enforcement. Before merging the rollout, check the ValidatingPolicy status and
+its generated ValidatingAdmissionPolicy and binding with an admin kubeconfig:
+the policy must have no type-check warnings and its binding must use `Deny`
+and select alpha. This box's service account cannot read those objects.
 
-Rollout has three ordered stages: publish the image and chart changes; install
-the admission rule and verify its generated admission policy and binding are
-enforcing; then enable the feature and relax PSA enforcement for alpha in a
-separate GitOps change. Keep restricted audit/warn labels. The rule's image pin
-must match the selected workspace image. Do not relax PSA while the rule is
-absent or unverified. Alpha uses `RollingUpdate`, so enabling the feature
-restarts its session. Rollback disables the feature and restores restricted
-enforcement; keep the admission rule until the replacement pod is restricted
-again. No live rollout is included in these draft PRs.
+**The alpha rollout changes the running pod.** It selects chart `0.1.20`, image
+`0.1.22`, `ndepend.enabled: true`, hostname `TarjeiPC` and the existing CI MAC.
+It also changes the admission rule's image pin to `0.1.22` and alpha's PSA
+enforcement to `privileged`, retaining restricted audit/warn labels. The other
+boxes keep their existing pins and policies. Alpha uses `RollingUpdate`, so
+merging these values ends its active sessions as Argo replaces the pod.
+
+The namespace, policy and workspace are reconciled by separate Argo
+applications. A new pod may briefly be denied until the updated admission
+image pin and namespace label have both synced; inspect pod events and those
+applications before manually restarting anything. Do not relax PSA if the
+existing admission rule is absent or unverified.
+
+After the rollout, verify the `ndepend-identity` and `ndepend-activation` init
+containers completed, the workspace is Ready, `hostname` returns `TarjeiPC`,
+and `NDEPEND_CONSOLE` points to the bundled console. Read neither activation
+file into logs. Rollback reverts the alpha values/chart pin and restores
+restricted enforcement; keep the admission rule until the replacement pod is
+restricted again. Rollback also restarts alpha.
 
 Necronia2.0 can then use its existing [verification script](https://github.com/Lanternfyre/Necronia2.0/blob/main/build/verify.sh)
 with `build/verify.sh --ndepend`. Its CI currently pins the
