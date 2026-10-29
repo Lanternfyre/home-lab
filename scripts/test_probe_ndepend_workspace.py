@@ -41,11 +41,22 @@ class ProbeTests(unittest.TestCase):
         self.assertFalse(spec["shareProcessNamespace"])
         self.assertEqual(1000, spec["securityContext"]["runAsUser"])
         identity, = spec["initContainers"]
-        self.assertEqual(["hostname", "TarjeiPC"], identity["command"])
+        self.assertEqual(["sh", "-ec"], identity["command"][:2])
+        self.assertEqual(["identity", "TarjeiPC"], identity["command"][3:])
+        self.assertIn('hostname "$1"', identity["command"][2])
+        self.assertIn('test "$(hostname)" = "$1"', identity["command"][2])
+        syntax = subprocess.run(["sh", "-n"], input=identity["command"][2], text=True, capture_output=True)
+        self.assertEqual(0, syntax.returncode, syntax.stderr)
         self.assertNotIn("volumeMounts", identity)
         self.assertNotIn("restartPolicy", identity)
+        self.assertFalse(identity["securityContext"]["runAsNonRoot"])
+        self.assertEqual(0, identity["securityContext"]["runAsUser"])
+        self.assertEqual(0, identity["securityContext"]["runAsGroup"])
         self.assertEqual(["SYS_ADMIN"], identity["securityContext"]["capabilities"]["add"])
         reader, = spec["containers"]
+        self.assertTrue(spec["securityContext"]["runAsNonRoot"])
+        self.assertNotIn("runAsUser", reader["securityContext"])
+        self.assertNotIn("runAsNonRoot", reader["securityContext"])
         self.assertFalse(reader["securityContext"]["allowPrivilegeEscalation"])
         self.assertEqual({"drop": ["ALL"]}, reader["securityContext"]["capabilities"])
         for container in [identity, reader]:
