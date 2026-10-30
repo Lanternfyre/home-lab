@@ -46,11 +46,13 @@ ndepend:
 # Workspace memory (Necronia2.0 R135, operator 2026-10-30): the chart's 8Gi limit OOMKilled
 # alpha at 12:17 UTC on 2026-10-30 (lastState OOMKilled, exit 137) with two building agents, as
 # AGENTS.md allows, plus Stryker and five agents. 16Gi leaves them margin; the request rises with
-# it so the scheduler counts what alpha really uses. 🔴 NO cpu LIMIT (the chart refuses one).
+# it so the scheduler counts what alpha really uses. CPU request 4 (operator, Necronia2.0 round 2 F2):
+# with no CPU limits in home-lab, CPU is shared by requests, so 4 gives alpha a fair share against CI
+# runners (dind and xl request 4) on the same node. 🔴 NO cpu LIMIT (the chart refuses one).
 # RollingUpdate replaces the pod on sync, ending alpha's sessions: sync at a quiet moment.
 workspace:
   resources:
-    requests: {cpu: 500m, memory: 4Gi}
+    requests: {cpu: "4", memory: 4Gi}
     limits: {memory: 16Gi}
 
 console:
