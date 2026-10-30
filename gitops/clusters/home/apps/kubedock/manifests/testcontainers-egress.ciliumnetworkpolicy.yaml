@@ -1,0 +1,79 @@
+# H1 -- default-deny EGRESS for the testcontainers namespace.
+#
+# Test suites run their containers here through kubedock: a `kubedock server`
+# on the CLIENT (a claude-box, a workstation) turns each container a suite asks
+# for -- postgres today -- into a pod in this namespace, from an image the
+# suite chooses. Until this policy no egress rule selected those pods (the
+# clusterwide edge-node-containment selects them for one ingress deny only), and
+# with policyEnforcementMode `default` that leaves egress wide open: a container
+# an agent started here could reach the internet, the LAN and every Service in
+# the cluster.
+#
+# ── What runs here, and what it needs (measured 2026-10-30) ─────────────────
+#
+#   kubedock-reaper (CronJob, */15)    the kube-apiserver only: kubectl via
+#                                      KUBERNETES_SERVICE_HOST. Allowed in
+#                                      kubedock-apiserver-egress, not here.
+#   test pods (kubedock=true, on       nothing outward. The client reaches them
+#   demand; none running when          by port-forward and exec, which travel
+#   measured)                          apiserver -> kubelet -> the pod's own
+#                                      netns and never cross this policy. The
+#                                      kubelet pulls images, not the pod.
+#
+# ⚠️ There is NO kubedock Deployment in this namespace. The chart deploys none;
+# the server always runs on the client, so its own API traffic leaves from the
+# client's namespace (or from outside the cluster) and this policy never sees it.
+#
+# ── EGRESS ONLY, deliberately ───────────────────────────────────────────────
+# Ingress is unchanged: a `--reverse-proxy` client dials pod IPs directly, and
+# replies to an admitted connection are allowed by conntrack. Narrowing ingress
+# needs a capture of who connects, and is a separate change.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: testcontainers-egress
+  namespace: testcontainers
+spec:
+  description: >-
+    Every pod in testcontainers may reach kube-dns and the other pods in this
+    namespace, and nothing else. API access for the chart's own pods is in
+    kubedock-apiserver-egress.
+  endpointSelector: {}   # every pod here: the reaper and every test pod
+
+  # Stated explicitly: deleting the last egress rule must stay a deny, not
+  # silently open the namespace. Ingress stays open (see above) -- flip it to
+  # true in the same change that writes an ingress allow-list.
+  enableDefaultDeny:
+    egress: true
+    ingress: false
+
+  egress:
+    # DNS to kube-dns, with L7 visibility so a future toFQDNs rule can match.
+    #
+    # ⚠️ RESIDUAL, STATED: CoreDNS forwards names it does not own upstream, so a
+    # container here can still push data out inside DNS queries. Narrowing
+    # `matchPattern` to cluster names would close that; not done here.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    # Pod to pod inside this namespace, any port: a suite that starts two
+    # containers (an app and its database, a network alias) has them talk here,
+    # on ports the suite chooses.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: testcontainers
+
+    # ⚠️ NO `toEntities: [world]` and no kube-apiserver for these pods. This
+    # namespace runs images a test suite picked; if one genuinely needs to reach
+    # something, name it here, from `hubble observe --verdict DROPPED` evidence.

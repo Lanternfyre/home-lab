@@ -1,18 +1,29 @@
 # testcontainers
 #
-# Apps in this namespace: kubedock.
+# Apps in this namespace: kubedock (the chart's reaper CronJob), plus the pods a
+# client-side kubedock creates for test suites, on demand.
 #
-# ⚠️ NOT enforced. kubedock creates containers on behalf of test suites; its requirements are unproven.
-# PSA cannot grant a per-field exception, so `privileged` is the only level that
-# admits these pods. The things that DO matter here move to Kyverno (H3).
+# Measured 2026-10-30 (the reaper; no test pod was running): nothing here is
+# privileged, uses host namespaces, hostPath or unconfined profiles. Not yet
+# `restricted` -- the reaper drops no capabilities and leaves seccomp unset,
+# and a test pod runs whatever image its suite names (postgres today).
+#
+# This was `privileged` until 2026-10-30, set conservatively before kubedock's
+# needs were known. Nothing here needs it, and the
+# testcontainers-pod-constraints Kyverno policy already refused privilege, host
+# namespaces and hostPath. `baseline` also refuses added capabilities, hostPort
+# and unconfined seccomp/AppArmor, which matters for a namespace that runs
+# images a test suite chooses. A suite whose container needs any of those now
+# fails at pod creation. Egress is contained by the CiliumNetworkPolicies in
+# apps/kubedock/manifests/.
 apiVersion: v1
 kind: Namespace
 metadata:
   name: testcontainers
   labels:
-    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/enforce-version: v1.35
-    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/audit: baseline
     pod-security.kubernetes.io/audit-version: v1.35
-    pod-security.kubernetes.io/warn: privileged
+    pod-security.kubernetes.io/warn: baseline
     pod-security.kubernetes.io/warn-version: v1.35
