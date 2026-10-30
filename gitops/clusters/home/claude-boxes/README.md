@@ -27,7 +27,7 @@ The pilot left window 0 unchanged; the chart rollout below still needs review.
 
 | dir | console | Remote Control name | repos | volume | auq |
 |---|---|---|---|---|---|
-| `alpha` | `https://operator.lab.lanternfyre.dev` | `Lanternfyre-operator` | Lanternfyre (all) | 40Gi | on |
+| `alpha` | `https://operator.lab.lanternfyre.dev` | `Lanternfyre-operator` | Lanternfyre (all) | 100Gi (claim; the chart renders 40Gi) | on |
 | `bravo` | `https://spec-writer.lab.lanternfyre.dev` | `Lanternfyre-spec-writer` | Lanternfyre (all) | 20Gi | on |
 | `charlie` | `https://oracle-ops.lab.lanternfyre.dev` | `Lanternfyre-oracle-ops` | Lanternfyre (all) | 20Gi | on |
 | `golf` | `https://ops.lab.lanternfyre.dev` | `Lanternfyre-ops` | Lanternfyre, clean | 20Gi | on (alpha's token) |
@@ -99,6 +99,9 @@ differences, each explained in their `chart-values.yaml`:
 * **20Gi**: enough for now. To grow one, patch the **claim**
   (`qnap-iscsi` allows expansion), not `storage.size`: a StatefulSet's
   `volumeClaimTemplates` cannot be updated, so a values edit fails the sync.
+  alpha's claim was grown this way from 40Gi to 100Gi on 2026-10-30; its
+  `storage.size` still renders the chart's 40Gi, and the claim is the size of
+  record (`protected-volumes.yaml`).
 * **auq on its own device**: `Claude Box Bravo auq` / `Claude Box Charlie auq`,
   paired per box, so unpairing one leaves the others working. auq's ingress
   policy names both namespaces.

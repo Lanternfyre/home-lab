@@ -335,7 +335,11 @@ protected:
 
   - namespace: claude-box-alpha
     claim: home-claude-box-alpha-0
-    size: 40Gi
+    # 100Gi since 2026-10-30, grown by patching the claim (the 40Gi volume was
+    # full: 37G used, 343M free). The chart still renders storage.size 40Gi in
+    # the StatefulSet's volumeClaimTemplates, which Kubernetes cannot update;
+    # the claim, not the template, is the size of record. See the README.
+    size: 100Gi
     storageClass: qnap-iscsi
     what: >-
       The agent box's $HOME: the Anthropic OAuth credential, the operator's
