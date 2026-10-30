@@ -1,0 +1,55 @@
+# H1 -- the kube-apiserver, for the kubedock chart's own pods and no others.
+#
+# The reaper CronJob (kubedock-reaper, every 15 minutes) runs kubectl against
+# the API: it deletes finished pods, and kubedock=true pods and Services older
+# than 30 minutes that a dead client left behind. testcontainers-egress gives
+# the namespace DNS and its own pods and nothing else, so without this rule the
+# reaper's first request hangs, its Job fails, and orphaned test pods pile up
+# until the ResourceQuota (20 pods) refuses new ones.
+#
+# Scoped like cnpg-instance-egress in immich: only the selected pods gain API
+# reach. Test pods gain none.
+#
+# 🔴 THE SELECTOR IS A CONTRACT WITH THE CHART. Both labels are
+# `kubedock.selectorLabels` in helm-compendium's kubedock chart, stamped on the
+# reaper's Job template, and `instance` is the release name in ../app.yaml.
+# Rename either and this policy selects NOTHING: the reaper is still selected by
+# testcontainers-egress, so it does not run open -- it hangs on its first
+# request with no error that names a policy.
+#
+# ⚠️ A label is not an identity. Anyone who may create pods here (today, the
+# kubedock-client token) can stamp these labels on a pod and reach the API from
+# it. That gives them nothing new: they already reach the API directly, and
+# RBAC, not this rule, bounds what the API lets them do.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: kubedock-apiserver-egress
+  namespace: testcontainers
+spec:
+  description: >-
+    The kubedock chart's pods (the reaper CronJob) may reach the kube-apiserver
+    on 6443. Nothing else; DNS and same-namespace traffic come from
+    testcontainers-egress.
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: kubedock
+      app.kubernetes.io/instance: kubedock
+  enableDefaultDeny:
+    egress: true
+    ingress: false
+
+  egress:
+    # ⚠️ The apiserver is an ENTITY: not toFQDNs (a ClusterIP), not `world`
+    # (which excludes the cluster's own API server).
+    #
+    # ⚠️ 6443 is the BACKEND port. The pod dials 10.43.0.1:443, and policy sees
+    # the connection after socket LB rewrote it to an endpoint of the
+    # `kubernetes` Service: 192.168.33.{2,3,7}:6443, read on 2026-10-30. The
+    # port keeps a relabelled pod off the control-plane nodes' other ports.
+    - toEntities:
+        - kube-apiserver
+      toPorts:
+        - ports:
+            - port: "6443"
+              protocol: TCP

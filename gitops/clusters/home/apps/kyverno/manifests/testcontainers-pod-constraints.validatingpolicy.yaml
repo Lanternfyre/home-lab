@@ -1,10 +1,15 @@
 # H3 -- privilege containment in the `testcontainers` namespace.
 #
-# ⚠️ This namespace was set to PSA `privileged` CONSERVATIVELY, not from
+# This namespace was first set to PSA `privileged` CONSERVATIVELY, not from
 # evidence: kubedock creates containers on behalf of test suites, and its
 # requirements were unproven at the time. Measured since, nothing there needs
-# privilege at all -- the only workload is the kubedock-reaper CronJob, which is
-# entirely clean.
+# privilege at all -- the only standing workload is the kubedock-reaper CronJob,
+# which is entirely clean.
+#
+# Since 2026-10-30 PSA enforces `baseline` there
+# (bootstrap/namespaces/testcontainers.yaml), which refuses all three things
+# below by itself. This policy stays: its denial names the reason, and it still
+# holds if the namespace label ever regresses.
 #
 # So the rule is unconditional. If a test suite ever genuinely needs privilege,
 # it now fails with this message rather than silently getting it -- which is the
