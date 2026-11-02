@@ -271,6 +271,12 @@ protected:
       protects against a disk.
 
   # ── The ReportPortal stack, registered 2026-08-31 ───────────────────────────
+  # ⚠️ The stack itself (reportportal, rabbitmq, opensearch, opensearch-dashboards)
+  # was REMOVED from git on 2026-11-02. These three claims were deliberately left
+  # behind, still protected, in their namespaces: deleting them is a separate
+  # operator decision and goes through the break-glass above. The `source:`
+  # lines below name charts that no longer exist in this repo.
+  #
   # All three arrived with the stack on 2026-08-23 and sat in NEITHER list for
   # eight days, which is exactly the gap the REGISTRY check exists to catch.
   # The operator's call was to protect all three rather than only the binary

@@ -1,6 +1,8 @@
 # opensearch
 #
-# Apps in this namespace: opensearch-dashboards, opensearch.
+# Apps in this namespace: none. OpenSearch and its Dashboards went with
+# ReportPortal on 2026-11-02; the namespace stays because it holds a protected
+# volume (see protected-volumes.yaml).
 #
 # Measured: nothing here is privileged, uses host namespaces, hostPath or
 # unconfined profiles. Not yet `restricted` -- capabilities are not dropped and

@@ -10,12 +10,12 @@
 # Lanternfyre's file states the invariant plainly: "Everything else — INCLUDING
 # the cluster-local pod and service space — is denied", and its V6 check proves
 # it with a cluster-local curl that must time out. That invariant does NOT hold
-# here, deliberately: these runners post test results to ReportPortal over
+# here, deliberately: these runners publish quality reports to Silo over
 # cluster DNS, so there is exactly one cluster-local egress rule below.
 #
-# The narrowing is one namespace wide, and it is the whole point of running
-# these jobs in-cluster rather than on GitHub-hosted runners. Lanternfyre's
-# policy is untouched and its V6 assertion remains true for that scale set.
+# The narrowing is one namespace wide. Lanternfyre's policy is untouched and its
+# V6 assertion remains true for that scale set. (A second rule, to ReportPortal
+# on 8585, went with ReportPortal on 2026-11-02.)
 #
 # ── Difference 2: four toolchains, not one ───────────────────────────────────
 # Lanternfyre builds .NET. This scale set also builds Rust, Node and Python, so
@@ -58,32 +58,6 @@ spec:
           rules:
             dns:
               - matchPattern: "*"
-
-    # ── ReportPortal, in-cluster ─────────────────────────────────────────────
-    # The reason this scale set exists in the cluster at all. Ingestion never
-    # traverses the edge gateway: runners post JUnit XML straight at the
-    # in-cluster Service.
-    #
-    # ⚠️ Port 8585, NOT 8080. ReportPortal has no front-end service that proxies
-    # the others — `reportportal-index` serves only the root path. The import
-    # endpoint lives on `reportportal-api`, which listens on 8585. An 8080 rule
-    # here would look right and pass nothing.
-    #
-    # Scoped to the namespace rather than a pod label, because pinning component
-    # labels would break on any chart-side rename; the namespace boundary is the
-    # meaningful one.
-    #
-    # ⚠️ Without this rule the symptom is a HANG, not a refusal: curl sits until
-    # its timeout and the workflow step reports a network error with no hint
-    # that a policy is involved. If imports mysteriously stop after a namespace
-    # rename, look here first.
-    - toEndpoints:
-        - matchLabels:
-            io.kubernetes.pod.namespace: reportportal
-      toPorts:
-        - ports:
-            - port: "8585"
-              protocol: TCP
 
     # The in-cluster object store. CI publishes quality reports and reads the
     # baselines its regression gates compare against, so a runner that cannot
