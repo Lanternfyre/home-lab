@@ -1,6 +1,7 @@
 # reportportal
 #
-# Apps in this namespace: reportportal.
+# Apps in this namespace: none. ReportPortal was removed on 2026-11-02; the
+# namespace stays because it holds a protected volume (see protected-volumes.yaml).
 #
 # Measured: nothing here is privileged, uses host namespaces, hostPath or
 # unconfined profiles. Not yet `restricted` -- capabilities are not dropped and

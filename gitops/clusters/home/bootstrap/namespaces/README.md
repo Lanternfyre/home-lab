@@ -14,7 +14,7 @@ that happens to live in it.** 42 apps share only 28 namespaces:
 | `monitoring` | 9 |
 | `dns` | 3 |
 | `arc-runners-lanternfyre` | 3 |
-| `opensearch`, `secrets` | 2 each |
+| `secrets` | 2 |
 
 Putting the labels in each app — whether as a `namespace.yaml` in the app's
 manifests, or via `managedNamespaceMetadata` on the ApplicationSet — means nine
