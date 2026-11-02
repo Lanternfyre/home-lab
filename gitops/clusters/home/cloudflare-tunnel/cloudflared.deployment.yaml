@@ -76,8 +76,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: cloudflared
-          # 2026.8.3. The tag is here for humans; the digest is what runs.
-          image: cloudflare/cloudflared@sha256:51c9cefcb4569df44e1ad403ab1d3d8065aa8e84339bcfc6aee75502e1140339
+          # 2026.10.7. The tag is here for humans; the digest is what runs.
+          image: cloudflare/cloudflared@sha256:4955524aeaa379e154023d5a027c250f7b35041a2e7e950cf13f144bc9b9c5ba
           imagePullPolicy: IfNotPresent
           args:
             - tunnel
