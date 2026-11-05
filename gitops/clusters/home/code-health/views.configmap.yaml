@@ -1,0 +1,290 @@
+# The views Grafana reads in the code-health database, as one SQL file.
+# views.job.yaml runs it as health_owner after every sync of this Application.
+#
+# It drops and rebuilds schema `health` in one transaction, so this file is the
+# whole truth about the views: edit a view here, and the next sync replaces it.
+# health_run (in `public`) and its rows are never touched; the views only read it.
+#
+# The views are projections of the health record (health_run.record, jsonb),
+# one per block the two dashboards draw: run, project, step, suite, ndepend,
+# ndepend_gate, ndepend_rule, ndepend_assembly, ndepend_namespace,
+# worst_method, and flake_candidate and drift over commits recorded more than
+# once (run_time and repeated_commit are their helpers). Every read is typed
+# and null-safe (health.num, health.bool, health.elements), so a repository
+# whose records lack a block gets empty rows, not a failed query.
+#
+# Check a change offline before committing it: the table SQL from
+# code-health.cluster.yaml's postInitApplicationSQL in a throwaway postgres:18
+# container, a few records from the silo
+# (https://s3.lab.techyon.dev/ci-reports/reports/necronia2.0/health/), then
+# this file twice as the table's owner.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: code-health-views
+  namespace: code-health
+data:
+  views.sql: |
+    -- Grafana's views over health_run, rebuilt whole on every sync by
+    -- views.job.yaml as health_owner. Everything in schema `health` comes from
+    -- this file: a view removed here is gone after the next sync.
+    --
+    -- One transaction: Grafana sees the old views or the new ones, never none.
+    -- lock_timeout: a long dashboard query makes the Job fail and retry instead of
+    -- queueing every other query behind its lock.
+    begin;
+    set local lock_timeout = '30s';
+
+    drop schema if exists health cascade;
+    create schema health;
+
+    -- Typed reads. A value of another JSON type, or a missing block, reads as null
+    -- instead of failing the query, so a repository whose records lack a block
+    -- (ndepend, say) shows "No data" rather than an error.
+    create function health.num(j jsonb) returns numeric
+      language sql immutable parallel safe
+      as $$ select case when jsonb_typeof(j) = 'number' then (j #>> '{}')::numeric end $$;
+
+    create function health.bool(j jsonb) returns boolean
+      language sql immutable parallel safe
+      as $$ select case when jsonb_typeof(j) = 'boolean' then (j #>> '{}')::boolean end $$;
+
+    create function health.elements(j jsonb) returns setof jsonb
+      language sql immutable parallel safe
+      as $$ select e from jsonb_array_elements(case when jsonb_typeof(j) = 'array' then j else '[]'::jsonb end) e $$;
+
+    -- Each run's place on the time axis, `at`: started_at, or for a run whose
+    -- record has none (a red build leaves no Cobertura file) one second per such
+    -- run after the latest start among the repository's earlier runs (run ids
+    -- grow with time), or before its first start when there is none. Every run
+    -- gets its own instant, so a red build never hides behind the run before it.
+    create view health.run_time as
+    select
+      repo, run_id, run_attempt,
+      coalesce(
+        started_at,
+        latest_start + untimed * interval '1 second',
+        first_start - (untimed_before_first - untimed + 1) * interval '1 second') as at
+    from (
+      select
+        repo, run_id, run_attempt, started_at,
+        max(started_at) over (partition by repo order by run_id, run_attempt) as latest_start,
+        min(started_at) over (partition by repo) as first_start,
+        count(*) filter (where started_at is null)
+          over (partition by repo, timed order by run_id, run_attempt) as untimed,
+        count(*) filter (where started_at is null) over (partition by repo, timed) as untimed_before_first
+      from (
+        select repo, run_id, run_attempt, started_at,
+               count(started_at) over (partition by repo order by run_id, run_attempt) as timed
+        from public.health_run) counted
+    ) placed;
+
+    -- One row per run. `record` is kept for ad-hoc queries.
+    create view health.run as
+    select
+      r.repo, r.branch, r.branch_kind, r.run_id, r.run_attempt, r.commit_sha, r.pr_number, r.event, r.profile,
+      t.at,
+      r.started_at,
+      case when r.green then 'green' when not r.green then 'red' else 'no verdict' end as verdict,
+      r.green, r.gate_passed, r.complete,
+      r.record #>> '{gate,firstFailingStep}' as first_failing_step,
+      (select count(*) from health.elements(r.record -> 'missing')) as missing,
+      health.num(r.record -> 'wallSeconds') as wall_seconds,
+      round(health.num(r.record #> '{build,elapsedMs}') / 1000, 1) as build_seconds,
+      health.num(r.record #> '{summary,branchesPct}') as branches_pct,
+      health.num(r.record #> '{summary,mutationPct}') as mutation_pct,
+      health.num(r.record #> '{summary,crapMax}') as crap_max,
+      health.num(r.record #> '{totals,tests,total}') as tests,
+      health.num(r.record #> '{totals,tests,failed}') as tests_failed,
+      health.num(r.record #> '{totals,mutants,survived}') as mutants_survived,
+      health.num(r.record #> '{totals,mutants,noCoverage}') as mutants_no_coverage,
+      (select string_agg(concat_ws(' ', f ->> 'kind', f ->> 'subject'), ', ')
+         from health.elements(r.record -> 'flags') f) as flags,
+      'https://github.com/' || r.repo || '/actions/runs/' || r.run_id || '/attempts/' || r.run_attempt as run_url,
+      r.record
+    from public.health_run r
+    join health.run_time t on t.repo = r.repo and t.run_id = r.run_id and t.run_attempt = r.run_attempt;
+
+    -- One row per run and project.
+    create view health.project as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.commit_sha, r.at,
+      p ->> 'project' as project,
+      p ->> 'tier' as tier,
+      health.num(p #> '{coverage,lines,percent}') as lines_pct,
+      health.num(p #> '{coverage,branches,percent}') as branches_pct,
+      health.num(p #> '{coverage,branchFloor}') as branch_floor,
+      health.num(p #> '{tests,total}') as tests,
+      health.num(p #> '{tests,failed}') as tests_failed,
+      health.num(p #> '{tests,skipped}') as tests_skipped,
+      round(health.num(p #> '{tests,durationMs}') / 1000, 1) as test_seconds,
+      health.bool(p #> '{mutation,ran}') as mutation_ran,
+      p #>> '{mutation,reason}' as mutation_reason,
+      health.num(p #> '{mutation,carriedFromRunId}') as mutation_carried_from,
+      health.num(p #> '{mutation,counts,score,percent}') as mutation_pct,
+      health.num(p #> '{mutation,floor}') as mutation_floor,
+      round(health.num(p #> '{mutation,elapsedMs}') / 1000, 1) as mutation_seconds,
+      health.num(p #> '{mutation,counts,killed}') as killed,
+      health.num(p #> '{mutation,counts,timeout}') as timeout,
+      health.num(p #> '{mutation,counts,survived}') as survived,
+      health.num(p #> '{mutation,counts,noCoverage}') as no_coverage,
+      health.num(p #> '{mutation,counts,ignored}') as ignored,
+      health.num(p #> '{mutation,counts,compileError}') as compile_error,
+      health.num(p #> '{mutation,counts,runtimeError}') as runtime_error,
+      health.num(p #> '{mutation,dubious}') as dubious,
+      health.num(p #> '{crap,max}') as crap_max,
+      health.num(p #> '{crap,testGapMass}') as test_gap_mass
+    from health.run r
+    cross join lateral health.elements(r.record -> 'projects') p;
+
+    -- One row per run and verify step, in the steps file's order.
+    create view health.step as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      s.position, s.step ->> 'name' as step, s.step ->> 'status' as status, health.num(s.step -> 'seconds') as seconds
+    from health.run r
+    cross join lateral health.elements(r.record -> 'steps') with ordinality as s(step, position);
+
+    -- One row per run and test suite outside the projects (architecture, scenario, e2e, performance).
+    create view health.suite as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      u ->> 'kind' as kind, u ->> 'assembly' as assembly,
+      health.num(u #> '{tests,total}') as tests,
+      health.num(u #> '{tests,failed}') as tests_failed,
+      health.num(u #> '{tests,skipped}') as tests_skipped,
+      round(health.num(u #> '{tests,durationMs}') / 1000, 1) as test_seconds
+    from health.run r
+    cross join lateral health.elements(r.record -> 'suites') u;
+
+    -- NDepend's trend, one row per run that has an ndepend block.
+    create view health.ndepend as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      health.num(r.record #> '{ndepend,trend,issues,blocker}') as issues_blocker,
+      health.num(r.record #> '{ndepend,trend,issues,critical}') as issues_critical,
+      health.num(r.record #> '{ndepend,trend,issues,high}') as issues_high,
+      health.num(r.record #> '{ndepend,trend,issues,medium}') as issues_medium,
+      health.num(r.record #> '{ndepend,trend,issues,low}') as issues_low,
+      health.num(r.record #> '{ndepend,trend,rules,violated}') as rules_violated,
+      health.num(r.record #> '{ndepend,trend,rules,criticalViolated}') as rules_critical_violated,
+      health.num(r.record #> '{ndepend,trend,debt,percent}') as debt_pct,
+      health.num(r.record #> '{ndepend,trend,debt,manDays}') as debt_man_days,
+      health.num(r.record #> '{ndepend,trend,coverage,percent}') as coverage_pct
+    from health.run r
+    where jsonb_typeof(r.record -> 'ndepend') = 'object';
+
+    -- NDepend's quality gates, one row per run and gate.
+    create view health.ndepend_gate as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      g.position, g.gate ->> 'name' as gate, g.gate ->> 'status' as status,
+      health.num(g.gate -> 'value') as value, g.gate ->> 'unit' as unit,
+      concat_ws(' ', g.gate #>> '{warn,operator}', g.gate #>> '{warn,value}') as warn_when,
+      concat_ws(' ', g.gate #>> '{fail,operator}', g.gate #>> '{fail,value}') as fail_when,
+      health.num(g.gate #> '{warn,value}') as warn_value,
+      health.num(g.gate #> '{fail,value}') as fail_value
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,gates}') with ordinality as g(gate, position);
+
+    -- The house rules (every one, with its status) and the critical rules violated.
+    create view health.ndepend_rule as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      'house' as kind, h ->> 'rule' as rule, h ->> 'status' as status, health.num(h -> 'matched') as matched,
+      (select string_agg(e #>> '{}', ', ') from health.elements(h -> 'elements') e) as elements
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,rules,house}') h
+    union all
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      'critical', c ->> 'rule', 'violated', health.num(c -> 'matched'), null
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,rules,critical}') c;
+
+    -- Design metrics per assembly.
+    create view health.ndepend_assembly as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      a ->> 'name' as assembly,
+      health.num(a -> 'types') as types, health.num(a -> 'loc') as loc,
+      health.num(a -> 'afferent') as afferent, health.num(a -> 'efferent') as efferent,
+      health.num(a -> 'cohesion') as cohesion, health.num(a -> 'instability') as instability,
+      health.num(a -> 'abstractness') as abstractness, health.num(a -> 'distance') as distance,
+      a ->> 'debtRating' as debt_rating, health.num(a -> 'debtRatio') as debt_ratio
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,assemblies}') a;
+
+    -- Debt per namespace.
+    create view health.ndepend_namespace as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      n ->> 'name' as namespace, n ->> 'assembly' as assembly,
+      health.num(n -> 'types') as types, health.num(n -> 'loc') as loc,
+      n ->> 'debtRating' as debt_rating, health.num(n -> 'debtRatio') as debt_ratio
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,namespaces}') n;
+
+    -- The three worst-method lists. Only byCrap names the project.
+    create view health.worst_method as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      l.list, m.rank, m.item ->> 'project' as project, m.item ->> 'method' as method,
+      health.num(m.item -> 'crap') as crap, health.num(m.item -> 'complexity') as complexity,
+      health.num(m.item -> 'coverage') as coverage, health.num(m.item -> 'lines') as lines
+    from health.run r
+    cross join lateral (values ('crap', 'byCrap'), ('complexity', 'byComplexity'), ('length', 'byLength')) as l(list, key)
+    cross join lateral health.elements(r.record #> array['worstMethods', l.key]) with ordinality as m(item, rank);
+
+    -- Commits recorded more than once (a re-run, or the same commit on two
+    -- branches): the two views below compare their runs.
+    create view health.repeated_commit as
+    select repo, commit_sha
+    from public.health_run
+    group by repo, commit_sha
+    having count(*) > 1;
+
+    -- A commit with both green and red runs: a flaky test or step, or an outage.
+    create view health.flake_candidate as
+    select
+      r.repo, r.commit_sha,
+      array_agg(distinct r.branch) as branches,
+      count(*) as runs,
+      count(*) filter (where r.green) as green_runs,
+      count(*) filter (where not r.green) as red_runs,
+      string_agg(r.run_id || '/' || r.run_attempt || ' ' || r.verdict || coalesce(' at ' || r.first_failing_step, ''),
+                 ', ' order by r.run_id, r.run_attempt) as run_list,
+      max(r.at) as last_at
+    from health.run r
+    join health.repeated_commit c using (repo, commit_sha)
+    group by r.repo, r.commit_sha
+    having count(*) filter (where r.green) > 0 and count(*) filter (where not r.green) > 0;
+
+    -- A commit whose runs disagree on a project's numbers. Mutation compares the
+    -- runs that measured it, not the ones that carried it.
+    create view health.drift as
+    select
+      p.repo, p.commit_sha, p.project,
+      array_agg(distinct p.branch) as branches,
+      count(*) as runs,
+      min(p.tests) as tests_min, max(p.tests) as tests_max,
+      min(p.lines_pct) as lines_min, max(p.lines_pct) as lines_max,
+      min(p.branches_pct) as branches_min, max(p.branches_pct) as branches_max,
+      min(p.mutation_pct) filter (where p.mutation_ran) as mutation_min,
+      max(p.mutation_pct) filter (where p.mutation_ran) as mutation_max,
+      min(p.crap_max) as crap_min, max(p.crap_max) as crap_max,
+      max(p.at) as last_at
+    from health.project p
+    join health.repeated_commit c using (repo, commit_sha)
+    group by p.repo, p.commit_sha, p.project
+    having count(*) > 1
+       and (min(p.tests) <> max(p.tests)
+         or min(p.lines_pct) <> max(p.lines_pct)
+         or min(p.branches_pct) <> max(p.branches_pct)
+         or min(p.mutation_pct) filter (where p.mutation_ran) <> max(p.mutation_pct) filter (where p.mutation_ran)
+         or min(p.crap_max) <> max(p.crap_max));
+
+    grant usage on schema health to health_reader;
+    grant select on all tables in schema health to health_reader;
+
+    commit;

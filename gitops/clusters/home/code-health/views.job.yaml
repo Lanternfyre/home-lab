@@ -1,0 +1,92 @@
+# Applies views.configmap.yaml's SQL to the code-health database as
+# health_owner, after every sync of this Application.
+#
+# Why a hook Job: postInitApplicationSQL ran once, when the cluster was
+# created, and never runs again; and CNPG 1.29 has no declarative way to run
+# SQL on a live cluster (its Database resource manages extensions, schemas,
+# foreign servers and FDWs, not views). An Argo CD PostSync hook runs after
+# each sync of this Application, so a change to the views reaches the database
+# with the commit that makes it, and only once the Cluster is healthy.
+#
+# Safe to repeat: the SQL rebuilds schema `health` in one transaction and
+# never writes health_run. A failed run fails the sync, and the Application's
+# retry runs it again; with lock_timeout in the SQL, a long Grafana query makes
+# it fail and retry rather than wait.
+#
+# BeforeHookCreation keeps the last run's Job and pod until the next sync, so
+# its log can be read:
+#   kubectl -n code-health logs job/code-health-views
+# It ends with GRANT, GRANT, COMMIT. Its egress is views-job-egress.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: code-health-views
+  namespace: code-health
+  annotations:
+    argocd.argoproj.io/hook: PostSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: code-health-views
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 26  # postgres in the CNPG image
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          # The instances' own image (the Cluster's status.image on
+          # 2026-11-05), so the nodes already hold it.
+          image: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
+          imagePullPolicy: IfNotPresent
+          command: [psql, -X, -v, ON_ERROR_STOP=1, -f, /sql/views.sql]
+          env:
+            - name: PGHOST
+              value: code-health-rw
+            - name: PGDATABASE
+              value: code_health
+            # CNPG serves TLS with its own CA, so require, not verify-full
+            # (as the CI writer's DSN).
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "10"
+            - name: PGAPPNAME
+              value: code-health-views
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-role-health-owner
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-role-health-owner
+                  key: password
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+      volumes:
+        - name: sql
+          configMap:
+            name: code-health-views

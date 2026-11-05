@@ -1,9 +1,12 @@
 # A standalone manifests Application, as necronia-k0-mysql. The code-health
-# database is a CNPG Cluster, its role secrets and one network policy, with no
-# Helm chart, and both apps ApplicationSets read an app.yaml that must name one.
+# database is a CNPG Cluster, its role secrets, its views and their PostSync
+# Job, and two network policies, with no Helm chart, and both apps
+# ApplicationSets read an app.yaml that must name one.
 #
 # What it is for: Necronia2.0's CI inserts one health record per run into
-# `health_run` (Necronia2.0 R134 G8); Grafana reads it later (not yet wired).
+# `health_run` (Necronia2.0 R134 G8); Grafana reads it through the views
+# (code-health/views.job.yaml) as health_reader, with the datasource and the
+# two dashboards in apps/prometheus/manifests/code-health-*.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
