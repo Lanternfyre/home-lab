@@ -502,9 +502,14 @@ unprotected:
     size: 20Gi
     reason: Profiles, 720h retention by config. Discardable by design.
 
-  # Considered and declined, registered on creation. In the form of silo-data's
-  # entry, but here, not under `protected:`: the Cluster sets no
-  # inheritedMetadata protect label, so the LABEL check would fail it there.
+  # Considered and declined, registered on creation: both instances of the
+  # code-health Cluster. In the form of silo-data's entry, but here, not under
+  # `protected:`: the Cluster sets no inheritedMetadata protect label, so the
+  # LABEL check would fail them there.
+  #
+  # ⚠️ CNPG never reuses an instance number. A rebuilt instance becomes
+  # code-health-3 (and so on), and the entry for the claim it replaced must be
+  # renamed in the same change, as postgres-ha-4's was.
   - namespace: code-health
     claim: code-health-1
     size: 4Gi
@@ -512,19 +517,30 @@ unprotected:
     source: CNPG Cluster/code-health (code-health/code-health.cluster.yaml)
     backup: NONE                 # deliberate, see reason
     reason: >-
-      Necronia2.0's CI health records, one row per run. Rebuildable: CI writes
-      every record to the silo too (ci-reports, reports/necronia2.0/health/),
-      and Necronia2.0's health-backfill workflow (planned with the sink)
-      re-inserts them; after that the 90-day `health-<run>` workflow artifacts
-      hold the same records. Losing the volume costs a backfill run.
+      Necronia2.0's CI health records, one row per run; the cluster's first
+      instance. Losing one instance's volume costs a re-clone from the other.
+      Losing both costs a rebuild: CI writes every record to the silo too
+      (ci-reports, reports/necronia2.0/health/), and Necronia2.0's
+      health-backfill workflow (planned with the sink) re-inserts them; after
+      that the 90-day `health-<run>` workflow artifacts hold the same records.
     warning: >-
       The rebuild source is itself disposable: silo-data calls reports/
-      regenerable and has no backup, and the silo shares this NAS, so one
-      storage failure loses both copies and leaves only the artifacts younger
-      than 90 days. Not protected also means removing the Cluster from git
-      deletes this claim (qnap-iscsi is Retain, so the LUN is left behind).
-      CNPG never reuses an instance number: a rebuilt instance is
-      code-health-2, and this entry must be renamed with it.
+      regenerable and has no backup, and both instances and the silo share this
+      NAS, so one storage failure loses every copy and leaves only the
+      artifacts younger than 90 days. Not protected also means removing the
+      Cluster from git deletes both claims (qnap-iscsi is Retain, so the LUNs
+      are left behind).
+
+  - namespace: code-health
+    claim: code-health-2
+    size: 4Gi
+    class: qnap-iscsi
+    source: CNPG Cluster/code-health (code-health/code-health.cluster.yaml)
+    backup: NONE                 # deliberate, see code-health-1
+    reason: >-
+      The cluster's second instance, a streaming replica of code-health-1 (or
+      the primary after a failover). Declined for the same reasons as
+      code-health-1 above; it exists so a node drain has a switchover target.
 
   # Redis has NO volumes at all any more -- apps/redis/chart-values.yaml sets
   # `persistence.enabled: false`, deliberately: the queue holds Immich's BullMQ
