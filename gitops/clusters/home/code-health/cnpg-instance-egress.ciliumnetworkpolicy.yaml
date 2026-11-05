@@ -1,0 +1,31 @@
+# H1 -- CNPG instances need the kube-apiserver, and with one instance nothing
+# else.
+#
+# Same rule as immich's cnpg-instance-egress, for the same reason: the instance
+# manager watches its own Cluster CR, reads the role Secrets, publishes status
+# and runs leader election through the API server. Selecting the pods puts them
+# in default-deny egress, so this is ALL they may reach. Unlike immich, nothing
+# else in this namespace adds DNS or intra-namespace egress, and a single
+# instance has no peer to replicate to and no backup target.
+#
+# Egress only, as immich: ingress is open, so any pod may dial 5432 and the
+# role passwords are the guard. The runners' side is fenced in
+# ../apps/arc-lanternfyre/manifests/runner-egress.ciliumnetworkpolicy.yaml, and
+# the CNPG operator's status polls on 8000 are allowed by
+# ../apps/postgres/manifests/cnpg-operator-egress.ciliumnetworkpolicy.yaml.
+#
+# If the Cluster sticks before "healthy", look for drops first:
+#   hubble observe --namespace code-health --verdict DROPPED
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: cnpg-instance-egress
+  namespace: code-health
+spec:
+  endpointSelector:
+    matchLabels:
+      cnpg.io/podRole: instance
+
+  egress:
+    - toEntities:
+        - kube-apiserver

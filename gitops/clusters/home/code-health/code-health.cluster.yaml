@@ -1,0 +1,122 @@
+# The code-health database: Necronia2.0's CI health records, one row per run.
+#
+# Its own CNPG Cluster in its own namespace (Necronia2.0 R134 G8), so a CI
+# credential and the runner egress rule that goes with it reach this database
+# and nothing else; postgres-ha holds authentik's data. The operator in
+# `databases` manages it as it manages immich-db.
+#
+# One instance and NO protect label, deliberately: the history can be rebuilt
+# from the silo's copies of the same records (reports/necronia2.0/health/,
+# which Necronia2.0's health-backfill workflow, planned with the sink,
+# re-inserts) and, after that, from the 90-day `health-<run>` workflow
+# artifacts. See this claim's entry in ../protected-volumes.yaml.
+#
+# ⚠️ Single instance means the code-health-primary PDB allows 0 disruptions and
+# there is no replica to fail over to. A drain of the node holding
+# code-health-1 blocks, and ansible/playbooks/30-upgrade.yml (through
+# tasks/cnpg-move-primary.yml) refuses to move a primary with fewer than 2
+# ready instances. Decide how node upgrades treat this cluster before relying
+# on that playbook.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: code-health
+  namespace: code-health
+spec:
+  instances: 1
+
+  storage:
+    # Years of records plus WAL headroom: a record is about 88 KB before jsonb
+    # compression, under 1 GB a year by Necronia2.0's estimate. CNPG refuses to
+    # start PostgreSQL on a full volume (postgres-ha, 2026-09-25); with one
+    # instance there are no replication slots to pin WAL, so pg_wal stays near
+    # max_wal_size (1GB) plus CNPG's wal_keep_size (512MB).
+    size: 4Gi
+    storageClass: qnap-iscsi
+
+  postgresql:
+    parameters:
+      # Reap a vanished client in ~90 s instead of the kernel's 2 h, as on
+      # postgres-ha and immich-db (the 2026-09-07 Cilium roll left 75 zombie
+      # backends on postgres-ha). CI runners are ephemeral pods, the clients
+      # most likely to vanish mid-connection.
+      tcp_keepalives_idle: "60"
+      tcp_keepalives_interval: "10"
+      tcp_keepalives_count: "3"
+
+  monitoring:
+    # Off deliberately, as on the other two clusters: the operator's PodMonitor
+    # cannot carry the `release` label Prometheus selects on. The exporter still
+    # runs; ../apps/prometheus/manifests/cnpg.podmonitor.yaml scrapes it.
+    enablePodMonitor: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # health_writer (CI) and health_reader (Grafana, later) get LOGIN and their
+  # passwords here. The roles themselves are created NOLOGIN by
+  # postInitApplicationSQL below, so the grants can name them; CNPG then adopts
+  # them as managed roles and ALTERs them to match (verify after the first
+  # sync: status.managedRolesStatus lists both as reconciled).
+  managed:
+    roles:
+      - name: health_writer
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        passwordSecret:
+          name: pg-role-health-writer
+      - name: health_reader
+        ensure: present
+        login: true
+        superuser: false
+        createdb: false
+        passwordSecret:
+          name: pg-role-health-reader
+
+  bootstrap:
+    # ⚠️ initdb and its SQL run EXACTLY ONCE, when the cluster is first created.
+    # Editing the schema here later changes nothing in a running cluster. Views
+    # over health_run, and any later schema change, are applied as health_owner
+    # by whatever owns them (not this file).
+    initdb:
+      database: code_health
+      owner: health_owner
+      secret:
+        name: pg-role-health-owner
+      # Run as superuser inside code_health.
+      #
+      # health_writer may only INSERT: the CI sink writes
+      # `INSERT ... ON CONFLICT DO NOTHING` with no conflict target and no
+      # RETURNING, which needs nothing else, so a re-sent record is a no-op and
+      # a leaked credential can only add rows. health_reader may only SELECT.
+      #
+      # started_at and green may be null: a red build's record has no start
+      # time, and a record without a steps file has no verdict.
+      #
+      # The table is handed to health_owner, the database owner, so views and
+      # later changes need no superuser.
+      postInitApplicationSQL:
+        - create role health_writer nologin;
+        - create role health_reader nologin;
+        - |-
+          create table health_run (
+            run_id bigint not null, run_attempt int not null,
+            repo text not null, branch text not null, branch_kind text not null,
+            commit_sha text not null, pr_number int,
+            event text not null, profile text not null,
+            started_at timestamptz,
+            green boolean,
+            gate_passed boolean, complete boolean not null,
+            schema int not null, record jsonb not null,
+            primary key (run_id, run_attempt));
+        - alter table health_run owner to health_owner;
+        - revoke all on table health_run from public;
+        - grant insert on table health_run to health_writer;
+        - grant select on table health_run to health_reader;

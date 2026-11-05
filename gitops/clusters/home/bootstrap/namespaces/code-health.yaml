@@ -1,0 +1,20 @@
+# code-health
+#
+# Apps in this namespace: code-health (../code-health.application.yaml), one
+# CNPG Cluster holding Necronia2.0's CI health records.
+#
+# baseline, as immich. CNPG's instance pods would pass `restricted` (immich-db-3
+# read 2026-11-05: non-root, ALL capabilities dropped, seccomp RuntimeDefault),
+# but the initdb Job's pod has not been measured here, so this starts at
+# baseline like the other two CNPG namespaces.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: code-health
+  labels:
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/enforce-version: v1.35
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/audit-version: v1.35
+    pod-security.kubernetes.io/warn: baseline
+    pod-security.kubernetes.io/warn-version: v1.35
