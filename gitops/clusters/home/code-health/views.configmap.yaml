@@ -9,9 +9,20 @@
 # one per block the two dashboards draw: run, project, step, suite, ndepend,
 # ndepend_gate, ndepend_rule, ndepend_assembly, ndepend_namespace,
 # worst_method, and flake_candidate and drift over commits recorded more than
-# once (run_time and repeated_commit are their helpers). Every read is typed
-# and null-safe (health.num, health.bool, health.elements), so a repository
-# whose records lack a block gets empty rows, not a failed query.
+# once (run_time and repeated_commit are their helpers). The aggregates across
+# projects, one row per run, are overall_mutation (the score of the mutants
+# that ran, over project_mutation: each project's measured or carried mutants)
+# and overall (coverage, tests, CRAP, NDepend, duplication). The producer
+# blocks are lens_count (every count of performance, differential, fuzz,
+# generated and invariants), differential_recording and
+# differential_annotation. Every read is typed and null-safe (health.num,
+# health.bool, health.elements, health.entries, health.leaves), so a
+# repository whose records lack a block gets empty rows, not a failed query.
+# The one read that is not, overall's jsonb_to_record, needs the record to be
+# a JSON object, as every health record is.
+#
+# A record is read whole each time a view takes a value from it (about 0.15 ms
+# for one of 140 kB), so the newer views read each record once per query.
 #
 # Check a change offline before committing it: the table SQL from
 # code-health.cluster.yaml's postInitApplicationSQL in a throwaway postgres:18
@@ -283,6 +294,261 @@ data:
          or min(p.branches_pct) <> max(p.branches_pct)
          or min(p.mutation_pct) filter (where p.mutation_ran) <> max(p.mutation_pct) filter (where p.mutation_ran)
          or min(p.crap_max) <> max(p.crap_max));
+
+    -- Typed reads of an object's entries, and of every number in a block at any
+    -- depth (a boolean reads as 1 or 0; strings and nulls are skipped). Both are
+    -- null-safe like health.elements: a missing block or another JSON type gives
+    -- no rows.
+    create function health.entries(j jsonb) returns table (key text, value jsonb)
+      language sql immutable parallel safe
+      as $$ select e.key, e.value from jsonb_each(case when jsonb_typeof(j) = 'object' then j else '{}'::jsonb end) e $$;
+
+    create function health.leaves(j jsonb) returns table (path text[], value numeric)
+      language sql immutable parallel safe
+      as $$
+        with recursive walk(path, node) as (
+          select array[]::text[], j
+          union all
+          select w.path || c.key, c.value
+          from walk w
+          cross join lateral (
+            select e.key, e.value from health.entries(w.node) e
+            union all
+            select (a.n - 1)::text, a.e from health.elements(w.node) with ordinality as a(e, n)
+          ) c
+        )
+        select path,
+          case jsonb_typeof(node)
+            when 'number' then (node #>> '{}')::numeric
+            when 'boolean' then case when (node #>> '{}')::boolean then 1 else 0 end
+          end
+        from walk
+        where jsonb_typeof(node) in ('number', 'boolean') and cardinality(path) > 0
+      $$;
+
+    -- camelCase to words, for a count named by the data: blockingBytes reads
+    -- "blocking bytes".
+    create function health.words(k text) returns text
+      language sql immutable parallel safe
+      as $$ select lower(regexp_replace(k, '([a-z0-9])([A-Z])', '\1 \2', 'g')) $$;
+
+    -- A tile's change line: "+0.0004 pp vs previous run", "no change vs
+    -- previous run", or "first run in range" when the panel's rows hold no
+    -- earlier one. unit is percent (pp), s, or anything else (a bare number).
+    create function health.change(value numeric, previous numeric, unit text) returns text
+      language sql immutable parallel safe
+      as $$
+        select case
+          when value is null then null
+          when previous is null then 'first run in range'
+          when value = previous then 'no change vs previous run'
+          else case when value > previous then '+' else '' end || trim_scale(value - previous)
+               || case unit when 'percent' then ' pp' when 's' then ' s' else '' end || ' vs previous run'
+        end
+      $$;
+
+    -- Each project's mutants as the overall score counts them. A project's own
+    -- counts when its record has them: measured this run, or carried by the
+    -- record from the run that last measured it (mutation.carriedFromRunId).
+    -- When the record has none (a run after a red build or a cancelled one,
+    -- whose record carried nothing forward), the counts of the latest earlier
+    -- run on the same repository and branch that had them. A project with no
+    -- counts on the branch yet is listed but not counted. Counts are taken when
+    -- killed, timeout, survived and noCoverage are all numbers.
+    --
+    -- ran is what Stryker scores (killed + timeout + survived + no coverage);
+    -- generated adds the mutants that never ran: ignored, compile errors and
+    -- runtime errors. score_pct is Stryker's (killed + timeout) / ran.
+    --
+    -- The carry reads the branch's whole history, so a time filter does not
+    -- shorten it: each query reads every record of the branch once.
+    create view health.project_mutation as
+    select
+      repo, branch, run_id, run_attempt, commit_sha, at, project, tier, mutation_ran, mutation_floor,
+      case when has_counts and mutation_ran then 'this run'
+           when has_counts and mutation_carried_from is not null then 'carried by the record'
+           when has_counts then 'in the record'
+           when killed is not null then 'carried by the view'
+      end as counted_as,
+      case when killed is not null then counts_from end as counts_from,
+      killed, timeout, survived, no_coverage, ignored, compile_error, runtime_error,
+      killed + timeout as detected,
+      killed + timeout + survived + no_coverage as ran,
+      killed + timeout + survived + no_coverage
+        + coalesce(ignored, 0) + coalesce(compile_error, 0) + coalesce(runtime_error, 0) as generated,
+      round(100.0 * (killed + timeout) / nullif(killed + timeout + survived + no_coverage, 0), 4) as score_pct,
+      round(100.0 * (killed + timeout + survived + no_coverage)
+        / nullif(killed + timeout + survived + no_coverage
+                 + coalesce(ignored, 0) + coalesce(compile_error, 0) + coalesce(runtime_error, 0), 0), 2) as ran_pct
+    from (
+      select
+        repo, branch, run_id, run_attempt, commit_sha, at, project, tier, mutation_ran, mutation_floor,
+        mutation_carried_from, has_counts,
+        first_value(source_run) over latest as counts_from,
+        first_value(killed) over latest as killed,
+        first_value(timeout) over latest as timeout,
+        first_value(survived) over latest as survived,
+        first_value(no_coverage) over latest as no_coverage,
+        first_value(ignored) over latest as ignored,
+        first_value(compile_error) over latest as compile_error,
+        first_value(runtime_error) over latest as runtime_error
+      from (
+        select
+          *,
+          killed is not null and timeout is not null and survived is not null and no_coverage is not null as has_counts,
+          case when mutation_ran then run_id else mutation_carried_from end as source_run,
+          count(*) filter (where killed is not null and timeout is not null
+                             and survived is not null and no_coverage is not null)
+            over (partition by repo, branch, project order by run_id, run_attempt) as counted
+        from (
+          select r.repo, r.branch, r.run_id, r.run_attempt, r.commit_sha, r.at, x.*
+          from health.run r
+          cross join lateral (select r.record -> 'projects' as projects offset 0) one_read
+          -- health.project's mutation columns, from that one read of the record. offset 0
+          -- computes them here, so the sort below carries numbers, not each project's JSON.
+          cross join lateral (
+            select
+              p ->> 'project' as project, p ->> 'tier' as tier,
+              health.bool(p #> '{mutation,ran}') as mutation_ran,
+              health.num(p #> '{mutation,floor}') as mutation_floor,
+              health.num(p #> '{mutation,carriedFromRunId}') as mutation_carried_from,
+              health.num(p #> '{mutation,counts,killed}') as killed,
+              health.num(p #> '{mutation,counts,timeout}') as timeout,
+              health.num(p #> '{mutation,counts,survived}') as survived,
+              health.num(p #> '{mutation,counts,noCoverage}') as no_coverage,
+              health.num(p #> '{mutation,counts,ignored}') as ignored,
+              health.num(p #> '{mutation,counts,compileError}') as compile_error,
+              health.num(p #> '{mutation,counts,runtimeError}') as runtime_error
+            from health.elements(one_read.projects) p
+            offset 0
+          ) x
+        ) project
+      ) numbered
+      window latest as (partition by repo, branch, project, counted order by run_id, run_attempt)
+    ) carried;
+
+    -- The overall mutation score, one row per run whose record lists projects,
+    -- over every project it lists with health.project_mutation's counts.
+    -- mutation_pct is Stryker's score of the mutants that ran,
+    -- sum(killed + timeout) / sum(killed + timeout + survived + no coverage);
+    -- ignored, compile-error and runtime-error mutants never ran and are not in
+    -- it, as in Stryker. mutants_ran_pct is the share of generated mutants that
+    -- ran, and the three _pct after it the shares that did not. projects_counted
+    -- below projects means some project has no counts on the branch yet.
+    create view health.overall_mutation as
+    select
+      repo, branch, run_id, run_attempt, at,
+      projects, projects_counted, projects_measured, projects_carried_by_view,
+      killed, timeout, survived, no_coverage, ignored, compile_error, runtime_error, detected, ran, generated,
+      round(100.0 * detected / nullif(ran, 0), 4) as mutation_pct,
+      round(100.0 * ran / nullif(generated, 0), 2) as mutants_ran_pct,
+      round(100.0 * ignored / nullif(generated, 0), 2) as mutants_ignored_pct,
+      round(100.0 * compile_error / nullif(generated, 0), 2) as mutants_compile_error_pct,
+      round(100.0 * runtime_error / nullif(generated, 0), 2) as mutants_runtime_error_pct
+    from (
+      select repo, branch, run_id, run_attempt, at,
+        count(*) as projects,
+        count(ran) as projects_counted,
+        count(*) filter (where counted_as = 'this run') as projects_measured,
+        count(*) filter (where counted_as = 'carried by the view') as projects_carried_by_view,
+        sum(killed) as killed, sum(timeout) as timeout, sum(survived) as survived, sum(no_coverage) as no_coverage,
+        sum(coalesce(ignored, 0)) filter (where ran is not null) as ignored,
+        sum(coalesce(compile_error, 0)) filter (where ran is not null) as compile_error,
+        sum(coalesce(runtime_error, 0)) filter (where ran is not null) as runtime_error,
+        sum(detected) as detected, sum(ran) as ran, sum(generated) as generated
+      from health.project_mutation
+      group by repo, branch, run_id, run_attempt, at
+    ) summed;
+
+    -- The other aggregates across projects, one row per run (every run, so a red
+    -- build is a row of nulls, not a gap in the run list).
+    --   Coverage: covered over coverable lines and branches, summed across the
+    --   projects that report them, so a large project weighs more than a small one.
+    --   Tests and CRAP: the record's totals (the tests include the suites outside
+    --   the projects). NDepend and duplication: their blocks, null when absent.
+    -- The record is read once per run (jsonb_to_record), not once per value: each
+    -- read decompresses the whole record. Every health record is a JSON object,
+    -- so jsonb_to_record never meets anything else.
+    create view health.overall as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.commit_sha, r.at, r.verdict,
+      c.projects_with_coverage,
+      c.lines_covered, c.lines_total, round(100.0 * c.lines_covered / nullif(c.lines_total, 0), 2) as lines_pct,
+      c.branches_covered, c.branches_total,
+      round(100.0 * c.branches_covered / nullif(c.branches_total, 0), 2) as branches_pct,
+      health.num(b.totals #> '{tests,total}') as tests,
+      health.num(b.totals #> '{tests,failed}') as tests_failed,
+      health.num(b.totals #> '{tests,skipped}') as tests_skipped,
+      round(health.num(b.totals #> '{tests,durationMs}') / 1000, 1) as test_seconds,
+      health.num(b.totals -> 'methodsOverCrapThreshold') as methods_over_crap,
+      health.num(b.totals -> 'testGapMass') as test_gap_mass,
+      health.num(b.ndepend #> '{trend,debt,percent}') as debt_pct,
+      health.num(b.ndepend #> '{trend,issues,critical}') as issues_critical,
+      health.num(b.ndepend #> '{trend,issues,blocker}') as issues_blocker,
+      health.num(b.duplication -> 'duplicatedLines') as duplicated_lines,
+      health.num(b.duplication -> 'lines') as duplication_lines,
+      round(100.0 * health.num(b.duplication -> 'duplicatedLines')
+        / nullif(health.num(b.duplication -> 'lines'), 0), 2) as duplicated_pct
+    from health.run r
+    cross join lateral jsonb_to_record(r.record) as b(totals jsonb, ndepend jsonb, duplication jsonb, projects jsonb)
+    cross join lateral (
+      select
+        count(*) filter (where health.num(p #> '{coverage,lines,whole}') is not null) as projects_with_coverage,
+        sum(health.num(p #> '{coverage,lines,part}')) as lines_covered,
+        sum(health.num(p #> '{coverage,lines,whole}')) as lines_total,
+        sum(health.num(p #> '{coverage,branches,part}')) as branches_covered,
+        sum(health.num(p #> '{coverage,branches,whole}')) as branches_total
+      from health.elements(b.projects) p
+    ) c;
+
+    -- Every count of the producer blocks (R130 keeps them counts only), one row
+    -- per run and number at any depth: the allocation ratchet (performance),
+    -- the oracle differential and, once their producers write them, fuzz,
+    -- generated and invariants. A key a producer adds shows up here, and in
+    -- every panel that reads this view, with no edit; a sixth block needs its
+    -- name in the list below. key is the path's first step, label its words.
+    create view health.lens_count as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at, b.block,
+      array_to_string(l.path, '.') as path, cardinality(l.path) as depth,
+      l.path[1] as key, health.words(l.path[1]) as label, l.value
+    from health.run r
+    cross join (values ('performance'), ('differential'), ('fuzz'), ('generated'), ('invariants')) as b(block)
+    cross join lateral (select r.record -> b.block as counts offset 0) one_read
+    cross join lateral health.leaves(one_read.counts) l;
+
+    -- The oracle differential per recording, keyed by the record's own names
+    -- (r1, r2, ...), so a new recording is a new row.
+    create view health.differential_recording as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      e.key as recording,
+      nullif(regexp_replace(e.key, '\D', '', 'g'), '')::numeric as recording_number,
+      health.num(e.value -> 'compared') as compared,
+      health.num(e.value -> 'masked') as masked,
+      health.num(e.value -> 'annotated') as annotated,
+      health.num(e.value -> 'deferredExpected') as deferred_expected,
+      health.num(e.value -> 'deferredActual') as deferred_actual,
+      health.num(e.value -> 'differences') as differences,
+      health.num(e.value -> 'stale') as stale,
+      (select string_agg(a.key || ' ' || a.value, ', ' order by a.key)
+         from health.entries(e.value -> 'annotatedBy') a) as annotated_by
+    from health.run r
+    cross join lateral (select r.record #> '{differential,recordings}' as recordings offset 0) one_read
+    cross join lateral health.entries(one_read.recordings) e;
+
+    -- Differences the ledger annotated, per run, recording and reason (the
+    -- Because, dv006 for DV-006), so a new reason is a new row.
+    create view health.differential_annotation as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      e.key as recording,
+      nullif(regexp_replace(e.key, '\D', '', 'g'), '')::numeric as recording_number,
+      a.key as reason, health.num(a.value) as annotated
+    from health.run r
+    cross join lateral (select r.record #> '{differential,recordings}' as recordings offset 0) one_read
+    cross join lateral health.entries(one_read.recordings) e
+    cross join lateral health.entries(e.value -> 'annotatedBy') a;
 
     grant usage on schema health to health_reader;
     grant select on all tables in schema health to health_reader;
