@@ -5,32 +5,30 @@
 # and nothing else; postgres-ha holds authentik's data. The operator in
 # `databases` manages it as it manages immich-db.
 #
-# One instance and NO protect label, deliberately: the history can be rebuilt
-# from the silo's copies of the same records (reports/necronia2.0/health/,
-# which Necronia2.0's health-backfill workflow, planned with the sink,
-# re-inserts) and, after that, from the 90-day `health-<run>` workflow
-# artifacts. See this claim's entry in ../protected-volumes.yaml.
+# Two instances, a primary and one streaming replica (the operator's call,
+# 2026-11-05), so ansible/playbooks/30-upgrade.yml can move the primary off a
+# node before draining it (tasks/cnpg-move-primary.yml needs 2 ready
+# instances), as it does for postgres-ha and immich-db. Not for durability:
+# both volumes sit on the same NAS.
 #
-# ⚠️ Single instance means the code-health-primary PDB allows 0 disruptions and
-# there is no replica to fail over to. A drain of the node holding
-# code-health-1 blocks, and ansible/playbooks/30-upgrade.yml (through
-# tasks/cnpg-move-primary.yml) refuses to move a primary with fewer than 2
-# ready instances. Decide how node upgrades treat this cluster before relying
-# on that playbook.
+# NO protect label, deliberately: the history can be rebuilt from the silo's
+# copies of the same records (reports/necronia2.0/health/, which Necronia2.0's
+# health-backfill workflow, planned with the sink, re-inserts) and, after that,
+# from the 90-day `health-<run>` workflow artifacts. See the claims' entries in
+# ../protected-volumes.yaml.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
 metadata:
   name: code-health
   namespace: code-health
 spec:
-  instances: 1
+  instances: 2
 
   storage:
-    # Years of records plus WAL headroom: a record is about 88 KB before jsonb
-    # compression, under 1 GB a year by Necronia2.0's estimate. CNPG refuses to
-    # start PostgreSQL on a full volume (postgres-ha, 2026-09-25); with one
-    # instance there are no replication slots to pin WAL, so pg_wal stays near
-    # max_wal_size (1GB) plus CNPG's wal_keep_size (512MB).
+    # Per instance. Years of records plus WAL headroom: a record is about 88 KB
+    # before jsonb compression, under 1 GB a year by Necronia2.0's estimate.
+    # CNPG refuses to start PostgreSQL on a full volume (postgres-ha,
+    # 2026-09-25), so pg_wal is bounded below.
     size: 4Gi
     storageClass: qnap-iscsi
 
@@ -43,6 +41,14 @@ spec:
       tcp_keepalives_idle: "60"
       tcp_keepalives_interval: "10"
       tcp_keepalives_count: "3"
+      # Cap the WAL a replication slot may pin; the default (-1) lets a dead
+      # replica's slot hold WAL until the volume is full, which is how a
+      # postgres-ha instance died on 2026-09-25 (see the note there). With
+      # max_wal_size at 1GB, pg_wal stays near 2GB at worst, leaving about 2GB
+      # of the 4Gi for data. A replica that falls 1GB behind (hours down, at
+      # this write rate) loses its slot and is re-cloned, which for a database
+      # this small takes seconds.
+      max_slot_wal_keep_size: "1GB"
 
   monitoring:
     # Off deliberately, as on the other two clusters: the operator's PodMonitor

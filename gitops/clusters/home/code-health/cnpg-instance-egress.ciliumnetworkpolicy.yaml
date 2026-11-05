@@ -1,12 +1,25 @@
-# H1 -- CNPG instances need the kube-apiserver, and with one instance nothing
-# else.
+# H1 -- default-deny EGRESS for the code-health instances: the API server,
+# DNS, and the cluster's own instances on 5432 and 8000. Nothing else.
 #
-# Same rule as immich's cnpg-instance-egress, for the same reason: the instance
-# manager watches its own Cluster CR, reads the role Secrets, publishes status
-# and runs leader election through the API server. Selecting the pods puts them
-# in default-deny egress, so this is ALL they may reach. Unlike immich, nothing
-# else in this namespace adds DNS or intra-namespace egress, and a single
-# instance has no peer to replicate to and no backup target.
+# Selecting the pods puts them in default-deny egress, so this is ALL they may
+# reach. Unlike immich and databases, no namespace-wide policy here adds DNS or
+# intra-namespace egress; those give their instances `kube-dns:53` and their
+# whole namespace on every port. This file gives the same reachability,
+# narrowed to this cluster's pods and CNPG's two ports:
+#
+#   kube-apiserver        the instance manager watches its own Cluster CR, reads
+#                         the role Secrets, publishes status and runs leader
+#                         election (immich's cnpg-instance-egress, same reason)
+#   kube-dns:53           the replica dials the primary by Service name
+#                         (code-health-rw), as does the join Job's pg_basebackup
+#   code-health pods:5432 streaming replication, pg_basebackup when an instance
+#                         is (re)cloned, pg_rewind when a former primary rejoins
+#   code-health pods:8000 the instance manager's status endpoint; CNPG's Cilium
+#                         guide admits 5432 and 8000 between one cluster's pods
+#
+# toEndpoints, not toServices: socket LB has already rewritten a connection to
+# code-health-rw to the backend pod before policy runs, so the pod's labels are
+# what match (as the runners' silo and code-health rules rely on).
 #
 # Egress only, as immich: ingress is open, so any pod may dial 5432 and the
 # role passwords are the guard. The runners' side is fenced in
@@ -14,7 +27,8 @@
 # the CNPG operator's status polls on 8000 are allowed by
 # ../apps/postgres/manifests/cnpg-operator-egress.ciliumnetworkpolicy.yaml.
 #
-# If the Cluster sticks before "healthy", look for drops first:
+# If the Cluster sticks before "healthy", or the replica never streams, look
+# for drops first:
 #   hubble observe --namespace code-health --verdict DROPPED
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -29,3 +43,29 @@ spec:
   egress:
     - toEntities:
         - kube-apiserver
+
+    # ⚠️ L7 DNS visibility, as in immich-egress and databases-egress.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: code-health
+            cnpg.io/cluster: code-health
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
+            - port: "8000"
+              protocol: TCP
