@@ -11,9 +11,9 @@
 # smartctl exporter before it.
 #
 # So the monitor is owned here instead, and `enablePodMonitor` is switched off
-# on both Cluster CRs so no orphaned copy is left behind looking functional.
+# on every Cluster CR so no orphaned copy is left behind looking functional.
 #
-# One monitor covers both clusters: the selector matches the CNPG pod role
+# One monitor covers every cluster: the selector matches the CNPG pod role
 # rather than a cluster name, and namespaceSelector lists where clusters live.
 # A new CNPG cluster in a new namespace needs its namespace added here.
 apiVersion: monitoring.coreos.com/v1
@@ -29,6 +29,7 @@ spec:
     matchNames:
       - databases
       - immich
+      - code-health
   selector:
     matchLabels:
       # Set by the operator on instance pods only, so the -join / -initdb

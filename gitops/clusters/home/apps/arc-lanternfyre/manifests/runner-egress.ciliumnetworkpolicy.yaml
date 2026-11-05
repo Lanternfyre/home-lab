@@ -22,7 +22,8 @@
 # DNS (kube-dns, with L7 dns inspection so toFQDNs can resolve), the GitHub
 # service surface (api/codeload/objects/pkg-containers), GHCR, the .NET/node
 # package registries, and the in-cluster object store at s3.lab.techyon.dev
-# (MinIO — where every ratcheted baseline and the BADASS history live).
+# (MinIO — where every ratcheted baseline and the BADASS history live), and
+# the code-health Postgres on 5432 (namespace code-health only).
 # Everything else — INCLUDING the cluster-local pod
 # and service space — is denied by the default-deny that selecting the pods
 # creates. V6's cluster-local curl must time out.
@@ -104,6 +105,23 @@ spec:
       toPorts:
         - ports:
             - port: "9000"
+              protocol: TCP
+
+    # The code-health database: Necronia2.0's CI inserts one row per run
+    # (R134 G8). One namespace, one cluster, one port, so postgres-ha
+    # (authentik's database) stays out of reach.
+    #
+    # ⚠️ toEndpoints, NOT toFQDNs, for the same east-west reason as the silo
+    # above. Every Lanternfyre repository's jobs share this policy, so the
+    # network admits them all and health_writer's password (insert-only) is the
+    # guard.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: code-health
+            cnpg.io/cluster: code-health
+      toPorts:
+        - ports:
+            - port: "5432"
               protocol: TCP
 
     # The GitHub + package-registry surface the workflows actually use.

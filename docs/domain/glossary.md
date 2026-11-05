@@ -37,7 +37,7 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 
 ## CNPG
 - **Context:** Storage
-- **Means:** CloudNativePG, the Kubernetes controller that runs this cluster's PostgreSQL: `databases/postgres-ha` (authentik and ReportPortal) and `immich/immich-db`.
+- **Means:** CloudNativePG, the Kubernetes controller that runs this cluster's PostgreSQL: `databases/postgres-ha` (authentik and ReportPortal), `immich/immich-db` and `code-health/code-health` (Necronia2.0's CI health records).
 - **Rules:** each cluster gets the Services `<cluster>-rw` (read-write: the primary), `<cluster>-ro` (read-only: the replicas) and `<cluster>-r` (any instance); its replicas are not a backup → [Restoring data](../operate/restore.md)
 - **Code:** `clusters.postgresql.cnpg.io`, label `cnpg.io/cluster`
 
