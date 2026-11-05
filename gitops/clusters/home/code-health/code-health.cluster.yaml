@@ -64,7 +64,7 @@ spec:
       cpu: 500m
       memory: 512Mi
 
-  # health_writer (CI) and health_reader (Grafana, later) get LOGIN and their
+  # health_writer (CI) and health_reader (Grafana) get LOGIN and their
   # passwords here. The roles themselves are created NOLOGIN by
   # postInitApplicationSQL below, so the grants can name them; CNPG then adopts
   # them as managed roles and ALTERs them to match (verify after the first
@@ -89,8 +89,8 @@ spec:
   bootstrap:
     # ⚠️ initdb and its SQL run EXACTLY ONCE, when the cluster is first created.
     # Editing the schema here later changes nothing in a running cluster. Views
-    # over health_run, and any later schema change, are applied as health_owner
-    # by whatever owns them (not this file).
+    # over health_run are applied as health_owner by views.job.yaml, a PostSync
+    # hook; a later schema change goes the same way, not into this file.
     initdb:
       database: code_health
       owner: health_owner

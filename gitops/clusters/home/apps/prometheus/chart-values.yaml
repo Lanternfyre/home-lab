@@ -340,6 +340,10 @@ grafana:
   # kube-prometheus-stack as additional datasources. The derivedFields entry
   # on the Loki datasource turns any "trace_id=<hex>" in a log line into a
   # clickable link that jumps to the matching Tempo trace view.
+  #
+  # Not every datasource is here: "Code health" (PostgreSQL) is a Secret the
+  # datasource sidecar loads, so its password stays out of these values; see
+  # manifests/code-health-datasource.external-secret.yaml.
   additionalDataSources:
     - name: Loki
       type: loki

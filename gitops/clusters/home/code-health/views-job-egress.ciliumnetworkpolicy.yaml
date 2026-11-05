@@ -1,0 +1,47 @@
+# H1 -- default-deny EGRESS for the views Job (views.job.yaml): kube-dns, and
+# this cluster's instances on 5432. Nothing else.
+#
+#   kube-dns:53           the Job dials the primary by Service name
+#                         (code-health-rw)
+#   code-health pods:5432 psql, as health_owner
+#
+# toEndpoints, not toServices: socket LB has already rewritten a connection to
+# code-health-rw to the backend pod before policy runs, so the pod's labels
+# are what match (as in cnpg-instance-egress and the runners' rule).
+#
+# If the Job times out connecting, look for drops first:
+#   hubble observe --namespace code-health --verdict DROPPED
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: views-job-egress
+  namespace: code-health
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: code-health-views
+
+  egress:
+    # ⚠️ L7 DNS visibility, as in cnpg-instance-egress.
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+            - port: "53"
+              protocol: TCP
+          rules:
+            dns:
+              - matchPattern: "*"
+
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: code-health
+            cnpg.io/cluster: code-health
+      toPorts:
+        - ports:
+            - port: "5432"
+              protocol: TCP
