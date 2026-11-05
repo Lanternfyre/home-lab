@@ -6,8 +6,19 @@
 # Rows: tests, failures and test time per project, and the suites outside the
 # projects; line and branch coverage per project; mutants by status, each
 # project's mutation (measured or carried, why, score against floor, Dubious
-# lines) and survivors per run; flakiness (one commit with green and red runs)
-# and drift (one commit, different numbers).
+# lines), survivors per run, and how many of each project's generated mutants
+# ran (with its compile errors and ignored mutants per run); the allocation
+# ratchet (the record's performance block); the oracle differential (totals,
+# per recording, annotated by reason); flakiness (one commit with green and
+# red runs) and drift (one commit, different numbers); every count of the
+# producer blocks.
+#
+# Panels that list projects, suites, recordings, annotation reasons or a
+# block's counts take them from the data, so a new one shows up without an
+# edit. A new counts-only producer block needs its name in health.lens_count
+# (views.configmap.yaml) and then shows up in "Every count of the producer
+# blocks"; curated panels for it are a copy of the allocation ratchet's two
+# with the block's name changed.
 #
 # Variables: $repo (default Lanternfyre/Necronia2.0), $branch (newest first;
 # several at once name each series by project and branch) and $project. Every
@@ -31,7 +42,7 @@ data:
     {
       "uid": "code-health-tests",
       "title": "Tests and coverage",
-      "description": "CI code-health records (health_run in the code-health database): tests, failures and time per project, line and branch coverage, mutants by status, and runs of one commit that disagree. Repository-agnostic over the record's schema; panels for a block a repository's records lack show no data.",
+      "description": "CI code-health records (health_run in the code-health database): tests, failures and time per project, line and branch coverage, mutants by status and how many of them ran, the allocation ratchet, the oracle differential, every count of the producer blocks, and runs of one commit that disagree. Repository-agnostic over the record's schema; panels for a block a repository's records lack show no data.",
       "tags": [
         "code-health"
       ],
@@ -1067,13 +1078,989 @@ data:
           }
         },
         {
+          "type": "table",
+          "title": "Mutants that ran, newest run per branch",
+          "description": "Per project, how many of the generated mutants ran and were scored, and the rest: ignored, compile errors, runtime errors. The score is of the mutants that ran. Counted as: this run, carried by the record (from the run that last mutated the project), or carried by the view (from the latest earlier run on the branch that had counts, when the record has none); measured in names the run that mutated it. Survivors and uncovered mutants are in the Mutation table above. Fewest ran first.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^(ran %|score of ran)$/"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "percent"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 2
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, project, counted_as as \"counted as\", counts_from::text as \"measured in\",\n  generated, ran, ran_pct as \"ran %\", ignored, compile_error as \"compile error\",\n  runtime_error as \"runtime error\", score_pct as \"score of ran\"\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.project_mutation v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and project = any(array[${project:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by ran_pct nulls first, branch, project"
+            }
+          ],
+          "id": 17,
+          "gridPos": {
+            "x": 0,
+            "y": 58,
+            "w": 24,
+            "h": 10
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Mutants that ran per project",
+          "description": "Each project's share of its generated mutants that ran and were scored, run by run, with the overall score's carry.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "max": 100
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then project || ' · ' || branch else project end as metric, ran_pct as value\nfrom health.project_mutation\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and project = any(array[${project:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 18,
+          "gridPos": {
+            "x": 0,
+            "y": 68,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Compile errors per project",
+          "description": "Mutants that did not compile, per project, run by run (same carry).",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then project || ' · ' || branch else project end as metric, compile_error as value\nfrom health.project_mutation\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and project = any(array[${project:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 19,
+          "gridPos": {
+            "x": 8,
+            "y": 68,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Ignored mutants per project",
+          "description": "Mutants Stryker ignored, per project, run by run (same carry).",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then project || ' · ' || branch else project end as metric, ignored as value\nfrom health.project_mutation\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and project = any(array[${project:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 20,
+          "gridPos": {
+            "x": 16,
+            "y": 68,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
+          "type": "row",
+          "id": 21,
+          "title": "Allocation ratchet (performance)",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 77,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Allocation ratchet, newest run per branch",
+          "description": "The performance block's counts in the newest run that has it: rows, blocking and report-only rows, the blocking rows within, over and below their budgets, rows with no budget or no measurement, budgets raised since the base, and the blocking rows' bytes per operation added up. Over, below, unbudgeted, unmeasured and raised fail the ratchet and turn red from one. A count the producer adds shows up here with no edit.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "text"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^(over|below|unbudgeted|unmeasured|raised)( · .*)?$/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "thresholds"
+                    }
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^blocking bytes( · .*)?$/"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "suffix: B"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "vertical",
+            "justifyMode": "auto",
+            "wideLayout": true,
+            "showPercentChange": false
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time,\n  lpad(coalesce(array_position(array['rows', 'blocking', 'reportOnly', 'within', 'over', 'below', 'unbudgeted', 'unmeasured', 'raised', 'blockingBytes'], key), 99)::text, 2, '0') || ' ' || label || case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then ' · ' || branch else '' end as metric,\n  value\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.lens_count v\n  where block = 'performance' and depth = 1\n    and repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by at, metric"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^\\d\\d (.*)$",
+                "renamePattern": "$1"
+              }
+            }
+          ],
+          "id": 22,
+          "gridPos": {
+            "x": 0,
+            "y": 78,
+            "w": 24,
+            "h": 4
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Allocation ratchet per run",
+          "description": "The performance block's counts run by run (left axis) and the blocking rows' bytes per operation added up (right axis). Every key of the block is a series, so a new one needs no edit.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^blocking bytes/"
+                },
+                "properties": [
+                  {
+                    "id": "custom.axisPlacement",
+                    "value": "right"
+                  },
+                  {
+                    "id": "unit",
+                    "value": "suffix: B"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time,\n  lpad(coalesce(array_position(array['rows', 'blocking', 'reportOnly', 'within', 'over', 'below', 'unbudgeted', 'unmeasured', 'raised', 'blockingBytes'], key), 99)::text, 2, '0') || ' ' || label || case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then ' · ' || branch else '' end as metric,\n  value\nfrom health.lens_count\nwhere block = 'performance' and depth = 1\n  and repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at, metric"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^\\d\\d (.*)$",
+                "renamePattern": "$1"
+              }
+            }
+          ],
+          "id": 23,
+          "gridPos": {
+            "x": 0,
+            "y": 82,
+            "w": 24,
+            "h": 8
+          }
+        },
+        {
+          "type": "row",
+          "id": 24,
+          "title": "Oracle differential",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 90,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "stat",
+          "title": "Oracle differential, newest run per branch",
+          "description": "The differential block's totals in the newest run that has it: recordings (captures) diffed, the timing tolerance, message pairs compared, fields masked, differences the ledger annotated, messages deferred on the expected and actual side, differences and stale ledger rows. Differences and stale turn red from one. A count the producer adds shows up here with no edit.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "fixed",
+                "fixedColor": "text"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "text",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^(differences|stale)( · .*)?$/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "thresholds"
+                    }
+                  },
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^tolerance ms( · .*)?$/"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "ms"
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": [
+                "lastNotNull"
+              ],
+              "fields": "",
+              "values": false
+            },
+            "colorMode": "value",
+            "graphMode": "none",
+            "textMode": "value_and_name",
+            "orientation": "vertical",
+            "justifyMode": "auto",
+            "wideLayout": true,
+            "showPercentChange": false
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time,\n  lpad(coalesce(array_position(array['captures', 'toleranceMs', 'compared', 'masked', 'annotated', 'deferredExpected', 'deferredActual', 'differences', 'stale'], key), 99)::text, 2, '0') || ' ' || label || case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then ' · ' || branch else '' end as metric,\n  value\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.lens_count v\n  where block = 'differential' and depth = 1\n    and repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by at, metric"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^\\d\\d (.*)$",
+                "renamePattern": "$1"
+              }
+            }
+          ],
+          "id": 25,
+          "gridPos": {
+            "x": 0,
+            "y": 91,
+            "w": 24,
+            "h": 4
+          }
+        },
+        {
+          "type": "table",
+          "title": "Per recording, newest run per branch",
+          "description": "One row per recording the newest run diffed, named as the record names it (r1, r2, ...), so a new recording is a new row. Annotated by: the ledger's reason (dv006 for DV-006) and its count. Differences and stale turn red from one.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^(differences|stale)$/"
+                },
+                "properties": [
+                  {
+                    "id": "thresholds",
+                    "value": {
+                      "mode": "absolute",
+                      "steps": [
+                        {
+                          "color": "green",
+                          "value": null
+                        },
+                        {
+                          "color": "red",
+                          "value": 1
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, recording, compared, masked, annotated, annotated_by as \"annotated by\",\n  deferred_expected as \"deferred expected\", deferred_actual as \"deferred actual\", differences, stale,\n  run_id as \"run\"\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.differential_recording v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by branch, recording_number nulls last, recording"
+            }
+          ],
+          "id": 26,
+          "gridPos": {
+            "x": 0,
+            "y": 95,
+            "w": 24,
+            "h": 15
+          }
+        },
+        {
+          "type": "table",
+          "title": "Annotated differences by reason, newest run per branch",
+          "description": "Differences the ledger annotated, per reason (its Because), with the recordings they come from. A new reason is a new row.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, reason, sum(annotated) as annotated,\n  string_agg(recording || ' ' || annotated, ', ' order by recording_number nulls last, recording) as recordings\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.differential_annotation v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\ngroup by branch, reason\norder by branch, sum(annotated) desc, reason"
+            }
+          ],
+          "id": 27,
+          "gridPos": {
+            "x": 0,
+            "y": 110,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Differences, stale rows and annotated per run",
+          "description": "The differential's differences (red) and stale ledger rows (orange), and the differences the ledger annotated, run by run.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^differences/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "red"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/^stale/"
+                },
+                "properties": [
+                  {
+                    "id": "color",
+                    "value": {
+                      "mode": "fixed",
+                      "fixedColor": "orange"
+                    }
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time,\n  lpad(coalesce(array_position(array['captures', 'toleranceMs', 'compared', 'masked', 'annotated', 'deferredExpected', 'deferredActual', 'differences', 'stale'], key), 99)::text, 2, '0') || ' ' || label || case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then ' · ' || branch else '' end as metric,\n  value\nfrom health.lens_count\nwhere block = 'differential' and depth = 1\n  and key = any(array['differences', 'stale', 'annotated'])\n  and repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at, metric"
+            }
+          ],
+          "transformations": [
+            {
+              "id": "renameByRegex",
+              "options": {
+                "regex": "^\\d\\d (.*)$",
+                "renamePattern": "$1"
+              }
+            }
+          ],
+          "id": 28,
+          "gridPos": {
+            "x": 8,
+            "y": 110,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Annotated per reason per run",
+          "description": "Annotated differences per reason across recordings, run by run. A new reason is a new series.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              },
+              "decimals": 0
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, reason || case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then ' · ' || branch else '' end as metric,\n  sum(annotated) as value\nfrom health.differential_annotation\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\ngroup by at, branch, reason\norder by at, reason"
+            }
+          ],
+          "id": 29,
+          "gridPos": {
+            "x": 16,
+            "y": 110,
+            "w": 8,
+            "h": 9
+          }
+        },
+        {
           "type": "row",
           "id": 14,
           "title": "Flakiness",
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 58,
+            "y": 119,
             "w": 24,
             "h": 1
           },
@@ -1122,7 +2109,7 @@ data:
           "id": 15,
           "gridPos": {
             "x": 0,
-            "y": 59,
+            "y": 120,
             "w": 24,
             "h": 6
           }
@@ -1170,9 +2157,87 @@ data:
           "id": 16,
           "gridPos": {
             "x": 0,
-            "y": 65,
+            "y": 126,
             "w": 24,
             "h": 6
+          }
+        },
+        {
+          "type": "row",
+          "id": 30,
+          "title": "Producer blocks: every count",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 132,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "table",
+          "title": "Every count of the producer blocks, newest run per branch",
+          "description": "Every number of every producer block (performance, differential, and fuzz, generated and invariants once their producers write them), at any depth and by its path in the record, in the newest run per branch that has the block, with the value of the run before it in range. A new block or key appears here with no dashboard edit (health.lens_count names the blocks).",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, block, path, value, previous as \"previous value\", value - previous as \"change\",\n  run_id as \"run\"\nfrom (\n  select v.*,\n    lag(v.value) over (partition by v.branch, v.block, v.path order by v.run_id, v.run_attempt) as previous,\n    dense_rank() over (partition by v.branch, v.block order by v.run_id desc, v.run_attempt desc) as newest\n  from health.lens_count v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by branch, block, depth, path"
+            }
+          ],
+          "id": 31,
+          "gridPos": {
+            "x": 0,
+            "y": 133,
+            "w": 24,
+            "h": 10
           }
         }
       ]
