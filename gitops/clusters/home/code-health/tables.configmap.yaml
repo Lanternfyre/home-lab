@@ -1,0 +1,61 @@
+# The tables the code-health database gained after its bootstrap, as one SQL
+# file. views.job.yaml runs it as health_owner after every sync of this
+# Application, before views.sql, because the views read these tables.
+#
+# Why here and not in code-health.cluster.yaml: postInitApplicationSQL ran
+# once, when the cluster was created (it made health_run), and never runs
+# again. A table added later goes here, written so it is safe to repeat:
+# `create ... if not exists`, and the grants re-applied as written. Nothing
+# here drops a table or writes a row. A changed column is a new statement that
+# is safe to repeat (`alter table ... add column if not exists`), not an edit
+# of the create, which never runs again on a table that exists.
+#
+# perf_run: Necronia2.0's performance records (perf.json, schema 1;
+# Necronia2.0 R313), one row per producer run (a TCP run, a micro run), the
+# whole document in `record` and the columns a view filters on lifted out, as
+# health_run holds the health records. The compendium's perf-record-sink
+# inserts them as health_writer with `INSERT ... ON CONFLICT DO NOTHING` and
+# no conflict target, so a re-sent record (each nightly re-sends the ritual's
+# committed ones) is "already present", never a second row. The key is
+# (repo, uid): uid is the record's own, one per producer run.
+#
+# health_owner can create tables in `public`: since PostgreSQL 15 the schema
+# belongs to pg_database_owner, which health_owner is for code_health.
+#
+# Check a change offline before committing it, as views.configmap.yaml says.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: code-health-tables
+  namespace: code-health
+data:
+  tables.sql: |
+    -- Tables created after the cluster's bootstrap, applied as health_owner by
+    -- views.job.yaml before views.sql. Safe to repeat.
+    begin;
+    set local lock_timeout = '30s';
+
+    -- Necronia2.0's performance records, one row per producer run. started_at
+    -- is never null: every producer knows when its run started.
+    create table if not exists perf_run (
+      repo text not null,
+      uid text not null,
+      suite text not null,
+      run_kind text not null,
+      env_class text not null,
+      branch text, branch_kind text,
+      commit_sha text not null, dirty boolean not null,
+      milestone text,
+      started_at timestamptz not null,
+      schema int not null,
+      record jsonb not null,
+      primary key (repo, uid));
+    create index if not exists perf_run_at on perf_run (repo, started_at);
+
+    -- INSERT for CI's writer, SELECT for Grafana's reader, nothing else for
+    -- anyone. Revoked first, so a grant made by hand does not survive a sync.
+    revoke all on table perf_run from public, health_writer, health_reader;
+    grant insert on table perf_run to health_writer;
+    grant select on table perf_run to health_reader;
+
+    commit;

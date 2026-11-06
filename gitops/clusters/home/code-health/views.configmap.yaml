@@ -1,9 +1,11 @@
 # The views Grafana reads in the code-health database, as one SQL file.
-# views.job.yaml runs it as health_owner after every sync of this Application.
+# views.job.yaml runs it as health_owner after every sync of this Application,
+# after tables.configmap.yaml's tables.sql.
 #
-# It drops and rebuilds schema `health` in one transaction, so this file is the
-# whole truth about the views: edit a view here, and the next sync replaces it.
-# health_run (in `public`) and its rows are never touched; the views only read it.
+# It drops and rebuilds schemas `health` and `perf` in one transaction, so this
+# file is the whole truth about the views: edit a view here, and the next sync
+# replaces it. The tables in `public` (health_run, perf_run) and their rows are
+# never touched; the views only read them.
 #
 # The views are projections of the health record (health_run.record, jsonb),
 # one per block the two dashboards draw: run, project, step, suite, ndepend,
@@ -24,11 +26,16 @@
 # A record is read whole each time a view takes a value from it (about 0.15 ms
 # for one of 140 kB), so the newer views read each record once per query.
 #
+# Schema `perf` projects perf_run's performance records (Necronia2.0 R313):
+# run (one per record, with the environment group results compare within),
+# result, metric, condition and parameter (the long form), reference (the
+# value each series is read against) and noise (the spread on unchanged code).
+#
 # Check a change offline before committing it: the table SQL from
 # code-health.cluster.yaml's postInitApplicationSQL in a throwaway postgres:18
-# container, a few records from the silo
+# container, then tables.sql, a few records from the silo
 # (https://s3.lab.techyon.dev/ci-reports/reports/necronia2.0/health/), then
-# this file twice as the table's owner.
+# this file twice as the tables' owner.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -552,5 +559,119 @@ data:
 
     grant usage on schema health to health_reader;
     grant select on all tables in schema health to health_reader;
+
+    -- Schema `perf`: Necronia2.0's performance records (perf_run, one row per
+    -- producer run, perf.json schema 1; tables.sql creates the table). A result
+    -- is a row id with a parameter map and a metric map, so a new suite, row,
+    -- parameter or metric is new data here, never a new column or view.
+    -- It reads through health.num, health.bool, health.elements and
+    -- health.entries, so it is built after them; `drop schema health cascade`
+    -- above takes these views with it, and this section rebuilds them.
+    drop schema if exists perf cascade;
+    create schema perf;
+
+    -- One row per record. env_group is the environment results compare within:
+    -- class, machine, CPU model, pinning, runtime major.minor. Every view that
+    -- compares joins on it; nothing compares across groups (the workstation is
+    -- never a ratio of CI).
+    create view perf.run as
+    select
+      p.repo, p.uid, p.suite, p.run_kind, p.env_class, p.branch, p.branch_kind, p.commit_sha, p.dirty, p.milestone,
+      p.started_at as at,
+      concat_ws(' · ', p.env_class, p.record #>> '{environment,machine}', p.record #>> '{environment,cpuModel}',
+                coalesce('host ' || (p.record #>> '{environment,pinning,host}'), 'unpinned'),
+                substring(p.record #>> '{environment,runtime}' from '^\.NET [0-9]+\.[0-9]+')) as env_group,
+      case when jsonb_typeof(p.record #> '{run,pairing}') = 'object' then p.record #> '{run,pairing}' end as pairing,
+      'https://github.com/' || p.repo || '/actions/runs/' || health.num(p.record #> '{run,github,runId}')
+        || coalesce('/attempts/' || health.num(p.record #> '{run,github,runAttempt}'), '') as run_url,
+      p.record
+    from public.perf_run p;
+
+    -- One row per result, in the record's order. `at` is the record's start; a
+    -- result's own startedUtc stays in `result`.
+    create view perf.result as
+    select
+      r.repo, r.uid, r.suite, r.run_kind, r.env_class, r.env_group, r.branch, r.commit_sha, r.dirty, r.milestone,
+      r.at, r.pairing, r.run_url,
+      x.position, x.result ->> 'scenario' as scenario, x.result ->> 'id' as row_id,
+      coalesce(health.num(x.result -> 'series'), 1)::int as series, x.result ->> 'definition' as definition,
+      case when jsonb_typeof(x.result -> 'parameters') = 'object' then x.result -> 'parameters' else '{}' end
+        as parameters,
+      coalesce(health.bool(x.result -> 'valid'), false) as valid,
+      (select string_agg(c #>> '{}', ', ') from health.elements(x.result -> 'invalid') c) as invalid,
+      (select string_agg(c #>> '{}', ', ') from health.elements(x.result -> 'warnings') c) as warnings,
+      x.result
+    from perf.run r
+    cross join lateral health.elements(r.record -> 'results') with ordinality as x(result, position);
+
+    -- One row per result and metric: the long form every panel reads. headline
+    -- marks the two or three metrics a row is read by.
+    create view perf.metric as
+    select
+      r.repo, r.uid, r.suite, r.scenario, r.row_id, r.series, r.definition, r.parameters,
+      r.run_kind, r.env_class, r.env_group, r.branch, r.commit_sha, r.dirty, r.milestone, r.at, r.pairing,
+      r.valid, r.warnings,
+      m.key as metric, health.num(m.value -> 'value') as value, m.value ->> 'unit' as unit,
+      coalesce(m.value ->> 'better', 'none') as better, coalesce(health.bool(m.value -> 'headline'), false) as headline
+    from perf.result r
+    cross join lateral health.entries(r.result -> 'metrics') m;
+
+    -- One row per result and condition: what the environment did during it
+    -- (temperature, CPU pressure before, after and at peak, exit codes).
+    create view perf.condition as
+    select
+      r.repo, r.uid, r.suite, r.scenario, r.row_id, r.series,
+      r.run_kind, r.env_class, r.env_group, r.branch, r.commit_sha, r.dirty, r.milestone, r.at, r.valid,
+      c.key as condition, health.num(c.value -> 'value') as value, c.value ->> 'unit' as unit
+    from perf.result r
+    cross join lateral health.entries(r.result -> 'conditions') c;
+
+    -- One row per result and parameter: the drill-down's variables and the
+    -- scaling panel's x axis. number is null for a parameter that is not one.
+    create view perf.parameter as
+    select
+      r.repo, r.suite, r.scenario, r.row_id, r.series, r.uid, r.env_class, r.env_group, r.at, r.valid,
+      p.key as name, p.value #>> '{}' as value, health.num(p.value) as number
+    from perf.result r
+    cross join lateral health.entries(r.parameters) p;
+
+    -- The value each series is read against, per environment group, for the
+    -- newest ritual: on the workstation the median of that milestone's ritual
+    -- runs on the candidate arm (a record without pairing counts as one); in CI
+    -- the median of the group's nightlies and dispatches in the 7 days before
+    -- that ritual (Necronia2.0 R313 O3: the nightly measures the milestone
+    -- branch). Valid, clean results only. Never across groups.
+    create view perf.reference as
+    with newest as (
+      select distinct on (repo) repo, milestone, at
+      from perf.run
+      where run_kind = 'ritual'
+      order by repo, at desc)
+    select
+      m.repo, m.suite, m.row_id, m.series, m.metric, m.env_group, n.milestone,
+      percentile_cont(0.5) within group (order by m.value) as value, count(*) as samples
+    from perf.metric m
+    join newest n on n.repo = m.repo
+    where m.valid and m.value is not null and not m.dirty
+      and ((m.run_kind = 'ritual' and m.milestone = n.milestone
+            and coalesce(m.pairing ->> 'arm', 'candidate') = 'candidate')
+        or (m.run_kind in ('nightly', 'dispatch') and m.at > n.at - interval '7 days' and m.at <= n.at))
+    group by m.repo, m.suite, m.row_id, m.series, m.metric, m.env_group, n.milestone;
+
+    -- The spread on unchanged code: every series measured three times or more
+    -- on one commit in one group. Its cv says how large a change the group's
+    -- trend can show.
+    create view perf.noise as
+    select
+      repo, suite, row_id, series, metric, env_group, commit_sha, count(*) as samples,
+      avg(value) as mean, stddev_samp(value) as stddev, stddev_samp(value) / nullif(avg(value), 0) as cv,
+      max(value) / nullif(min(value), 0) as max_over_min, max(at) as last_at
+    from perf.metric
+    where valid and value is not null and not dirty
+    group by repo, suite, row_id, series, metric, env_group, commit_sha
+    having count(*) >= 3;
+
+    grant usage on schema perf to health_reader;
+    grant select on all tables in schema perf to health_reader;
 
     commit;
