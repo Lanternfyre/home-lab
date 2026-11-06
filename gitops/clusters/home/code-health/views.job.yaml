@@ -1,17 +1,21 @@
-# Applies views.configmap.yaml's SQL to the code-health database as
-# health_owner, after every sync of this Application.
+# Applies tables.configmap.yaml's SQL, then views.configmap.yaml's, to the
+# code-health database as health_owner, after every sync of this Application.
+# Tables first, so a table the views read (perf_run) exists before them.
 #
 # Why a hook Job: postInitApplicationSQL ran once, when the cluster was
 # created, and never runs again; and CNPG 1.29 has no declarative way to run
 # SQL on a live cluster (its Database resource manages extensions, schemas,
 # foreign servers and FDWs, not views). An Argo CD PostSync hook runs after
-# each sync of this Application, so a change to the views reaches the database
-# with the commit that makes it, and only once the Cluster is healthy.
+# each sync of this Application, so a change to the tables or views reaches
+# the database with the commit that makes it, and only once the Cluster is
+# healthy.
 #
-# Safe to repeat: the SQL rebuilds schema `health` in one transaction and
-# never writes health_run. A failed run fails the sync, and the Application's
-# retry runs it again; with lock_timeout in the SQL, a long Grafana query makes
-# it fail and retry rather than wait.
+# Safe to repeat: tables.sql creates only what is missing and re-applies its
+# grants; views.sql rebuilds schemas `health` and `perf` in one transaction.
+# Neither writes a row. ON_ERROR_STOP stops at the first error, so views.sql
+# never runs after a failed tables.sql. A failed run fails the sync, and the
+# Application's retry runs it again; with lock_timeout in the SQL, a long
+# Grafana query makes it fail and retry rather than wait.
 #
 # BeforeHookCreation keeps the last run's Job and pod until the next sync, so
 # its log can be read:
@@ -46,7 +50,8 @@ spec:
           # 2026-11-05), so the nodes already hold it.
           image: ghcr.io/cloudnative-pg/postgresql:18.3-system-trixie
           imagePullPolicy: IfNotPresent
-          command: [psql, -X, -v, ON_ERROR_STOP=1, -f, /sql/views.sql]
+          command: [psql, -X, -v, ON_ERROR_STOP=1,
+                    -f, /sql/tables.sql, -f, /sql/views.sql]
           env:
             - name: PGHOST
               value: code-health-rw
@@ -87,6 +92,11 @@ spec:
               mountPath: /sql
               readOnly: true
       volumes:
+        # Both files in one directory: tables.sql and views.sql.
         - name: sql
-          configMap:
-            name: code-health-views
+          projected:
+            sources:
+              - configMap:
+                  name: code-health-tables
+              - configMap:
+                  name: code-health-views

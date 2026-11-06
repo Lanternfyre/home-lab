@@ -1,4 +1,6 @@
-# The code-health database: Necronia2.0's CI health records, one row per run.
+# The code-health database: Necronia2.0's CI health records (health_run, one
+# row per run) and its performance records (perf_run, one row per producer
+# run, from tables.configmap.yaml).
 #
 # Its own CNPG Cluster in its own namespace (Necronia2.0 R134 G8), so a CI
 # credential and the runner egress rule that goes with it reach this database
@@ -14,7 +16,9 @@
 # NO protect label, deliberately: the history can be rebuilt from the silo's
 # copies of the same records (reports/necronia2.0/health/, which Necronia2.0's
 # health-backfill workflow, planned with the sink, re-inserts) and, after that,
-# from the 90-day `health-<run>` workflow artifacts. See the claims' entries in
+# from the 90-day `health-<run>` workflow artifacts. perf_run likewise: CI's
+# records from the silo's reports/necronia2.0/perf/, the ritual's from
+# Necronia2.0's git, where they are committed. See the claims' entries in
 # ../protected-volumes.yaml.
 apiVersion: postgresql.cnpg.io/v1
 kind: Cluster
@@ -26,7 +30,8 @@ spec:
 
   storage:
     # Per instance. Years of records plus WAL headroom: a record is about 88 KB
-    # before jsonb compression, under 1 GB a year by Necronia2.0's estimate.
+    # before jsonb compression, under 1 GB a year by Necronia2.0's estimate;
+    # perf_run adds about 20 MB a year (its R313).
     # CNPG refuses to start PostgreSQL on a full volume (postgres-ha,
     # 2026-09-25), so pg_wal is bounded below.
     size: 4Gi
@@ -88,9 +93,11 @@ spec:
 
   bootstrap:
     # ⚠️ initdb and its SQL run EXACTLY ONCE, when the cluster is first created.
-    # Editing the schema here later changes nothing in a running cluster. Views
-    # over health_run are applied as health_owner by views.job.yaml, a PostSync
-    # hook; a later schema change goes the same way, not into this file.
+    # Editing the schema here later changes nothing in a running cluster. Later
+    # tables (tables.configmap.yaml: perf_run) and the views over both
+    # (views.configmap.yaml) are applied as health_owner by views.job.yaml, a
+    # PostSync hook; a later schema change goes the same way, not into this
+    # file.
     initdb:
       database: code_health
       owner: health_owner

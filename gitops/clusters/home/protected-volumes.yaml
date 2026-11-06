@@ -517,12 +517,15 @@ unprotected:
     source: CNPG Cluster/code-health (code-health/code-health.cluster.yaml)
     backup: NONE                 # deliberate, see reason
     reason: >-
-      Necronia2.0's CI health records, one row per run; the cluster's first
-      instance. Losing one instance's volume costs a re-clone from the other.
-      Losing both costs a rebuild: CI writes every record to the silo too
-      (ci-reports, reports/necronia2.0/health/), and Necronia2.0's
-      health-backfill workflow (planned with the sink) re-inserts them; after
-      that the 90-day `health-<run>` workflow artifacts hold the same records.
+      Necronia2.0's CI health records, one row per run, and its performance
+      records (perf_run); the cluster's first instance. Losing one instance's
+      volume costs a re-clone from the other. Losing both costs a rebuild: CI
+      writes every record to the silo too (ci-reports,
+      reports/necronia2.0/health/), and Necronia2.0's health-backfill workflow
+      (planned with the sink) re-inserts them; after that the 90-day
+      `health-<run>` workflow artifacts hold the same records. perf_run
+      rebuilds the same way from reports/necronia2.0/perf/, and the ritual's
+      performance records are committed in Necronia2.0's git.
     warning: >-
       The rebuild source is itself disposable: silo-data calls reports/
       regenerable and has no backup, and both instances and the silo share this
