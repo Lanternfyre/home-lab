@@ -250,7 +250,7 @@ protected:
 # and declined" from "nobody looked at it".
   - namespace: silo
     claim: silo-data
-    size: 20Gi
+    size: 50Gi                   # grown from 20Gi on 2026-11-07
     class: qnap-iscsi
     source: gitops/clusters/home/apps/silo/manifests/silo-data.pvc.yaml
     backup: NONE                 # 2026-08-26 — see warning
@@ -261,7 +261,8 @@ protected:
       quality moved over time, and they cannot be recomputed from source at any
       price. Losing them does not break a build; it silently turns every
       regression gate into a no-op, because a gate with no baseline compares
-      against nothing and passes.
+      against nothing and passes. The `drop` bucket (since 2026-11-07) is
+      disposable: uploads from outside, deleted by a lifecycle rule after 14 days.
     warning: >-
       Registered on creation, 2026-08-26. NOT BACKED UP — like everything else in
       this cluster since the three ad-hoc CronJobs were removed on 2026-08-15.
