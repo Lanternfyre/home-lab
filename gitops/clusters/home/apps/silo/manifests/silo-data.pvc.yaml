@@ -13,6 +13,11 @@
 # next CI run; baseline/ does not — the NDepend .ndar, the BADASS history and the
 # Stryker baseline are the record of how quality moved over time and cannot be
 # recomputed from source. Registered in protected-volumes.yaml accordingly.
+#
+# Grown from 20Gi to 50Gi on 2026-11-07, to make room for the `drop` bucket
+# (uploads from outside; see docs/operate/silo-upload-drop.md). qnap-iscsi
+# expands online: change the size here and the LUN and filesystem follow without
+# a restart. Shrinking is impossible, as with any PVC.
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
@@ -28,5 +33,5 @@ spec:
     - ReadWriteOnce
   resources:
     requests:
-      storage: 20Gi
+      storage: 50Gi
   storageClassName: qnap-iscsi
