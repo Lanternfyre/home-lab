@@ -5,7 +5,7 @@
 # ⚠️ WRITES to Silo: the bucket quota, the lifecycle rule and service accounts.
 # Unlike the other scripts here, this one is not read-only.
 #
-#     scripts/silo-drop-key.sh <label> [--days 3] [--quota 10GiB]
+#     scripts/silo-drop-key.sh <label> [--days 3] [--quota SIZE]
 #     scripts/silo-drop-key.sh --list
 #     scripts/silo-drop-key.sh --revoke <label>
 #
@@ -13,10 +13,14 @@
 # '-', up to 15 characters. The key's access key is `drop-<label>`, and it can
 # only write under drop/<label>/.
 #
+# --quota sets the bucket's quota, shared by every key (for example 20GiB).
+# Without it, a quota already set is kept, and a bucket with none gets 10GiB.
+#
 # Runbook: docs/operate/silo-upload-drop.md.
 #
-# Needs kubectl access to the `silo` namespace. The root credential is read
-# from the environment INSIDE the Silo pod and never leaves it.
+# Needs kubectl access to the `silo` namespace, jq, and GNU date (Linux; on
+# macOS install coreutils). The root credential is read from the environment
+# INSIDE the Silo pod and never leaves it.
 
 set -euo pipefail
 
@@ -26,10 +30,11 @@ PARENT=drop-keys
 HOST=drop.lanternfyre.dev
 EXPIRE_DAYS=14            # lifecycle rule: uploads are deleted this long after they land
 DAYS=3
-QUOTA=10GiB
+QUOTA=""                  # empty: keep the bucket's quota, or set DEFAULT_QUOTA if it has none
+DEFAULT_QUOTA=10GiB
 
 die()   { printf 'error: %s\n' "$*" >&2; exit 1; }
-usage() { sed -n '2,19p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exit }' "$0"; exit "${1:-0}"; }
 
 # Run mc inside the Silo pod against its own server. Arguments are passed
 # through positionally, so nothing is re-split by the remote shell.
@@ -65,9 +70,15 @@ case $MODE in
     [ -n "$LABEL" ] || die "--revoke needs a label"
     valid_label "$LABEL"
     pod_mc admin user svcacct rm local "drop-$LABEL"
-    echo "Revoked drop-$LABEL. Requests signed with it now fail with InvalidAccessKeyId."
+    if pod_mc admin user svcacct info local "drop-$LABEL" >/dev/null 2>&1; then
+      die "drop-$LABEL still exists after removing it"
+    fi
+    echo "Revoked drop-$LABEL: it no longer exists, and requests signed with it are refused."
     exit 0 ;;
 esac
+
+command -v jq >/dev/null || die "needs jq"
+date -u -d '+1 day' >/dev/null 2>&1 || die "needs GNU date (date -d); on macOS install coreutils"
 
 [ -n "$LABEL" ] || usage 1
 valid_label "$LABEL"
@@ -85,22 +96,39 @@ if pod_mc admin user svcacct info local "drop-$LABEL" >/dev/null 2>&1; then
   die "drop-$LABEL already exists. Revoke it first: $0 --revoke $LABEL"
 fi
 
-# ── 2. Quota: set it, then read it back and refuse a zero ────────────────────
+# ── 2. Quota: keep or set it, then read it back and refuse a zero ────────────
 # A hard quota is what stops a leaked key from filling the volume that also
 # holds the CI baselines. The scanner enforces it, so writes can overshoot it
-# briefly before they are refused.
-pod_mc quota set "local/$BUCKET" --size "$QUOTA" >/dev/null
-quota_bytes=$(pod_mc quota info "local/$BUCKET" --json | jq -r '.quota // 0')
-[ "$quota_bytes" -gt 0 ] || die "quota on $BUCKET reads back as 0 after setting it to $QUOTA; not minting a key"
+# briefly before they are refused. An existing quota is left alone unless
+# --quota is given, so minting a key never undoes a raise.
+quota_bytes() { pod_mc quota info "local/$BUCKET" --json | jq -r '.quota // 0'; }
+if [ -n "$QUOTA" ]; then
+  pod_mc quota set "local/$BUCKET" --size "$QUOTA" >/dev/null
+elif [ "$(quota_bytes)" -eq 0 ]; then
+  pod_mc quota set "local/$BUCKET" --size "$DEFAULT_QUOTA" >/dev/null
+fi
+quota=$(quota_bytes)
+[ "$quota" -gt 0 ] || die "the quota on $BUCKET reads back as 0; not minting a key"
 
 # ── 3. Lifecycle: add the expiry rule if the bucket has none ─────────────────
 # `ilm rule ls` exits 1 when the bucket has no lifecycle configuration. Only
 # then is a rule added: `ilm rule add` appends, so running it every time would
-# pile up duplicates.
-if ! pod_mc ilm rule ls "local/$BUCKET" >/dev/null 2>&1; then
+# pile up duplicates. Then the rules must include an expiry after exactly
+# EXPIRE_DAYS; any other rule set is reported, not changed.
+ilm_json() { pod_mc ilm rule ls "local/$BUCKET" --json 2>/dev/null; }
+if ! ilm_json >/dev/null; then
   pod_mc ilm rule add --expire-days "$EXPIRE_DAYS" "local/$BUCKET" >/dev/null
 fi
-pod_mc ilm rule ls "local/$BUCKET" >/dev/null 2>&1 || die "no lifecycle rule on $BUCKET after adding one; not minting a key"
+# Field names are matched case-insensitively, so this does not depend on how
+# this mc release capitalises its JSON.
+has_expiry=$(ilm_json | jq -s --argjson d "$EXPIRE_DAYS" '
+  [ .[] | .. | objects | to_entries[] | select(.key | ascii_downcase == "expiration")
+    | .value | objects | to_entries[] | select(.key | ascii_downcase == "days") | .value ]
+  | any(. == $d)') || has_expiry=false
+if [ "$has_expiry" != true ]; then
+  pod_mc ilm rule ls "local/$BUCKET" >&2 || true
+  die "no ${EXPIRE_DAYS}-day expiry rule on $BUCKET (rules above); not minting a key"
+fi
 
 # ── 4. Mint the key ──────────────────────────────────────────────────────────
 # The secret is generated here, letters and digits only: tools interpolate S3
@@ -127,7 +155,7 @@ pod_mc admin user svcacct add local "$PARENT" \
 cat <<EOF
 
 Minted drop-$LABEL, valid until $expiry.
-Bucket quota: $QUOTA. Uploads are deleted ${EXPIRE_DAYS} days after they land.
+Bucket quota: $(( quota / 1073741824 )) GiB, shared by every drop key. Uploads are deleted ${EXPIRE_DAYS} days after they land.
 Revoke early with: $0 --revoke $LABEL
 
 ── Send everything below the line to the uploader, through a 1Password share ──
@@ -149,6 +177,9 @@ aws --profile drop --endpoint-url https://$HOST s3 cp YOUR-FILE s3://$BUCKET/$LA
 
 You can upload but not list or download, so a successful upload ends with
 "upload: YOUR-FILE to s3://$BUCKET/$LABEL/YOUR-FILE" and nothing else.
-If it fails with a checksum error, set AWS_REQUEST_CHECKSUM_CALCULATION=when_required
-in the environment and run the upload again.
+If it fails with a checksum error, set this in the same terminal, then run the
+upload again:
+  Linux or macOS:      export AWS_REQUEST_CHECKSUM_CALCULATION=when_required
+  Windows PowerShell:  \$env:AWS_REQUEST_CHECKSUM_CALCULATION = "when_required"
+  Windows cmd:         set AWS_REQUEST_CHECKSUM_CALCULATION=when_required
 EOF
