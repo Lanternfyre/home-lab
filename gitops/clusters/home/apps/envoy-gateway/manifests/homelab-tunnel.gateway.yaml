@@ -192,6 +192,9 @@ spec:
 # ── What is attached today ──────────────────────────────────────────────────
 #   authentik.techyon.dev -> authentik/authentik-tunnel  (the IdP; ungated by
 #                            necessity, and authentik owns its own auth anyway)
+#   drop.lanternfyre.dev  -> silo/silo-drop-tunnel       (since 2026-11-07;
+#                            PUT/POST/DELETE on /drop only, every request
+#                            signed by an expiring write-only key)
 #
 # `canary.techyon.dev` was the only other route and was retired with the canary
 # on 2026-09-05. It had served its purpose: proving the tunnel path end to end

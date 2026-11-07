@@ -1,0 +1,83 @@
+# drop.lanternfyre.dev: a PUBLIC, WRITE-ONLY path into ONE Silo bucket.
+#
+# This is how someone outside the house uploads files into Silo: they get an
+# expiring key from scripts/silo-drop-key.sh and run `aws s3 cp` against this
+# hostname. Runbook: docs/operate/silo-upload-drop.md.
+#
+# ── Why this is safe on the ungated tunnel Gateway ──────────────────────────
+# homelab-tunnel publishes to the whole internet with no sign-in gate, so every
+# route on it must say why it is safe unauthenticated. Here:
+#
+#   * Every request still needs a valid S3 signature. Without a key, Silo
+#     answers AccessDenied. The keys are write-only (policy drop-put), each is
+#     limited to its own drop/<label>/ prefix, and each expires on its own.
+#   * Only PUT, POST and DELETE on /drop are routed. GET and HEAD are not, so
+#     Silo cannot be turned into a public file host for whatever gets
+#     uploaded. Every other path, including other buckets and /minio/admin,
+#     gets Envoy's 404 and never reaches Silo.
+#   * The bucket has a hard quota and a 14-day expiry rule, both set by the
+#     script before it mints a key, so a leaked key cannot fill the volume
+#     that also holds the CI baselines.
+#
+# 🔴 Do NOT widen the methods or the path. The anonymous read grant on
+# ci-reports/reports/ (customCommands in ../chart-values.yaml) is acceptable
+# only because the S3 API is LAN-only. Route this whole host and those reports
+# become readable by anyone on the internet, and the admin API with them.
+#
+# ── Why it works for a 2 GB file ────────────────────────────────────────────
+# Cloudflare refuses any request body over 100 MB (Free and Pro plans). A
+# multipart upload sends the file as many requests of one part each, so the cap
+# applies per part, not per file. The script tells the uploader's aws CLI to use
+# 32 MB parts. A single PUT over 100 MB gets a 413 from Cloudflare and never
+# reaches the cluster.
+#
+# ── Why lanternfyre.dev ─────────────────────────────────────────────────────
+# cloudflared already has a wildcard rule for *.lanternfyre.dev
+# (cloudflare-tunnel/cloudflared.configmap.yaml), so attaching this route is the
+# whole change. A techyon.dev name would also need its own ingress entry there.
+#
+# ⚠️ SigV4 signs the Host header. A key works on either hostname, because the
+# client signs for whichever one it calls. A PRESIGNED URL does not: one made
+# for s3.lab.techyon.dev fails here with SignatureDoesNotMatch, and the other
+# way round.
+#
+# ⚠️ external-dns runs with `policy: upsert-only`. Deleting this route stops the
+# routing but leaves the DNS record behind; remove it by hand in Cloudflare.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: silo-drop-tunnel
+  namespace: silo
+  annotations:
+    # 🔴 REQUIRED ON EVERY ROUTE ON THIS GATEWAY. Without it the CNAME is
+    # created unproxied and resolves to nothing a client can reach. See
+    # ../../authentik/manifests/authentik-tunnel.httproute.yaml.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  parentRefs:
+    - name: homelab-tunnel
+      namespace: gateway-envoy
+  hostnames:
+    - drop.lanternfyre.dev
+  rules:
+    # Path-style S3: /drop/<key>. PathPrefix matches whole path segments, so
+    # /drop matches /drop and /drop/..., but not /dropbox.
+    #   PUT    put an object, upload one part
+    #   POST   start or complete a multipart upload
+    #   DELETE abort a multipart upload (the policy grants no DeleteObject)
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /drop
+          method: PUT
+        - path:
+            type: PathPrefix
+            value: /drop
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /drop
+          method: DELETE
+      backendRefs:
+        - name: silo
+          port: 9000
