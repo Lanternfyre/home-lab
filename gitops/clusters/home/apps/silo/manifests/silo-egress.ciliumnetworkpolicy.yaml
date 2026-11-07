@@ -22,6 +22,28 @@ spec:
   endpointSelector: {}
 
   egress:
+    # 🔴 The chart's own setup Job, `silo-post-job`, which runs in THIS namespace
+    # on every sync and creates the buckets, policies and users from
+    # chart-values.yaml by talking to the `silo` Service on :9000.
+    #
+    # `endpointSelector: {}` puts that Job under this default-deny too, and no
+    # rule here let it reach Silo. It went unnoticed because the app had not
+    # synced since 2026-08-27, before this policy existed: the first values
+    # change after it would have hung `mc alias set` for 30 attempts and failed
+    # the sync. Found 2026-11-07, while adding the `drop` bucket.
+    #
+    # toEndpoints, not toServices: under socket LB the connection to the Service
+    # is rewritten to the Silo pod before policy sees it. Service port and
+    # container port are both 9000, so the port is the same either way.
+    - toEndpoints:
+        - matchLabels:
+            app: silo
+            release: silo
+      toPorts:
+        - ports:
+            - port: "9000"
+              protocol: TCP
+
     # ⚠️ REQUIRED for the toFQDNs rule below to match anything. Without the L7
     # `rules.dns` block Cilium never sees the answers and every name-based rule
     # silently matches nothing -- which surfaces as a hang, not an error.
