@@ -2,7 +2,7 @@
 
 This runbook is for the operator, when someone outside the house needs to send you files too large for email: an asset pack, a dump, a video. Silo is the cluster's S3-compatible object store, a fork of MinIO. The uploader sends files to `drop.lanternfyre.dev` with a key that you mint and that expires on its own, and you collect them from the LAN. Nothing in the cluster changes for each occasion: you run one script per person.
 
-**Status:** built on 2026-11-07, on branch `feat/silo-drop`. **Unverified** until it is merged and the end-to-end check has run: a 300 MB upload through Cloudflare, and every refusal under [What the drop refuses](#what-the-drop-refuses).
+**Status:** in service since 2026-11-07 (PR #311). Verified that day with a test key and AWS CLI 2.39.6: a 300 MB file went up through Cloudflare in 38 parts in 26 seconds, and came back byte-identical through the terminal steps below. Every refusal under [What the drop refuses](#what-the-drop-refuses) was checked, and a revoked key got `InvalidAccessKeyId`. Not yet tested: Windows, the console download, and what happens when the quota is reached.
 
 ## What the drop is
 
@@ -10,7 +10,7 @@ This runbook is for the operator, when someone outside the house needs to send y
 - **One folder per key.** A key minted for `alex` writes only under `drop/alex/` (S3 calls this a prefix), so two uploaders can never overwrite each other's files.
 - **Temporary.** Each key expires after 3 days unless you ask for more, at most 14. A lifecycle rule on the bucket deletes every file 14 days after it lands, so copy out what you want to keep.
 - **Capped.** The whole bucket has a hard quota, 10 GiB unless you raise it, shared by every key. Silo's background scanner checks the quota periodically, so an upload can overshoot it briefly before writes are refused.
-- **Large files work, through `aws s3 cp`.** Cloudflare refuses any single request over 100 MB. `aws s3 cp` sends a large file as a multipart upload: the file goes up in parts of 32 MB, one request each, and Silo joins them at the end. A 2 GB file is about 64 requests, each under the cap. A browser upload, or any tool that sends the file in one request, fails at Cloudflare with a 413.
+- **Large files work, through `aws s3 cp`.** Cloudflare refuses any single request over 100 MB. `aws s3 cp` sends a large file as a multipart upload: the file goes up in parts of 8 MB, one request each, and Silo joins them at the end. A 2 GB file is about 256 requests, each well under the cap. A browser upload, or any tool that sends the file in one request, fails at Cloudflare with a 413.
 
 ## Give someone a key
 
@@ -74,6 +74,7 @@ scripts/silo-drop-key.sh --revoke <label>  # stops that key at once
 | `InvalidAccessKeyId` | The key expired or was revoked. Mint a new one and send it. |
 | `SignatureDoesNotMatch` | The secret was mangled when pasted, or the endpoint is not `https://drop.lanternfyre.dev`. Send the block again and ask them to paste it unchanged. |
 | An error naming `drop.drop.lanternfyre.dev` | The `s3.addressing_style path` line was skipped, so the CLI put the bucket name into the hostname. Ask them to run that line. |
+| `chunk too big: choose chunk size <= 16MiB` | Their `s3.multipart_chunksize` is set above 16MB. Silo refuses bigger parts; ask them to run that line as given (8MB). |
 | HTTP 413 | The file went up in one request over 100 MB, from a tool other than `aws s3 cp` (`aws s3api put-object` does this). Ask them to use the `aws s3 cp` line as given. |
 | HTTP 404 | The tool tried to read or list, and the drop doesn't route either. `rclone` and `mc` both check the bucket first; ask them to use `aws s3 cp`. |
 | A checksum error | Newer AWS CLI versions add checksums to every upload by default. Ask them to set the variable from the block and retry. |
