@@ -28,8 +28,9 @@
 # Cloudflare refuses any request body over 100 MB (Free and Pro plans). A
 # multipart upload sends the file as many requests of one part each, so the cap
 # applies per part, not per file. The script tells the uploader's aws CLI to use
-# 32 MB parts. A single PUT over 100 MB gets a 413 from Cloudflare and never
-# reaches the cluster.
+# 8 MB parts: Silo itself refuses any part sent as one chunk over 16 MiB, which
+# 32 MB parts were (measured 2026-11-07). A single PUT over 100 MB gets a 413
+# from Cloudflare and never reaches the cluster.
 #
 # ── Why lanternfyre.dev ─────────────────────────────────────────────────────
 # cloudflared already has a wildcard rule for *.lanternfyre.dev

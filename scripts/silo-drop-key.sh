@@ -152,6 +152,11 @@ pod_mc admin user svcacct add local "$PARENT" \
   --name "drop-$LABEL" --description "drop upload key, prefix $BUCKET/$LABEL/" >/dev/null
 
 # ── 5. What to send ──────────────────────────────────────────────────────────
+# Part size 8MB, the AWS CLI's own default, set explicitly so a profile default
+# cannot change it. Two ceilings bound it: Cloudflare refuses a request over
+# 100 MB, and Silo refuses an aws-chunked chunk over 16 MiB ("chunk too big:
+# choose chunk size <= 16MiB"). AWS CLI 2.39.6 sends each part as ONE such
+# chunk, so 32MB parts failed on every UploadPart (measured 2026-11-07).
 cat <<EOF
 
 Minted drop-$LABEL, valid until $expiry.
@@ -169,7 +174,7 @@ aws configure set aws_access_key_id drop-$LABEL --profile drop
 aws configure set aws_secret_access_key $secret --profile drop
 aws configure set region us-east-1 --profile drop
 aws configure set s3.addressing_style path --profile drop
-aws configure set s3.multipart_chunksize 32MB --profile drop
+aws configure set s3.multipart_chunksize 8MB --profile drop
 
 Upload a file (repeat for each one):
 
