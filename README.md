@@ -50,6 +50,7 @@ any line here.
 - [Restoring data](docs/operate/restore.md): what can be restored today, and how. **Unverified:** the docs disagree on whether backups run; the runbook records what a live check found on 2026-10-25. Check the cluster before relying on a restore.
 - [Standing warnings](docs/operate/standing-warnings.md): the facts that cause damage when forgotten, and the procedures that go with them: storage, releasing a NodePort, DNS, CI runners, sign-in, Silo, NetBird, the edge game ports, and pairing a device with auq.
 - [Ansible](ansible/README.md): node configuration as code, and why there is no state file.
+- [Let someone upload files into Silo from outside](docs/operate/silo-upload-drop.md): mint an expiring write-only key for `drop.lanternfyre.dev`, then collect the files.
 - Read-only diagnostics in `scripts/`: protected-volume audit, dashboard-query audit, edge-exposure audit, node DNS diagnosis.
 
 ## Architecture and security
@@ -80,6 +81,7 @@ scripts/audit-protected-volumes.py   read-only; verifies PV protection + Trident
 scripts/audit-dashboard-queries.py   read-only; every dashboard expr parsed + metric names checked
 scripts/audit-edge-exposure.py       read-only; what the edge node publishes, and whether each published namespace is contained
 scripts/diagnose-node-dns.sh         read-only; diagnoses node DNS, prints a verdict
+scripts/silo-drop-key.sh             WRITES; mints, lists and revokes expiring upload keys for Silo's drop bucket
 ```
 
 Every app directory generates **two** Applications: `<name>` (Helm) and
