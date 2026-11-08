@@ -40,6 +40,11 @@ spec:
   hostnames:
     - silo.lab.techyon.dev
   rules:
-    - backendRefs:
+    # Console downloads stream through this route, and Envoy's 15s default cut a
+    # 1.5 GiB one at 1.3 GB on 2026-11-08 (access log: 15001 ms, flag UT).
+    # ⚠️ A zero-valued duration means NO TIMEOUT in Gateway API. Deleting this
+    # restores the 15s cut, not a sensible default.
+    - timeouts: {request: 0s}
+      backendRefs:
         - name: silo-console
           port: 9001
