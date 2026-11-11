@@ -10,6 +10,11 @@
 #                      kubelet never sees.
 #   arc-linux          no privileged container
 #   arc-linux-xl       no privileged container
+#   arc-linux-android  no privileged container
+#   arc-linux-gpu      no privileged container. The GPU comes from
+#                      runtimeClassName: nvidia and an nvidia.com/gpu request,
+#                      not from privilege or hostPath, so the rules below hold
+#                      for it unchanged (added 2026-11-11).
 #
 # (Renamed 2026-09-16 from arc-linux-ndepend / arc-linux-mutation. Only this
 # comment changed: the policy matches on NAMESPACE and on a container literally

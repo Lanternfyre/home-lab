@@ -1,8 +1,10 @@
 # arc-runners-lanternfyre
 #
-# Apps in this namespace: arc-lanternfyre-mutation, arc-lanternfyre-ndepend, arc-lanternfyre.
+# Apps in this namespace: arc-lanternfyre, arc-lanternfyre-dind, arc-lanternfyre-xl,
+# arc-lanternfyre-android, arc-lanternfyre-gpu. (This line listed the -mutation and
+# -ndepend sets until 2026-11-11; both were replaced on 2026-09-16.)
 #
-# ⚠️ NOT enforced. arc-lanternfyre-ndepend runs a privileged dind sidecar; NDepend licences by MAC + uppercase machine name.
+# ⚠️ NOT enforced. arc-lanternfyre-dind runs a privileged dind sidecar; NDepend licences by MAC + uppercase machine name.
 # PSA cannot grant a per-field exception, so `privileged` is the only level that
 # admits these pods. The things that DO matter here move to Kyverno (H3).
 apiVersion: v1
