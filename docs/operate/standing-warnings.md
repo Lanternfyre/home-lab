@@ -59,7 +59,7 @@ Terms such as KPR and the storage proof are in the [glossary](../domain/glossary
 
 ## CI runners (ARC)
 
-- **Specialist runner labels are derived from one org variable.** `CI_RUNNER` holds the general label (`arc-linux`), and workflows add a suffix for the rest: `-dind`, `-xl`, `-android`.
+- **Specialist runner labels are derived from one org variable.** `CI_RUNNER` holds the general label (`arc-linux`), and workflows add a suffix for the rest: `-dind`, `-xl`, `-android`, `-gpu`.
 - **To fall back to GitHub-hosted runners, delete `CI_RUNNER`. Never set it to `ubuntu-latest`.** That yields `ubuntu-latest-dind`, a label no runner will ever claim: an infinite queue with no error anywhere. Deleting it makes jobs that can run hosted do so, while jobs that need the cluster queue visibly. For the same reason, deleting `CI_RUNNER` is the outage switch, never cleanup.
   ```bash
   gh api -X DELETE /orgs/Lanternfyre/actions/variables/CI_RUNNER
@@ -72,6 +72,7 @@ Terms such as KPR and the storage proof are in the [glossary](../domain/glossary
   done
   ```
 - **`arc-linux-xl` had never taken a job as of 2026-09-16.** Its only consumer is the weekly `mutation.yml`, which no PR can trigger. If its first run queues instead of starting, suspect the scale set, not the suite.
+- **Once the GPU runbook has run, k8s-5's kernel and NVIDIA packages are held, and must stay held.** `ssh k8s-5.home apt-mark showhold` tells you whether it has run: it lists `linux-generic` and the `nvidia-*-580` packages after, and nothing before (nothing on 2026-11-11). The kernel, Canonical's prebuilt nvidia module and the driver userspace can only move together. Never `apt-mark unhold` them or `apt upgrade` them by hand on k8s-5: move them with `ansible-playbook playbooks/51-gpu-node.yml --ask-become-pass -e nvidia_gpu_move=true`, which installs all three and refuses to reboot into a kernel without its module. A GPU lost this way does not fail any job: `arc-linux-gpu` jobs queue with no error, and only the `NoSchedulableGpu` alert says so. Details: [Give k8s-5's GPU to a CI runner](gpu-runner.md#moving-the-driver-or-the-kernel-later).
 
 ## Sign-in
 

@@ -593,9 +593,14 @@ kept as-is; recorded so it reads as a decision rather than an oversight.
 
    🔵 **NFD dropped from Phase 7 by decision (2026-08-04).** Node Feature
    Discovery labels nodes with detected hardware so workloads can target it.
-   These nodes are near-homogeneous with no GPUs and nothing schedules on
-   hardware features; the single plausible use (marking lab5's NVMe) is one
+   These nodes are near-homogeneous and nothing schedules on hardware
+   features; the single plausible use (marking lab5's NVMe) is one
    `kubectl label` away. It was on the list because it is on the standard list.
+   ⚠️ **Corrected 2026-11-11:** this said the nodes have "no GPUs". k8s-5 has
+   an NVIDIA Quadro K2200 (`lspci` 03:00.0, GM107GL). The decision still
+   holds: the GPU label is one `kubectl label` too, set by
+   `ansible/playbooks/51-gpu-node.yml`. See
+   [docs/operate/gpu-runner.md](docs/operate/gpu-runner.md).
 
    🔵 **Descheduler: do it AFTER requests exist, if at all.** It does NOT
    conflict with ArgoCD — ArgoCD manages manifests, descheduler evicts pods, so

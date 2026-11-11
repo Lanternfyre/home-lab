@@ -46,6 +46,7 @@ any line here.
 
 - [Test native NDepend](docs/operate/ndepend-workspace-probe.md): check the workstation identity and activation in a disposable pod before changing an agent box.
 - [A node will not rejoin after a reboot](docs/operate/node-will-not-rejoin.md): read-only first checks, server and agent paths, and recovery stop points.
+- [Give k8s-5's GPU to a CI runner](docs/operate/gpu-runner.md): driver, device plugin and the `arc-linux-gpu` runner, each step with its check and its undo. Prepared, not yet applied.
 - [Cluster join token](CLUSTER-TOKEN.md): how the token is managed, and the rotation runbook.
 - [Restoring data](docs/operate/restore.md): what can be restored today, and how. **Unverified:** the docs disagree on whether backups run; the runbook records what a live check found on 2026-10-25. Check the cluster before relying on a restore.
 - [Standing warnings](docs/operate/standing-warnings.md): the facts that cause damage when forgotten, and the procedures that go with them: storage, releasing a NodePort, DNS, CI runners, sign-in, Silo, NetBird, the edge game ports, and pairing a device with auq.

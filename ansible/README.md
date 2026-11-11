@@ -200,7 +200,8 @@ gated on `k3s_role`. Grepping for the group name alone misses these.
 
 It used to list `k3s_config`, `k3s_manifests`, `30-upgrade.yml` and
 `40-add-node.yml` as "not yet written", and said there were two roles and two
-groups. All of them exist; there are 11 roles and three child groups. Its warning was
+groups. All of them exist; when this was written there were 11 roles and three
+child groups (13 and four since the GPU role, 2026-11-11). Its warning was
 discharged: `k3s_config`'s scope does include **systemd drop-ins**, because
 k3s CLI arguments take precedence over `config.yaml` and lab2–lab5 had
 `--server https://192.168.32.2:6443` baked into their unit files. Those units
