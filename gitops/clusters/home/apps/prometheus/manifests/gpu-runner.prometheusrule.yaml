@@ -1,0 +1,54 @@
+# The GPU runner's one silent failure: no schedulable GPU in the cluster.
+#
+# A GPU job queued against arc-linux-gpu while nothing advertises
+# nvidia.com/gpu does not fail. Its runner pod sits Pending, the job waits in
+# GitHub's queue, and nothing anywhere turns red. Every way to lose the GPU
+# ends there: a kernel booted without its nvidia module, a driver/library
+# version mismatch after an upgrade, the device plugin crash-looping, the
+# node label removed, the node down.
+#
+# House rule: validated against live Prometheus before commit, straight AND
+# inverted (2026-11-11, before any GPU existed):
+#   absent(kube_node_status_allocatable{resource="nvidia_com_gpu"} >= 1)
+#     -> 1 series, value 1: FIRES, correctly, since there is no GPU yet.
+#   absent(kube_node_status_allocatable{resource="cpu"} >= 1)
+#     -> empty: the same shape is silent when the resource exists.
+# kube-state-metrics names the resource `nvidia_com_gpu` (dots to underscores,
+# as `ephemeral_storage` shows on the same series).
+#
+# ⚠️ IT FIRES UNTIL THE GPU IS UP. That is the point of merging this only after
+# the host step of docs/operate/gpu-runner.md has passed; between the merge and
+# the device plugin registering (a few minutes) the 15m `for:` keeps it quiet.
+#
+# Not keyed on the node or its label: kube-state-metrics here exports no node
+# labels (`kube_node_labels{node="k8s-lab5"}` is empty), and "the cluster has
+# no allocatable GPU" is the condition that strands jobs, wherever the GPU is.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: gpu-runner
+  namespace: monitoring
+  labels:
+    # Mandatory — the Prometheus CR's ruleSelector matches this label; without
+    # it this file is decoration (see the smartctl rules file).
+    release: prometheus-operator
+spec:
+  groups:
+    - name: gpu-runner
+      rules:
+        - alert: NoSchedulableGpu
+          expr: absent(kube_node_status_allocatable{resource="nvidia_com_gpu"} >= 1)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "No node advertises an allocatable nvidia.com/gpu"
+            description: >-
+              arc-linux-gpu jobs will queue forever with no error. On k8s-lab5,
+              in order: `nvidia-smi` (driver loaded?), `cat
+              /proc/driver/nvidia/version` against `dpkg -l
+              nvidia-kernel-common-580` (version mismatch?), `kubectl -n
+              nvidia-device-plugin get pods -o wide` (plugin running?),
+              `kubectl get node k8s-lab5 --show-labels | grep gpu.present`
+              (label?). Then re-run `ansible-playbook playbooks/51-gpu-node.yml
+              --tags verify`. Runbook: docs/operate/gpu-runner.md.

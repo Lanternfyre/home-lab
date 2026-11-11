@@ -1,0 +1,124 @@
+# GPU runner scale set (gha-runner-scale-set 0.14.2).
+# Workflows target it with `runs-on: arc-linux-gpu`, derived as
+# format('{0}-gpu', vars.CI_RUNNER).
+#
+# 🔴 THE OUTAGE FLIP IS TO *UNSET* CI_RUNNER, never to set it to ubuntu-latest:
+# the suffix would compose `ubuntu-latest-gpu`, a label no runner will ever
+# claim -- an infinite queue with no error anywhere. (Hosted runners have no
+# GPU either; a GPU job has no fallback, which is why its workflow should run
+# only when the client changes.)
+#
+# ── What this pod can and cannot do ──────────────────────────────────────────
+# It gets the GPU from the RUNTIME, not from privilege:
+#   * runtimeClassName: nvidia -- k3s's runtime, which injects the host's driver
+#     libraries, /dev/nvidia*, the DRM nodes, nvidia_drv.so and the Vulkan ICD;
+#   * nvidia.com/gpu: 1 -- the device plugin hands this pod the one GPU and
+#     sets NVIDIA_VISIBLE_DEVICES to it;
+#   * NVIDIA_DRIVER_CAPABILITIES=all -- without `graphics` there is no GL or
+#     Vulkan, and without `display` the toolkit leaves out /dev/nvidia-modeset,
+#     which the X driver needs (libnvidia-container nvc_mount.c: "Only display
+#     capability requires the modeset device");
+#   * supplementalGroups 44 and 993 -- k8s-5's `video` and `render` groups. The
+#     DRM nodes arrive with the host's ownership (card0 root:44, renderD128
+#     root:993, both 0660, read 2026-11-11) and the runner is uid 1001.
+#
+# It is NOT privileged, joins no host namespace, mounts no hostPath and keeps
+# ALL capabilities dropped, so kyverno/manifests/arc-runners-pod-constraints
+# admits it unchanged. The X server runs inside the container as the runner
+# user: Xorg 21.1 opens a virtual terminal only when /dev/tty0 exists
+# (xf86HasTTYs in hw/xfree86/common/xf86Init.c), and a container has none.
+# 🟡 UNVERIFIED ON THIS CARD until the test pod in docs/operate/gpu-runner.md,
+# step 6, has run. If Xorg needs more than this, that step is where it shows.
+#
+# ⚠️ What the runtime gives, it gives to anything that asks. A pod in ANY
+# namespace that sets runtimeClassName: nvidia and NVIDIA_VISIBLE_DEVICES=all on
+# k8s-lab5 gets the GPU without requesting nvidia.com/gpu, and the scheduler
+# never counts it. Nothing else here does that today; it is a known property
+# of the device plugin's default env-var strategy.
+
+githubConfigUrl: "https://github.com/Lanternfyre"
+githubConfigSecret: gha-runner-github-app
+
+# 🔴 THE REPO RESTRICTION LIVES IN GITHUB, NOT HERE. An org-level scale set in
+# a runner group that only Lanternfyre/Necronia2.0 may use (the org is on the
+# Team plan, which has runner groups with repository access lists). The group
+# must exist BEFORE this syncs, or the listener cannot register the set:
+# docs/operate/gpu-runner.md, step 4.
+#
+# Why not a repository-level set (githubConfigUrl .../Necronia2.0): the GitHub
+# App would need Repository "Administration: Read and write" on every repo it
+# is installed on (GitHub's ARC authentication docs), a far wider grant than
+# the org-level "Self-hosted runners" permission the other sets already use.
+runnerGroup: "gpu"
+
+runnerScaleSetName: "arc-linux-gpu"
+
+# maxRunners 1: there is one GPU. A second runner could only sit Pending.
+minRunners: 0
+maxRunners: 1
+
+# P0 #3 -- explicit, helm-template lookup returns empty under ArgoCD.
+controllerServiceAccount:
+  namespace: arc-systems
+  name: arc-controller-gha-rs-controller
+
+template:
+  spec:
+    automountServiceAccountToken: false
+    priorityClassName: ci-runner
+    runtimeClassName: nvidia
+    # ⚠️ The ONE nodeSelector in the arc-* sets, and it does not contradict the
+    # v4 "cluster-wide" posture: a GPU exists on one node. The nvidia.com/gpu
+    # request already confines this pod to nodes advertising one; the selector
+    # makes a missing label or a dead device plugin show up as a Pending pod
+    # whose event names the label, rather than as "Insufficient nvidia.com/gpu".
+    # 51-gpu-node.yml sets the label only after the node proved its driver.
+    nodeSelector:
+      nvidia.com/gpu.present: "true"
+    # Kept for the same reason as in every other set: if a server ever carried
+    # a GPU, this is still not where CI runs.
+    affinity:
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: DoesNotExist
+    # No topologySpreadConstraints: with one eligible node a spread constraint
+    # constrains nothing, and a constraint that does nothing reads as one that
+    # does. This pod still carries ARC's part-of label, so the OTHER sets'
+    # spread already counts it on k8s-lab5 and steers their runners elsewhere.
+    securityContext:
+      supplementalGroups: [44, 993]
+    imagePullSecrets:
+      - name: ghcr-pull
+    containers:
+      - name: runner
+        # actions-runner-base plus Xorg on the NVIDIA driver, the Vulkan
+        # loader, vulkan-tools, mesa-utils and `gpu-display` (docker-compendium,
+        # actions-runner-gpu/). It carries NO NVIDIA driver of its own: the
+        # runtime injects the host's, which is the only way the X driver and
+        # the kernel module stay the same version.
+        image: ghcr.io/lanternfyre/actions-runner-gpu:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: NVIDIA_DRIVER_CAPABILITIES
+            value: all
+        resources:
+          # The arc-linux envelope: a Godot .NET build plus a rendering run.
+          # The 4 GB card, not this, is the tighter limit. No CPU limit --
+          # standing rule.
+          #
+          # ⚠️ k8s-lab5 is the node with the weak disk (see arc-lanternfyre's
+          # CI I/O spreading note), and this set is pinned to it. A Godot
+          # import of the whole project on every ephemeral run is a write burst
+          # on that disk; cache the import directory in the workflow.
+          requests: {cpu: "2", memory: 4Gi, ephemeral-storage: 4Gi}
+          limits: {memory: 8Gi, ephemeral-storage: 12Gi, nvidia.com/gpu: 1}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities: {drop: ["ALL"]}
+        volumeMounts:
+          - {name: work, mountPath: /home/runner/_work}
+    volumes:
+      - {name: work, emptyDir: {sizeLimit: 10Gi}}
