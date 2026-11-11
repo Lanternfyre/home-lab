@@ -1,0 +1,7 @@
+---
+# Every installed kernel, not just the running one: the blacklist has to be in
+# the initramfs the NEXT boot uses, which may be a newer kernel.
+- name: update initramfs
+  become: true
+  ansible.builtin.command: update-initramfs -u -k all
+  changed_when: true

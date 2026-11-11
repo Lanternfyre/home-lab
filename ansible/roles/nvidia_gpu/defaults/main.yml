@@ -1,0 +1,89 @@
+---
+# The NVIDIA driver and container toolkit on a k3s GPU agent.
+#
+# Versions live in group_vars/k3s_gpu.yml; the card's identity in host_vars.
+# Everything here is derived from them.
+
+# ── Which kernel modules: Canonical's prebuilt ones, not DKMS ────────────────
+# `ubuntu-drivers list` on k8s-5 says it outright: "nvidia-driver-580, (kernel
+# modules provided by linux-modules-nvidia-580-generic)". Canonical builds those
+# per kernel ABI and ships them signed, so:
+#
+#   * no compiler, headers or DKMS on the node (`apt-get -s install
+#     nvidia-driver-580` would have pulled dkms, gcc-13 and 176 packages);
+#   * no build that can fail on the next kernel, which is how DKMS breaks;
+#   * Secure Boot would need no MOK enrolment. It is moot here: `mokutil
+#     --sb-state` on k8s-5 says "This system doesn't support Secure Boot".
+#
+# The modules follow the kernel FLAVOUR, read from the kernel metapackage
+# k8s-5 has installed: `linux-generic`, the 6.8 GA kernel. If this node ever
+# moves to the HWE kernel (`linux-generic-hwe-24.04`), the module package
+# becomes linux-modules-nvidia-580-generic-hwe-24.04, and the role refuses to
+# run until this is changed with it.
+nvidia_kernel_flavour: generic
+
+# ── Userspace: headless, plus exactly the graphics pieces the runner needs ───
+# nvidia-headless-no-dkms: the compute stack without the DKMS module.
+# nvidia-utils: nvidia-smi.
+# libnvidia-gl: GLX, EGL and the Vulkan ICD.
+# xserver-xorg-video-nvidia: nvidia_drv.so and libglxserver_nvidia.so.
+#
+# ⚠️ The last two are why this is not `nvidia-headless-580`. The container
+# toolkit injects the HOST's driver files into a GPU pod, and the runner starts
+# an X server on them. Without them on the host, the image would have to carry
+# its own copy, which breaks the moment the host driver moves by one patch
+# release: the X driver and the kernel module must be the same version.
+# xserver-xorg-video-nvidia pulls xserver-xorg-core onto the node. Nothing
+# starts it: there is no display manager (`systemctl is-active
+# display-manager` = inactive, 2026-11-11).
+nvidia_userspace_packages:
+  - "nvidia-headless-no-dkms-{{ nvidia_driver_branch }}"
+  - "nvidia-utils-{{ nvidia_driver_branch }}"
+  - "libnvidia-gl-{{ nvidia_driver_branch }}"
+  - "xserver-xorg-video-nvidia-{{ nvidia_driver_branch }}"
+
+# The four packages of one toolkit release. NVIDIA's install guide pins all
+# four to one version; a toolkit with a mismatched libnvidia-container fails at
+# container create, which in Kubernetes reads as a pod stuck in
+# ContainerCreating.
+nvidia_toolkit_packages:
+  - nvidia-container-toolkit
+  - nvidia-container-toolkit-base
+  - libnvidia-container-tools
+  - libnvidia-container1
+
+# ── What is held, and why the kernel is in the list ──────────────────────────
+# See group_vars/k3s_gpu.yml: kernel, prebuilt module and userspace can only
+# move as one. Unattended-upgrades on k8s-5 installs from noble-security
+# (Allowed-Origins, read 2026-11-11) and never reboots, so left alone it would
+# install a new kernel whose nvidia module may not be installable beside the
+# held userspace, and the GPU would vanish at the next reboot, whenever that
+# happens to be.
+#
+# Holding the kernel metapackages costs less than it looks: a kernel update
+# only takes effect at a reboot, and on this node a reboot is a deliberate
+# drain anyway. The kernel moves when this playbook moves it, with
+# `-e nvidia_gpu_move=true`, right before the reboot that applies it.
+nvidia_held_kernel_packages:
+  - "linux-{{ nvidia_kernel_flavour }}"
+  - "linux-image-{{ nvidia_kernel_flavour }}"
+  - "linux-headers-{{ nvidia_kernel_flavour }}"
+  - "linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ nvidia_kernel_flavour }}"
+
+# The NVIDIA apt repository. The key is checked by fingerprint before apt is
+# allowed to trust it: `gpg --show-keys` on the published key, 2026-11-11,
+# "NVIDIA CORPORATION (Open Source Projects) <cudatools@nvidia.com>".
+nvidia_toolkit_repo_url: "https://nvidia.github.io/libnvidia-container/stable/deb/amd64"
+nvidia_toolkit_key_url: "https://nvidia.github.io/libnvidia-container/gpgkey"
+nvidia_toolkit_key_fingerprint: "C95B321B61E88C1809C4F759DDCAE044F796ECB0"
+nvidia_toolkit_key_path: /etc/apt/keyrings/nvidia-container-toolkit.asc
+
+# k3s writes this file itself at every start and adds a `nvidia` runtime when
+# it finds nvidia-container-runtime on its PATH (docs.k3s.io, "Alternative
+# Container Runtime Support"). Read, never written: k3s regenerates it.
+k3s_containerd_config: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+
+# Set by 51-gpu-node.yml's `-e`, never here: unhold, move kernel + modules +
+# userspace to what noble-security now offers and nvidia_driver_version names,
+# hold again, reboot.
+nvidia_gpu_move: false

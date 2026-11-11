@@ -144,3 +144,20 @@ all:
             k3s_edge:
               hosts:
                 edge-1.edge:
+
+            # Agents carrying an NVIDIA GPU that CI may use (2026-11-11).
+            # Membership is the DESIRED state "this node runs the NVIDIA driver
+            # and container toolkit"; playbooks/51-gpu-node.yml converges it and
+            # nothing in site.yml reads it, so a converge never touches a GPU.
+            #
+            # A CHILD of k3s_agents, like k3s_edge, so a GPU node is always an
+            # agent: heavy CI must not run on an etcd member (the 2026-08-22
+            # k8s-5 incident). roles/nvidia_gpu asserts the same thing, in case
+            # someone moves a server in here.
+            #
+            # k8s-5 is listed under k3s_agents above AND here. That is not a
+            # duplicate: Ansible merges the two, and only this line says it has
+            # a GPU.
+            k3s_gpu:
+              hosts:
+                k8s-5.home:

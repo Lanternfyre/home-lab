@@ -1,0 +1,338 @@
+---
+# The NVIDIA driver, the container toolkit and the holds that keep them coherent,
+# on ONE k3s GPU agent. Detect, remediate what is wrong, and work out whether
+# the node needs a reboot. The reboot itself, the drain around it and the
+# post-boot proof are the playbook's (51-gpu-node.yml), not this role's: a role
+# that can drain a node must never be reachable from a converge.
+#
+# ⚠️ NOT in site.yml, deliberately. Installing a kernel module and holding the
+# kernel is a change with a reboot attached, the same class as 30-upgrade.yml.
+
+# ───────────────────────────── GUARD ─────────────────────────────
+
+- name: "guard | only k3s_gpu agents, never a server"
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in (groups['k3s_gpu'] | default([]))
+      - inventory_hostname not in (groups['k3s_servers'] | default([]))
+      - nvidia_gpu_pci_id is defined
+      - nvidia_gpu_pci_slot is defined
+    fail_msg: >-
+      {{ inventory_hostname }} is not a k3s_gpu agent with nvidia_gpu_pci_id and
+      nvidia_gpu_pci_slot in its host_vars. A GPU node must be an AGENT: heavy
+      CI on an etcd member is how k8s-5 took the cluster down on 2026-08-22.
+
+- name: "guard | read the card at the stated PCI slot"
+  ansible.builtin.command: "lspci -nn -s {{ nvidia_gpu_pci_slot }}"
+  register: g_lspci
+  changed_when: false
+  check_mode: false
+
+- name: "guard | the card is the one this role was written for"
+  ansible.builtin.assert:
+    that: ('[' ~ nvidia_gpu_pci_id ~ ']') in g_lspci.stdout
+    fail_msg: >-
+      lspci -s {{ nvidia_gpu_pci_slot }} on {{ inventory_hostname }} says
+      "{{ g_lspci.stdout | trim }}", not [{{ nvidia_gpu_pci_id }}]. The driver
+      branch in group_vars/k3s_gpu.yml was chosen for that exact card (580 is the
+      last branch for Maxwell); refusing to install it on another.
+
+- name: "guard | which kernel metapackage is installed?"
+  ansible.builtin.command: "dpkg-query -W -f=${Status} linux-{{ nvidia_kernel_flavour }}"
+  register: g_kernel_meta
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "guard | the prebuilt modules must match the kernel flavour"
+  ansible.builtin.assert:
+    that: g_kernel_meta.stdout == 'install ok installed'
+    fail_msg: >-
+      linux-{{ nvidia_kernel_flavour }} is not installed on {{ inventory_hostname }},
+      so linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ nvidia_kernel_flavour }}
+      would track a kernel this node does not boot. If it moved to the HWE
+      kernel, set nvidia_kernel_flavour to match (roles/nvidia_gpu/defaults).
+
+# ───────────────────────────── DETECT ─────────────────────────────
+
+- name: "detect | loaded kernel module"
+  tags: [always]
+  ansible.builtin.slurp:
+    src: /proc/driver/nvidia/version
+  register: d_proc_version
+  failed_when: false
+  check_mode: false
+
+- name: "detect | is nouveau loaded?"
+  tags: [always]
+  ansible.builtin.stat:
+    path: /sys/module/nouveau
+  register: d_nouveau
+  check_mode: false
+
+# ⚠️ The format is QUOTED: `command` splits with shlex, which eats an unquoted
+# backslash, and `\n` would arrive as `n` (the trap tasks/cnpg-move-primary.yml
+# records). A package dpkg knows but has removed prints `name=` with an empty
+# version, so the checks below match `=<digit>`, not `=`.
+- name: "detect | installed driver and toolkit versions"
+  tags: [always]
+  ansible.builtin.command: >-
+    dpkg-query -W -f='${Package}=${Version}\n'
+    nvidia-kernel-common-{{ nvidia_driver_branch }} nvidia-container-toolkit
+  register: d_versions
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | does k3s's containerd know the nvidia runtime?"
+  tags: [always]
+  become: true
+  ansible.builtin.command: "grep -c nvidia-container-runtime {{ k3s_containerd_config }}"
+  register: d_k3s_runtime
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: "detect | held packages"
+  tags: [always]
+  ansible.builtin.command: apt-mark showhold
+  register: d_holds
+  changed_when: false
+  check_mode: false
+
+- name: "detect | report"
+  tags: [always]
+  ansible.builtin.debug:
+    msg: >-
+      {{ k8s_node_name }}: card={{ nvidia_gpu_pci_id }},
+      module={{ (d_proc_version.content | default('') | b64decode | regex_search('Kernel Module\\s+(\\S+)', '\\1') | default(['ABSENT'], true) | first) }},
+      nouveau={{ 'LOADED' if d_nouveau.stat.exists else 'absent' }},
+      packages=[{{ d_versions.stdout_lines | join(', ') | default('none', true) }}],
+      k3s-nvidia-runtime={{ 'yes' if (d_k3s_runtime.stdout | default('0') | int) > 0 else 'NO' }},
+      held={{ d_holds.stdout_lines | length }},
+      running-kernel={{ ansible_kernel }}
+
+# ───────────────────────────── REMEDIATE ─────────────────────────────
+
+# Only in move mode. Without it, a held package at the wrong version is a
+# failure below, which is the point: versions on this node change on purpose.
+- name: "move | release the holds for this run"
+  become: true
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop: "{{ nvidia_userspace_packages + nvidia_toolkit_packages + nvidia_held_kernel_packages }}"
+  when: nvidia_gpu_move | bool
+
+# nouveau is bound to the card today (`lspci -k`, 2026-11-11). Both drivers
+# cannot own it; the blacklist has to be in the initramfs too, or nouveau loads
+# from there before the root filesystem's modprobe.d is read.
+- name: "fix | keep nouveau off the card"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/modprobe.d/nvidia-gpu-node-blacklist-nouveau.conf
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- roles/nvidia_gpu. The NVIDIA driver owns this
+      # node's GPU; nouveau must not bind it first.
+      blacklist nouveau
+      options nouveau modeset=0
+  notify: update initramfs
+
+# ── NVIDIA's apt repository, trusted only after the fingerprint matches ─────
+- name: "fix | fetch the toolkit repository key to a staging path"
+  become: true
+  ansible.builtin.get_url:
+    url: "{{ nvidia_toolkit_key_url }}"
+    dest: /root/nvidia-container-toolkit.gpgkey.staged
+    mode: "0644"
+
+- name: "fix | read the staged key's fingerprint"
+  become: true
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    gpg --show-keys --with-colons /root/nvidia-container-toolkit.gpgkey.staged
+    | awk -F: '$1 == "fpr" { print $10; exit }'
+  args:
+    executable: /bin/bash
+  register: f_key_fpr
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: "fix | refuse a key that is not NVIDIA's"
+  ansible.builtin.assert:
+    that: f_key_fpr.stdout | trim == nvidia_toolkit_key_fingerprint
+    fail_msg: >-
+      The key at {{ nvidia_toolkit_key_url }} has fingerprint
+      "{{ f_key_fpr.stdout | trim }}", not {{ nvidia_toolkit_key_fingerprint }}.
+      Not trusting it. If NVIDIA rotated its key, confirm the new fingerprint
+      from NVIDIA's install guide and change roles/nvidia_gpu/defaults.
+  when: not ansible_check_mode
+
+- name: "fix | install the verified key"
+  become: true
+  ansible.builtin.copy:
+    src: /root/nvidia-container-toolkit.gpgkey.staged
+    remote_src: true
+    dest: "{{ nvidia_toolkit_key_path }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: not ansible_check_mode
+
+# NVIDIA's own .list is the same line with `$(ARCH)`; signed-by scopes the key
+# to this one repository instead of trusting it for every source.
+- name: "fix | the toolkit repository"
+  become: true
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible -- roles/nvidia_gpu.
+      deb [signed-by={{ nvidia_toolkit_key_path }}] {{ nvidia_toolkit_repo_url }} /
+
+# ── The driver ──────────────────────────────────────────────────────────────
+# Exact versions. `nvidia-headless-no-dkms` pins nvidia-kernel-common to the
+# same version, so the whole userspace lands as one release.
+- name: "fix | NVIDIA userspace {{ nvidia_driver_version }}"
+  become: true
+  ansible.builtin.apt:
+    name: "{{ nvidia_userspace_packages | map('regex_replace', '$', '=' ~ nvidia_driver_version) | list }}"
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 3600
+
+# The module for the kernel running NOW. Without it the reboot below would
+# come up with no driver, if the metapackage below resolved to a newer kernel.
+- name: "fix | prebuilt module for the running kernel ({{ ansible_kernel }})"
+  become: true
+  ansible.builtin.apt:
+    name: "linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ ansible_kernel }}"
+    install_recommends: false
+
+# 🔴 FROM noble-security, NOT noble-updates. On 2026-11-11 the metapackage's
+# candidate was 6.8.0-149.149 in noble-updates, and `apt-get -s install` showed
+# it dragging in linux-image-6.8.0-149-generic: a kernel change nobody asked
+# for, hidden inside a driver install. This node takes its kernels from
+# noble-security (unattended-upgrades' Allowed-Origins), so the module
+# metapackage comes from the same pocket and names the same kernel.
+- name: "fix | prebuilt-module metapackage, from the pocket the kernel comes from"
+  become: true
+  ansible.builtin.apt:
+    name: "linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ nvidia_kernel_flavour }}"
+    default_release: "{{ ansible_distribution_release }}-security"
+    install_recommends: false
+    state: "{{ 'latest' if (nvidia_gpu_move | bool) else 'present' }}"
+
+- name: "move | the kernel metapackages, from noble-security"
+  become: true
+  ansible.builtin.apt:
+    name: "{{ nvidia_held_kernel_packages[:3] }}"
+    default_release: "{{ ansible_distribution_release }}-security"
+    install_recommends: false
+    state: latest
+  when: nvidia_gpu_move | bool
+
+# ── The container toolkit ───────────────────────────────────────────────────
+# ⚠️ No `nvidia-ctk runtime configure` anywhere. That writes a containerd
+# drop-in k3s never reads: k3s generates its own containerd config at every
+# start and adds the `nvidia` runtime itself when it finds the binary. A
+# drop-in would be a file that looks like configuration and configures nothing.
+#
+# Skipped under --check until the repository exists: check mode writes no
+# source file, so apt cannot know these packages yet and would fail the whole
+# plan with "No package matching". The report line above already says the
+# toolkit is ABSENT, which is the plan.
+- name: "fix | NVIDIA Container Toolkit {{ nvidia_container_toolkit_version }}"
+  become: true
+  ansible.builtin.apt:
+    name: "{{ nvidia_toolkit_packages | map('regex_replace', '$', '=' ~ nvidia_container_toolkit_version) | list }}"
+    install_recommends: false
+    update_cache: true
+    cache_valid_time: 0
+  when: not ansible_check_mode or (d_versions.stdout is search('nvidia-container-toolkit=[0-9]'))
+
+# ── Hold everything that must move together ─────────────────────────────────
+- name: "fix | hold driver, toolkit and kernel metapackages"
+  become: true
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: "{{ nvidia_userspace_packages + nvidia_toolkit_packages + nvidia_held_kernel_packages }}"
+
+- name: "flush | rebuild the initramfs before deciding about a reboot"
+  ansible.builtin.meta: flush_handlers
+
+# ───────────────────────────── DOES IT NEED A REBOOT? ─────────────────────────
+
+- name: "plan | the kernel the next boot will pick"
+  become: true
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    ls -1 /boot/vmlinuz-*-{{ nvidia_kernel_flavour }}
+    | sed 's#^/boot/vmlinuz-##' | sort -V | tail -n1
+  args:
+    executable: /bin/bash
+  register: p_next_kernel
+  changed_when: false
+  check_mode: false
+
+- name: "plan | the module for that kernel must be installed"
+  ansible.builtin.command: >-
+    dpkg-query -W -f=${Status}
+    linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ p_next_kernel.stdout | trim }}
+  register: p_next_module
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# 🔴 THE CHECK THAT WOULD HAVE CAUGHT A GPU VANISHING AT THE NEXT REBOOT.
+# GRUB boots the newest kernel. If that kernel has no nvidia module, the node
+# comes back with no GPU, the device plugin advertises nothing, and every GPU
+# job queues forever with no error anywhere.
+- name: "plan | refuse to leave a next boot without a driver"
+  ansible.builtin.assert:
+    that: p_next_module.stdout == 'install ok installed'
+    fail_msg: >-
+      The next boot of {{ inventory_hostname }} picks kernel
+      {{ p_next_kernel.stdout | trim }}, and
+      linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ p_next_kernel.stdout | trim }}
+      is not installed. Rebooting now would bring the node up without its GPU.
+      Install that package (move mode does) before any reboot.
+  when: not ansible_check_mode
+
+- name: "plan | decide"
+  ansible.builtin.set_fact:
+    nvidia_gpu_reboot_needed: >-
+      {{ d_nouveau.stat.exists
+         or not (d_proc_version.content | default('') | b64decode
+                 is search(nvidia_driver_version.split('-')[0] | regex_escape))
+         or (p_next_kernel.stdout | trim) != ansible_kernel }}
+
+- name: "plan | report"
+  ansible.builtin.debug:
+    msg: >-
+      {{ k8s_node_name }}: reboot {{ 'NEEDED' if (nvidia_gpu_reboot_needed | bool) else 'not needed' }}
+      (nouveau {{ 'loaded' if d_nouveau.stat.exists else 'absent' }};
+      loaded module {{ 'matches' if (d_proc_version.content | default('') | b64decode
+      is search(nvidia_driver_version.split('-')[0] | regex_escape)) else 'does NOT match' }}
+      {{ nvidia_driver_version.split('-')[0] }}; next boot
+      {{ p_next_kernel.stdout | trim }}, running {{ ansible_kernel }}).
+
+# Without a reboot, k3s still has to be restarted once to notice the toolkit:
+# it looks for the runtime binaries only when it starts. Restarting k3s-agent
+# restarts kubelet and the embedded containerd; running containers survive it
+# (their shims are separate processes).
+- name: "fix | restart k3s-agent so it finds the nvidia runtime"
+  become: true
+  ansible.builtin.systemd:
+    name: "{{ k3s_unit }}"
+    state: restarted
+  when:
+    - not ansible_check_mode
+    - not (nvidia_gpu_reboot_needed | bool)
+    - (d_k3s_runtime.stdout | default('0') | int) == 0
