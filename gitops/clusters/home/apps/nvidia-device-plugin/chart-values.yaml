@@ -1,0 +1,48 @@
+# nvidia-device-plugin 0.20.1. Everything not set here is the chart default,
+# checked by rendering it with `helm template` on 2026-11-11.
+
+# 🔴 THE ONE VALUE THAT MAKES IT WORK ON k3s. The plugin talks to the GPU
+# through NVML, so it needs the driver libraries injected -- which only the
+# `nvidia` runtime does. k3s registers that runtime but leaves runc as the
+# default, so a pod that does not ask for it sees no GPU and the plugin
+# advertises nothing ("you must explicitly request the NVIDIA runtime by
+# setting runtimeClassName: nvidia", docs.k3s.io).
+#
+# The RuntimeClass itself is k3s's, NOT this repo's: k3s ships `nvidia` (and
+# `nvidia-experimental`, crun, the wasm runtimes) from its packaged
+# runtimes.yaml. `kubectl get runtimeclass nvidia` on 2026-11-11: handler
+# `nvidia`, age 313d, labelled objectset.rio.cattle.io/hash by k3s's deploy
+# controller. A second copy owned by ArgoCD would give one object two
+# controllers. If `runtimes` ever appears in k3s_disable
+# (ansible/inventory/group_vars/all.yml), the class disappears and so does the
+# GPU.
+runtimeClassName: nvidia
+
+# Node selection is the chart's default affinity: a node with ANY of
+# feature.node.kubernetes.io/pci-10de.present=true,
+# feature.node.kubernetes.io/cpu-model.vendor_id=NVIDIA or
+# nvidia.com/gpu.present=true. Only the last exists in this cluster (no Node
+# Feature Discovery), and only 51-gpu-node.yml sets it. Not overridden, so the
+# label means the same thing to this chart as to the GPU Operator, should that
+# ever replace it.
+
+# Repo standing rule: requests on everything, a memory limit, no CPU limit.
+# The plugin is a gRPC server that polls NVML; this is generous.
+resources:
+  requests: {cpu: 10m, memory: 32Mi}
+  limits: {memory: 128Mi}
+
+# The chart ALWAYS renders a second DaemonSet, the MPS control daemon:
+# privileged, hostPID, Bidirectional mount propagation. No value removes it
+# (templates/daemonset-mps-control-daemon.yml is gated only on
+# devicePlugin.enabled). It schedules only on nodes labelled
+# nvidia.com/mps.capable=true, which nothing here sets, so it stays at zero
+# pods.
+#
+# ⚠️ Inert, but fenced anyway: kyverno/manifests/nvidia-device-plugin-pod-
+# constraints denies privileged and hostPID pods in this namespace, so if
+# anyone labels a node mps.capable, the DaemonSet reports failed creates
+# instead of quietly gaining a privileged pod. MPS shares one GPU between
+# several pods; with a 4 GB card and maxRunners 1 there is nothing to share.
+mps:
+  enableHostPID: false

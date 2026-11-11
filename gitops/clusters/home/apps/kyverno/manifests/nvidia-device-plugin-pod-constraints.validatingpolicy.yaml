@@ -1,0 +1,82 @@
+# H3 -- privilege containment in the `nvidia-device-plugin` namespace.
+#
+# PSA is `privileged` here for ONE reason: the device plugin mounts hostPath.
+# Measured from `helm template` of chart 0.20.1 with this repo's values
+# (2026-11-11):
+#
+#   nvidia-device-plugin               NOT privileged, caps drop ALL,
+#                                      allowPrivilegeEscalation false;
+#                                      hostPath /var/lib/kubelet/device-plugins,
+#                                      /run/nvidia/mps, /run/nvidia/mps/shm,
+#                                      /var/run/cdi
+#   nvidia-device-plugin-mps-control-  privileged (init + main container) --
+#     daemon                           rendered by the chart whatever the
+#                                      values, scheduled on NO node (it needs
+#                                      nvidia.com/mps.capable=true)
+#
+# So the rule is flat: nothing privileged, no host namespaces, and hostPath
+# only at the four paths the plugin itself needs. The MPS daemon is DENIED on
+# purpose; see the plugin's chart-values.yaml.
+#
+# ⚠️ Keyed on PATHS, not on serviceAccountName. Both DaemonSets run as the same
+# ServiceAccount, so an SA allow-list would have admitted the privileged one.
+apiVersion: policies.kyverno.io/v1
+kind: ValidatingPolicy
+metadata:
+  name: nvidia-device-plugin-pod-constraints
+spec:
+  # ⚠️ PER-POLICY OPT-IN, or enforcement silently falls back to the Kyverno
+  # webhook and dies with Kyverno.
+  autogen:
+    validatingAdmissionPolicy:
+      enabled: true
+  validationActions:
+    - Deny
+  matchConstraints:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: nvidia-device-plugin
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+  variables:
+    - name: allContainers
+      expression: >-
+        object.spec.containers +
+        (has(object.spec.initContainers) ? object.spec.initContainers : [])
+  validations:
+    - expression: >-
+        variables.allContainers.all(c,
+          !has(c.securityContext) ||
+          !has(c.securityContext.privileged) ||
+          c.securityContext.privileged == false)
+      message: >-
+        Nothing in `nvidia-device-plugin` may run privileged. The device plugin
+        never needs it; the chart's MPS control daemon does, and is not used
+        here (MPS shares one GPU between pods, and this cluster has one GPU for
+        one runner).
+
+    - expression: >-
+        (!has(object.spec.hostNetwork) || object.spec.hostNetwork == false) &&
+        (!has(object.spec.hostPID) || object.spec.hostPID == false) &&
+        (!has(object.spec.hostIPC) || object.spec.hostIPC == false)
+      message: >-
+        No pod in `nvidia-device-plugin` may join host namespaces. The plugin
+        talks to kubelet over a socket in a hostPath, not over the host network.
+
+    - expression: >-
+        !has(object.spec.volumes) ||
+        object.spec.volumes.all(v, !has(v.hostPath) ||
+          v.hostPath.path in [
+            '/var/lib/kubelet/device-plugins',
+            '/run/nvidia/mps',
+            '/run/nvidia/mps/shm',
+            '/var/run/cdi'
+          ])
+      message: >-
+        hostPath in `nvidia-device-plugin` is limited to the four directories
+        the device plugin mounts: kubelet's device-plugins socket directory,
+        /var/run/cdi and the MPS directories. Any other host path is a GPU
+        helper reaching into the node's filesystem.
