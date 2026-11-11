@@ -1,0 +1,166 @@
+---
+# Make a k3s_gpu agent's NVIDIA GPU usable by pods: driver, container toolkit,
+# holds, a drained reboot when one is needed, the proof, and the node label.
+#
+#   # 1. the plan -- changes nothing (still needs sudo: it reads k3s's config)
+#   ansible-playbook playbooks/51-gpu-node.yml --ask-become-pass --check --diff
+#
+#   # 2. apply; drains and reboots the node only if it has to
+#   ansible-playbook playbooks/51-gpu-node.yml --ask-become-pass
+#
+#   # 3. if it rebooted, the node is left CORDONED: prove storage, uncordon
+#   ansible-playbook playbooks/46-prove-node-storage.yml -e target_node=k8s-lab5
+#
+#   # later: move kernel + module + driver together (bump nvidia_driver_version
+#   # in group_vars/k3s_gpu.yml first if the new module needs a newer driver)
+#   ansible-playbook playbooks/51-gpu-node.yml --ask-become-pass -e nvidia_gpu_move=true
+#
+#   # assertions only
+#   ansible-playbook playbooks/51-gpu-node.yml --ask-become-pass --tags verify
+#
+# The full procedure, with the cluster side and the rollback, is
+# docs/operate/gpu-runner.md.
+#
+# ── Why the label is set HERE, and last ──────────────────────────────────────
+# `nvidia.com/gpu.present=true` is what the device plugin's DaemonSet and the
+# GPU runner scale set select on. Setting it only after the node has proven
+# its driver from the inside means the label is a statement of fact: nothing
+# GPU-shaped is ever scheduled onto a node that has not passed verify.yml.
+#
+# It is a `kubectl label`, not `node-label:` in config.yaml, because k3s applies
+# node-label only when a node REGISTERS (docs.k3s.io, "Node Labels and Taints")
+# and k8s-5 registered on 2026-07-30. Same mechanism as 50-ci-taint.yml.
+# ⚠️ So a node that is ever rejoined (40-add-node.yml, 45-change-node-role.yml)
+# comes back WITHOUT it. Re-run this playbook after any rejoin.
+#
+# ── Why the node stays cordoned after a reboot ───────────────────────────────
+# README invariant: "Do not uncordon a node until a storage proof passes on
+# it." A reboot is exactly when multipath, iscsid and the CSI driver have to
+# come back on their own. 46-prove-node-storage.yml is that gate, unchanged.
+#
+# ⚠️ BEFORE STEP 2, read what a drain of this node moves: on 2026-11-11 that was
+# nine claude-box sessions, CNPG replicas of postgres-ha, immich-db and
+# code-health, tempo, and any CI runner mid-job. No CNPG primary was on it,
+# but the move below handles one if there is.
+
+- name: NVIDIA driver and container toolkit on GPU agents
+  hosts: k3s_gpu
+  serial: 1
+  any_errors_fatal: true
+  # The role reads ansible_kernel and ansible_distribution_release.
+  gather_facts: true
+  become: true
+  tags: [gpu]
+  vars:
+    node_name: "{{ k8s_node_name }}"
+    # Every kubectl below runs on a server: an agent has no kubeconfig.
+    peer: "{{ k3s_control_plane_host }}"
+
+  roles:
+    - role: nvidia_gpu
+
+  post_tasks:
+    - name: "{{ node_name }} | drain and reboot"
+      when:
+        - not ansible_check_mode
+        - nvidia_gpu_reboot_needed | bool
+      block:
+        # ── CNPG primaries off first, exactly as 45-change-node-role.yml ────
+        # The <cluster>-primary PDB allows ZERO disruptions, so a drain of the
+        # node holding a primary blocks until it times out.
+        - name: "{{ node_name }} | which CNPG primaries live here?"
+          ansible.builtin.shell: >-
+            set -o pipefail;
+            /usr/local/bin/k3s kubectl get pods -A
+            -l cnpg.io/instanceRole=primary
+            -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name}/{.spec.nodeName}{"\n"}{end}'
+            | grep "/{{ node_name }}$" || true
+          args: { executable: /bin/bash }
+          register: cnpg_here
+          changed_when: false
+          delegate_to: "{{ peer }}"
+
+        - name: "{{ node_name }} | move each primary off this node"
+          ansible.builtin.include_tasks: tasks/cnpg-move-primary.yml
+          loop: "{{ cnpg_here.stdout_lines | default([]) }}"
+          loop_control:
+            loop_var: primary_ref
+          when: cnpg_here.stdout | trim | length > 0
+
+        - name: "{{ node_name }} | cordon"
+          ansible.builtin.command: "/usr/local/bin/k3s kubectl cordon {{ node_name }}"
+          delegate_to: "{{ peer }}"
+          changed_when: true
+
+        # NEVER --force, NEVER --disable-eviction: both bypass the PDBs that
+        # protect the database instances. A timeout is the safety working.
+        - name: "{{ node_name }} | drain (respecting every PDB)"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl drain {{ node_name }}
+            --ignore-daemonsets
+            --delete-emptydir-data
+            --timeout={{ k3s_drain_timeout | default('600s') }}
+          delegate_to: "{{ peer }}"
+          changed_when: true
+
+        - name: "{{ node_name }} | reboot onto the NVIDIA driver"
+          ansible.builtin.reboot:
+            msg: "Ansible 51-gpu-node.yml: loading the NVIDIA driver"
+            reboot_timeout: 1200
+            # sshd answering is not the bar; k3s-agent is checked below.
+            test_command: /usr/bin/true
+
+        # 🔴 Facts are from BEFORE the reboot until refreshed: ansible_kernel
+        # would still name the old kernel, and verify.yml compares against it.
+        - name: "{{ node_name }} | refresh facts after the reboot"
+          ansible.builtin.setup:
+            gather_subset: [min]
+
+        - name: "{{ node_name }} | Ready again"
+          ansible.builtin.command: >-
+            /usr/local/bin/k3s kubectl get node {{ node_name }}
+            -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
+          register: ready_after
+          changed_when: false
+          retries: 30
+          delay: 10
+          until: ready_after.stdout == 'True'
+          delegate_to: "{{ peer }}"
+
+    - name: "{{ node_name }} | prove the driver from the node"
+      ansible.builtin.include_role:
+        name: nvidia_gpu
+        tasks_from: verify
+        apply:
+          tags: [verify]
+      tags: [verify]
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | label it as a GPU node (only after verify passed)"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl label node {{ node_name }}
+        nvidia.com/gpu.present=true --overwrite
+      register: gpu_label
+      changed_when: "'not labeled' not in gpu_label.stdout"
+      delegate_to: "{{ peer }}"
+      when: not ansible_check_mode
+
+    - name: "{{ node_name }} | cordoned?"
+      ansible.builtin.command: >-
+        /usr/local/bin/k3s kubectl get node {{ node_name }}
+        -o jsonpath={.spec.unschedulable}
+      register: still_cordoned
+      changed_when: false
+      check_mode: false
+      delegate_to: "{{ peer }}"
+
+    - name: "{{ node_name }} | what next"
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'CHECK MODE: nothing was installed, drained or labelled. The plan
+             line above says whether a real run would reboot.'
+             if ansible_check_mode else
+             (node_name ~ ' is CORDONED. Prove storage, then uncordon: '
+              ~ 'ansible-playbook playbooks/46-prove-node-storage.yml -e target_node=' ~ node_name
+              if (still_cordoned.stdout | trim) == 'true' else
+              node_name ~ ' has its GPU driver proven and the nvidia.com/gpu.present label, and is schedulable.') }}

@@ -87,6 +87,7 @@ with their own verification windows -- folding them in would mean an innocent
 | `playbooks/40-add-node.yml` | join a new node (installs k3s) |
 | `playbooks/45-change-node-role.yml` | server <-> agent, ONE node per run |
 | `playbooks/46-prove-node-storage.yml` | the storage gate, standalone |
+| `playbooks/51-gpu-node.yml` | NVIDIA driver + toolkit on `k3s_gpu` agents; drains and reboots when it must, holds the kernel |
 | `playbooks/60-wireguard.yml` | the edge underlay, both ends |
 | `playbooks/61-edge-firewall.yml` | default-DROP on the edge's public NIC |
 | `playbooks/62-wg-guard.yml` | what the edge may reach on a HOME node |
@@ -116,8 +117,9 @@ on every control-plane node.
 ansible.cfg                     roles_path, no host-key checking (lab2/lab3 fail it)
 inventory/homelab.yml           .home domains, per-node NIC names
 inventory/group_vars/all.yml    k3s_version — the one knob — plus baseline values
-roles/                          11 roles. The ones worth knowing:
+roles/                          13 roles. The ones worth knowing:
   node_baseline/                DNS drop-in, sysctls, multipath.conf, packages
+  nvidia_gpu/                   NVIDIA driver + toolkit + holds, k3s_gpu ONLY
   node_verify/                  the assertions that would have caught lab4/lab5
   k3s_config/                   config.yaml + the token files; unit drop-ins
   cilium/  coredns_ha/  kube_vip/  argocd/  kubectl_oidc/
@@ -156,8 +158,9 @@ playbooks/90-preflight.yml      read-only audit
 
 ## Roles and groups
 
-The inventory has one parent group and **three** children -- `k3s_edge` is a
-child of `k3s_agents` -- and the distinction is load-bearing in about 55 places:
+The inventory has one parent group and **four** children -- `k3s_edge` and
+`k3s_gpu` are children of `k3s_agents` -- and the distinction is load-bearing in
+about 55 places:
 
 | group | means | use it for |
 |---|---|---|
@@ -165,6 +168,7 @@ child of `k3s_agents` -- and the distinction is load-bearing in about 55 places:
 | `k3s_servers` | control-plane + etcd | anything needing a local apiserver, a kubeconfig, etcd on `:2381`, or `/var/lib/rancher/k3s/server/` — including every `delegate_to` |
 | `k3s_agents` | workers, edge included | membership, plus anything true of every non-server |
 | `k3s_edge` | the public VPS | the one node that is NOT trusted infrastructure: no storage baseline, no CSI, its own firewall |
+| `k3s_gpu` | agents with an NVIDIA GPU for CI (k8s-5) | `51-gpu-node.yml` only; nothing in `site.yml` reads it |
 
 ⚠️ **`k3s_nodes` includes the edge node**, so a play written for "the fleet"
 reaches a public machine. Two plays exist specifically to split them, and the

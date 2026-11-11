@@ -1,0 +1,41 @@
+---
+# NVIDIA GPU nodes. Read only by roles/nvidia_gpu (playbooks/51-gpu-node.yml).
+#
+# ── The driver branch is a ceiling, not a preference ─────────────────────────
+# 580 is the LAST NVIDIA branch that supports Maxwell, Pascal and Volta. NVIDIA
+# put it in its Unix feature-deprecation schedule ("The release 580 series will
+# be the last to support GPUs based on the Maxwell, Pascal, and Volta
+# architectures"); the 590 series that followed dropped them. k8s-5's Quadro
+# K2200 is Maxwell (GM107GL), so NOTHING newer than 580 will ever drive it.
+# NVIDIA's Quadro support plan gives 580 critical security updates through
+# October 2028 (nvidia.custhelp.com answer 5706). After that the card is on an
+# unpatched driver; see docs/operate/gpu-runner.md, "When 580 ends".
+#
+# ⚠️ `ubuntu-drivers devices` on k8s-5 marks nvidia-driver-470 "recommended" for
+# this card (checked 2026-11-11). Do not follow it: 470 is the KEPLER legacy
+# branch and is itself past end of life. 580 is offered for the card too.
+nvidia_driver_branch: "580"
+
+# ── The one knob for the driver ──────────────────────────────────────────────
+# Every userspace package is installed at EXACTLY this version and then held.
+# Ubuntu publishes the same version in noble-updates and noble-security
+# (580.178.04-0ubuntu0.24.04.1 in both on 2026-11-11).
+#
+# 🔴 THE KERNEL MODULE AND THIS VERSION MOVE TOGETHER OR NOT AT ALL.
+# Canonical's prebuilt module for a kernel requires
+# `nvidia-kernel-common-580 (>= <the NVIDIA version it was built from>)`, and
+# the userspace meta requires `nvidia-kernel-common-580 (<= this version)`.
+# Both read off apt-cache on k8s-5. A newer kernel built against a newer 580
+# cannot be installed beside an older held userspace, and an unattended
+# userspace upgrade under a loaded older module gives "Driver/library version
+# mismatch" until the next reboot. That is why the role holds the KERNEL
+# metapackages on this node as well (see roles/nvidia_gpu/defaults/main.yml).
+nvidia_driver_version: "580.178.04-0ubuntu0.24.04.1"
+
+# NVIDIA Container Toolkit, from NVIDIA's apt repository (not Ubuntu's).
+# 1.20.1 (2026-09-19) is the FLOOR, not just the pin: its release notes say
+# "Fixed NVIDIA X.Org driver module mount paths so that containers render
+# correctly", and the GPU runner starts an X server on nvidia_drv.so that the
+# toolkit injects. 1.20.2-1 is in the repo too but had no GitHub release when
+# this was written, so it was not taken.
+nvidia_container_toolkit_version: "1.20.1-1"

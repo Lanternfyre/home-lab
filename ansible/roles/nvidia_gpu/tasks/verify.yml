@@ -1,0 +1,132 @@
+---
+# What has to be TRUE on a GPU node, asserted from the node itself. Values, not
+# file presence: every check reads what the kernel, the driver or k3s actually
+# reports. Run by 51-gpu-node.yml after the reboot, and on its own with
+# `--tags verify`.
+#
+# ⚠️ None of this proves a POD can use the GPU. That proof is the test pod in
+# docs/operate/gpu-runner.md, step 6, which runs nvidia-smi, vulkaninfo and
+# glxinfo inside the runtime this file only shows k3s has registered.
+
+- name: "verify | nvidia-smi sees the card at its slot, on the pinned driver"
+  become: true
+  ansible.builtin.command: >-
+    nvidia-smi --query-gpu=name,pci.bus_id,driver_version --format=csv,noheader
+  register: v_smi
+  changed_when: false
+
+- name: "verify | assert card and driver version"
+  ansible.builtin.assert:
+    that:
+      - v_smi.stdout_lines | length == 1
+      - v_smi.stdout | lower is search(nvidia_gpu_pci_slot | regex_escape)
+      - v_smi.stdout is search(nvidia_driver_version.split('-')[0] | regex_escape)
+    fail_msg: >-
+      nvidia-smi on {{ inventory_hostname }} reports "{{ v_smi.stdout | trim }}";
+      expected one GPU at {{ nvidia_gpu_pci_slot }} on driver
+      {{ nvidia_driver_version.split('-')[0] }}.
+    success_msg: "{{ v_smi.stdout | trim }}"
+
+# nvidia-smi is userspace. A userspace newer than the loaded module still
+# prints a version -- this reads the module's own.
+- name: "verify | the LOADED kernel module is the same version"
+  ansible.builtin.command: cat /proc/driver/nvidia/version
+  register: v_proc
+  changed_when: false
+
+- name: "verify | assert module version"
+  ansible.builtin.assert:
+    that: v_proc.stdout is search(nvidia_driver_version.split('-')[0] | regex_escape)
+    fail_msg: >-
+      The loaded nvidia module says "{{ v_proc.stdout_lines | first | default('') }}",
+      not {{ nvidia_driver_version.split('-')[0] }}. Userspace and module differ,
+      which every container sees as "Driver/library version mismatch". A reboot
+      loads the installed module.
+
+- name: "verify | the driver bound to the card"
+  ansible.builtin.command: "lspci -k -s {{ nvidia_gpu_pci_slot }}"
+  register: v_lspci
+  changed_when: false
+
+- name: "verify | assert nvidia owns the card"
+  ansible.builtin.assert:
+    that: v_lspci.stdout is search('Kernel driver in use: nvidia$', multiline=True)
+    fail_msg: >-
+      lspci -k says: {{ v_lspci.stdout_lines | select('search', 'driver in use') | list }}.
+      Expected "Kernel driver in use: nvidia".
+
+- name: "verify | nouveau is not loaded"
+  ansible.builtin.stat:
+    path: /sys/module/nouveau
+  register: v_nouveau
+
+- name: "verify | assert no nouveau"
+  ansible.builtin.assert:
+    that: not v_nouveau.stat.exists
+    fail_msg: >-
+      nouveau is loaded on {{ inventory_hostname }} despite
+      /etc/modprobe.d/nvidia-gpu-node-blacklist-nouveau.conf. The initramfs
+      this boot used was probably built before the blacklist existed: run
+      `sudo update-initramfs -u -k all` and reboot again.
+
+- name: "verify | the running kernel is the newest installed one"
+  become: true
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    ls -1 /boot/vmlinuz-*-{{ nvidia_kernel_flavour }}
+    | sed 's#^/boot/vmlinuz-##' | sort -V | tail -n1
+  args:
+    executable: /bin/bash
+  register: v_newest
+  changed_when: false
+
+- name: "verify | assert running == newest, and its module package is installed"
+  ansible.builtin.command: >-
+    dpkg-query -W -f=${Status}
+    linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ ansible_kernel }}
+  register: v_module_pkg
+  changed_when: false
+  failed_when: >-
+    v_module_pkg.stdout != 'install ok installed'
+    or (v_newest.stdout | trim) != ansible_kernel
+
+- name: "verify | the holds are in place"
+  ansible.builtin.command: apt-mark showhold
+  register: v_holds
+  changed_when: false
+
+- name: "verify | assert every package that must move together is held"
+  ansible.builtin.assert:
+    that: item in v_holds.stdout_lines
+    fail_msg: >-
+      {{ item }} is not held. An unattended upgrade can now move it apart from
+      the others; see group_vars/k3s_gpu.yml for why that loses the GPU.
+  loop: "{{ nvidia_userspace_packages + nvidia_toolkit_packages + nvidia_held_kernel_packages }}"
+
+- name: "verify | toolkit version"
+  ansible.builtin.command: nvidia-ctk --version
+  register: v_ctk
+  changed_when: false
+
+- name: "verify | assert toolkit version"
+  ansible.builtin.assert:
+    that: v_ctk.stdout is search(nvidia_container_toolkit_version.split('-')[0] | regex_escape)
+    fail_msg: "nvidia-ctk reports {{ v_ctk.stdout_lines | first | default('') }}; expected {{ nvidia_container_toolkit_version }}."
+
+# k3s decides at START whether the nvidia runtime exists. A toolkit installed
+# after k3s started is invisible to it until the next restart, and the
+# symptom is a GPU pod failing with "no runtime for nvidia is configured".
+- name: "verify | k3s's generated containerd config carries the nvidia runtime"
+  become: true
+  ansible.builtin.command: "grep -n nvidia-container-runtime {{ k3s_containerd_config }}"
+  register: v_k3s_runtime
+  changed_when: false
+  failed_when: v_k3s_runtime.rc != 0
+
+- name: "verify | report"
+  ansible.builtin.debug:
+    msg: >-
+      {{ k8s_node_name }}: {{ v_smi.stdout | trim }}; module matches; nouveau
+      absent; kernel {{ ansible_kernel }} with its nvidia module; {{ v_holds.stdout_lines
+      | length }} packages held; {{ v_ctk.stdout_lines | first }}; k3s runtime
+      lines: {{ v_k3s_runtime.stdout_lines | length }}.
