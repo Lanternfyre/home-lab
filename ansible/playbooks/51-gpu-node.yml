@@ -116,15 +116,16 @@
           ansible.builtin.setup:
             gather_subset: [min]
 
+        # `kubectl wait`, not a jsonpath on .status.conditions: `command`'s
+        # argument splitting strips the quotes out of [?(@.type=="Ready")], and
+        # kubectl then fails every retry with "unrecognized identifier Ready"
+        # on a node that is Ready (k8s-5, 2026-11-11; roles/argocd records the
+        # same trap from 2026-08-02).
         - name: "{{ node_name }} | Ready again"
           ansible.builtin.command: >-
-            /usr/local/bin/k3s kubectl get node {{ node_name }}
-            -o jsonpath={.status.conditions[?(@.type=="Ready")].status}
-          register: ready_after
+            /usr/local/bin/k3s kubectl wait --for=condition=Ready
+            node/{{ node_name }} --timeout=300s
           changed_when: false
-          retries: 30
-          delay: 10
-          until: ready_after.stdout == 'True'
           delegate_to: "{{ peer }}"
 
     - name: "{{ node_name }} | prove the driver from the node"
