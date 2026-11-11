@@ -260,12 +260,27 @@
   when: not ansible_check_mode or (d_versions.stdout is search('nvidia-container-toolkit=[0-9]'))
 
 # ── Hold everything that must move together ─────────────────────────────────
+# ⚠️ Under --check nothing above was installed, and dpkg_selections refuses a
+# package dpkg has never seen ("Failed to find package ... to perform selection
+# 'hold'", k8s-5's first --check on 2026-11-11). So --check holds only what dpkg
+# already knows and lists the rest as skipped; a real run holds them all.
+# Quoted format: see "detect | installed driver and toolkit versions".
+- name: "fix | which of the packages to hold dpkg knows"
+  ansible.builtin.command: >-
+    dpkg-query -W -f='${Package}\n'
+    {{ (nvidia_userspace_packages + nvidia_toolkit_packages + nvidia_held_kernel_packages) | join(' ') }}
+  register: f_known_packages
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: "fix | hold driver, toolkit and kernel metapackages"
   become: true
   ansible.builtin.dpkg_selections:
     name: "{{ item }}"
     selection: hold
   loop: "{{ nvidia_userspace_packages + nvidia_toolkit_packages + nvidia_held_kernel_packages }}"
+  when: not ansible_check_mode or item in f_known_packages.stdout_lines
 
 - name: "flush | rebuild the initramfs before deciding about a reboot"
   ansible.builtin.meta: flush_handlers
