@@ -24,7 +24,7 @@ threat model for a cluster with a public member) and
 | **H0** | **Backups** — CNPG `ScheduledBackup` (barman → object store) for the databases, plus Velero for manifests and the remaining PVs. Two tools, not Velero alone | 🔴 **DEFERRED** by the operator 2026-08-31, re-confirmed 2026-09-06 |
 | **H1** | **Default-deny egress, one namespace at a time.** A CiliumNetworkPolicy per namespace naming exactly what that workload may reach | ✅ 9 namespaces. `monitoring` deliberately excluded — see below |
 | **H2** | **Pod Security Admission** on every namespace, level measured against the running pods rather than guessed | ✅ 30 namespaces |
-| **H3** | **Kyverno pod policies** — what PSA gives up in a `privileged` namespace, asserted explicitly | ✅ all 7 `privileged` namespaces |
+| **H3** | **Kyverno pod policies** — what PSA gives up in a `privileged` namespace, asserted explicitly | ✅ all 10 `privileged` namespaces (`nvidia-device-plugin` added 2026-11-11; this cell said 7 while 9 existed) |
 | **H4** | **ServiceAccount tokens and RBAC** | 🔴 **OPEN, and there is no plan behind it.** It has never been more than a heading |
 | **H5** | **Tetragon** (runtime enforcement / eBPF observability) | deferred, no plan |
 

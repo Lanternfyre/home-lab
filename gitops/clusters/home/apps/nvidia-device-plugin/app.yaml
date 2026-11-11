@@ -1,0 +1,24 @@
+# NVIDIA device plugin: advertises `nvidia.com/gpu` on nodes labelled
+# `nvidia.com/gpu.present=true`, which ansible/playbooks/51-gpu-node.yml sets
+# only after the node has proven its driver. Today that is k8s-lab5's Quadro
+# K2200, and nothing else. Procedure: docs/operate/gpu-runner.md.
+#
+# ── The device plugin, NOT the GPU Operator ──────────────────────────────────
+# The Operator's value is managing the driver and the container toolkit as
+# DaemonSets. Here both are host packages under Ansible, deliberately: the
+# driver branch is pinned to 580 because nothing newer drives Maxwell, and the
+# kernel is held with it. With those two parts switched off, the Operator still
+# brings its own controller, a ClusterPolicy CRD, Node Feature Discovery on
+# EVERY node (the public edge node included), a validator and a DCGM exporter
+# -- six components to deliver the one this chart delivers alone: a single
+# DaemonSet pod on the one labelled node.
+#
+# ⚠️ Pinned. 0.20.1 (2026-09-22) is the newest release; the chart is NVIDIA's
+# own Helm repository, not OCI. Read the release notes before a bump: the
+# plugin's affinity and its default strategies have changed between minors
+# (0.19.0 changed three defaults, 0.19.3 reverted them).
+repoURL: "https://nvidia.github.io/k8s-device-plugin"
+chart: "nvidia-device-plugin"
+targetRevision: "0.20.1"
+releaseName: "nvidia-device-plugin"
+namespace: "nvidia-device-plugin"
