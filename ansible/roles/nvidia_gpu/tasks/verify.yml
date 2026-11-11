@@ -50,7 +50,7 @@
 
 - name: "verify | assert nvidia owns the card"
   ansible.builtin.assert:
-    that: v_lspci.stdout is search('Kernel driver in use: nvidia$', multiline=True)
+    that: "v_lspci.stdout is search('Kernel driver in use: nvidia$', multiline=True)"
     fail_msg: >-
       lspci -k says: {{ v_lspci.stdout_lines | select('search', 'driver in use') | list }}.
       Expected "Kernel driver in use: nvidia".
