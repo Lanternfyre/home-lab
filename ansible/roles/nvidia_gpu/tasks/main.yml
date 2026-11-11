@@ -100,12 +100,15 @@
   changed_when: false
   check_mode: false
 
+# ⚠️ regex_findall, not regex_search: ansible-core 2.21's regex_search with a
+# group argument raises "'NoneType' object has no attribute 'group'" when
+# nothing matches, which is every run before the driver is installed.
 - name: "detect | report"
   tags: [always]
   ansible.builtin.debug:
     msg: >-
       {{ k8s_node_name }}: card={{ nvidia_gpu_pci_id }},
-      module={{ (d_proc_version.content | default('') | b64decode | regex_search('Kernel Module\\s+(\\S+)', '\\1') | default(['ABSENT'], true) | first) }},
+      module={{ (d_proc_version.content | default('') | b64decode | regex_findall('Kernel Module\\s+(\\S+)') | default(['ABSENT'], true) | first) }},
       nouveau={{ 'LOADED' if d_nouveau.stat.exists else 'absent' }},
       packages=[{{ d_versions.stdout_lines | join(', ') | default('none', true) }}],
       k3s-nvidia-runtime={{ 'yes' if (d_k3s_runtime.stdout | default('0') | int) > 0 else 'NO' }},
