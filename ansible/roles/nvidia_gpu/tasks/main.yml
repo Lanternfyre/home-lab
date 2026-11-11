@@ -44,9 +44,12 @@
   failed_when: false
   check_mode: false
 
+# ⚠️ A package this role holds reads "hold ok installed", not "install ok
+# installed": the first real run holds linux-{{ nvidia_kernel_flavour }}, so every
+# later run (k8s-5, 2026-11-11) failed here. Match the installed state alone.
 - name: "guard | the prebuilt modules must match the kernel flavour"
   ansible.builtin.assert:
-    that: g_kernel_meta.stdout == 'install ok installed'
+    that: g_kernel_meta.stdout is match('(install|hold) ok installed$')
     fail_msg: >-
       linux-{{ nvidia_kernel_flavour }} is not installed on {{ inventory_hostname }},
       so linux-modules-nvidia-{{ nvidia_driver_branch }}-{{ nvidia_kernel_flavour }}
@@ -314,7 +317,7 @@
 # job queues forever with no error anywhere.
 - name: "plan | refuse to leave a next boot without a driver"
   ansible.builtin.assert:
-    that: p_next_module.stdout == 'install ok installed'
+    that: p_next_module.stdout is match('(install|hold) ok installed$')
     fail_msg: >-
       The next boot of {{ inventory_hostname }} picks kernel
       {{ p_next_kernel.stdout | trim }}, and

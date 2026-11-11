@@ -87,7 +87,7 @@
   register: v_module_pkg
   changed_when: false
   failed_when: >-
-    v_module_pkg.stdout != 'install ok installed'
+    v_module_pkg.stdout is not match('(install|hold) ok installed$')
     or (v_newest.stdout | trim) != ansible_kernel
 
 - name: "verify | the holds are in place"
