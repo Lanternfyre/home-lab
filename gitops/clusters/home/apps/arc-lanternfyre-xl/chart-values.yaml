@@ -9,8 +9,9 @@
 # Why a separate set: mutation (Stryker) is plain dotnet — no docker — but needs
 # the big-runner sizing (the 8Gi arc-linux runner was OOM-killed on both
 # pilot attempts), and parking it on the docker-capable set starved every
-# Quality run of the single dind slot for hours. This set = that sizing
-# WITHOUT the dind sidecar, maxRunners 1 (one long campaign at a time).
+# Quality run of the single dind slot for hours. This set = that memory
+# envelope WITHOUT the dind sidecar. It was maxRunners 1 (one long campaign at
+# a time) until 2026-11-13; maxRunners below says why it is 4 now.
 #
 # ⚠️ This is the CAPACITY pool, not a toolchain. It runs the same
 # actions-runner-base image as arc-linux; the only differences are the
@@ -22,11 +23,18 @@ githubConfigSecret: gha-runner-github-app
 
 runnerScaleSetName: "arc-linux-xl"
 
-# The migration is over -- arc-lanternfyre-mutation was deleted 2026-09-16 --
-# so the effective ceiling is 1 again. (While both were registered it was
-# briefly 2, harmless only because one label was ever referenced at a time.)
+# The migration is over -- arc-lanternfyre-mutation was deleted 2026-09-16.
+# (While both were registered the ceiling was briefly 2, harmless only because
+# one label was ever referenced at a time.)
+#
+# 1 -> 4 on 2026-11-13 (Necronia core-v2 R463): a full run's mutation is now
+# split into parallel jobs, a group of projects each, that all target this
+# label beside the verify job on arc-linux-dind. One runner would run them in
+# series. 4 is one per worker; the spread below puts them on different nodes
+# when it can, and the cpu request was lowered in the same change so that a
+# runner fits k8s-lab4, lab6 and lab7, not only lab5.
 minRunners: 0
-maxRunners: 1
+maxRunners: 4
 
 # P0 #3 — explicit, helm-template lookup returns empty under ArgoCD.
 controllerServiceAccount:
@@ -102,10 +110,21 @@ template:
         image: ghcr.io/lanternfyre/actions-runner-base:latest
         command: ["/home/runner/run.sh"]
         resources:
-          # Same envelope that let the Debug build + full test suites survive
-          # on the docker-capable set; requests steer to k8s-4/5 and off the
-          # 4-CPU/16Gi members + 2-CPU k8s-6. No CPU limit — standing rule.
-          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
+          # Memory: the same envelope that let the Debug build + full test
+          # suites survive on the docker-capable set. No CPU limit — standing
+          # rule.
+          #
+          # cpu 4 -> 1 on 2026-11-13 (Necronia core-v2 R463), with maxRunners
+          # 1 -> 4. At 4 only k8s-lab5 could take a runner. Measured that day,
+          # less the requests of the eight claude boxes parked in the same PR,
+          # the workers have lab4 3.3, lab6 1.66, lab7 4.57 and lab5 15.8
+          # cores of requests free (no runner up). 1 fits every worker with
+          # room for drift, and still fits lab6 if bravo (520m) comes back.
+          # The request only places the pod and weights it under contention:
+          # with no limit a runner uses what the node has idle, and .NET
+          # reports the node's cores, so Stryker's default concurrency follows
+          # the node. A group that lands on lab6 (2 cores) is the slow one.
+          requests: {cpu: "1", memory: 8Gi, ephemeral-storage: 4Gi}
           limits: {memory: 16Gi, ephemeral-storage: 16Gi}
         securityContext:
           allowPrivilegeEscalation: false
