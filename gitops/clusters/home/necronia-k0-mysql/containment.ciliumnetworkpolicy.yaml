@@ -8,6 +8,9 @@ spec:
     matchLabels: {app.kubernetes.io/name: necronia-k0-mysql}
   enableDefaultDeny: {ingress: true, egress: true}
   ingress:
+    # Charlie was parked on 2026-11-13 (claude-boxes/README.md, "Parked boxes"),
+    # so nothing matches this rule until it comes back. Kept: it is this
+    # database's only client.
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-charlie

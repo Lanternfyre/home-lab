@@ -1,8 +1,14 @@
 # claude-box-charlie
 #
-# Apps in this namespace: one Claude Code workspace box, box3 (the `charlie`
-# directory under gitops/clusters/home/claude-boxes/). A home agent node, like
-# alpha since 2026-09-12.
+# Apps in this namespace: necronia-k0-assets only, a one-shot Job that staged
+# the K0 asset map into this box's claim and has been complete since 2026-10-27
+# (bootstrap/necronia-k0-assets.application.yaml). The Claude Code workspace
+# box that lived here, the `oracle-ops` role box (the `charlie` directory under
+# gitops/clusters/home/claude-boxes/), was parked on 2026-11-13 to free worker
+# CPU for CI. The namespace stays because it holds the box's protected claim,
+# home-claude-box-charlie-0 (protected-volumes.yaml): deleting the namespace
+# would hang in Terminating. The box comes back by restoring its directory; see
+# "Parked boxes" in claude-boxes/README.md.
 #
 # Same posture as claude-box-alpha, and for the same reasons -- that file's
 # header carries them: `restricted` BY CONSTRUCTION, because the workload is an

@@ -1,5 +1,9 @@
 # Run one Beads pilot on golf
 
+**golf is parked** (since 2026-11-13): its pod is gone and its volume is kept.
+Bring it back first, as [Parked boxes](../../gitops/clusters/home/claude-boxes/README.md#parked-boxes)
+describes, before any step below.
+
 For the operator: run an approved bead with Claude or Codex in a separate worktree
 and tmux window, while golf's Remote Control session stays in window 0. The
 [project helper](../../scripts/agent-pilot.py) calls the shared beadwork runner;

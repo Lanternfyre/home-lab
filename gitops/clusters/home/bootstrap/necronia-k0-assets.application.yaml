@@ -1,4 +1,10 @@
 # One pinned OCI asset stage into Charlie's persistent operator cache.
+#
+# Charlie was parked on 2026-11-13 (claude-boxes/README.md, "Parked boxes").
+# The Job finished on 2026-10-27 and its output stays on charlie's claim, which
+# is kept. Recreated while charlie is parked, the Job would stay Pending: its
+# podAffinity needs charlie's pod, and its ghcr-docker pull secret went with
+# charlie's Application.
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:

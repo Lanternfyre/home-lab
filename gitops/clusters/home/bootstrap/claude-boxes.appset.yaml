@@ -44,6 +44,17 @@ spec:
   # override. This one does not: `argocd-cmd-params-cm` carries no
   # `applicationsetcontroller.enable.policy.override` key, checked 2026-09-13.)
   # The claim is protected either way.
+  #
+  # 🔴 CORRECTION, 2026-11-13: the line below does NOT keep the objects. In
+  # Argo CD v3.4.6 (applicationset/utils/utils.go, RenderTemplateParams) it only
+  # stops the controller ADDING the resources finalizer to an Application whose
+  # template has none -- and the template below lists that finalizer itself, so
+  # every box's Application carries it (all nine did, checked that day). The
+  # controller strips it before a delete only when the destination cluster is
+  # gone (deleteInCluster). A box whose Application is deleted therefore loses
+  # its StatefulSet and pod; only the claim survives, as it is not Argo-tracked,
+  # its StatefulSet says `whenDeleted: Retain`, and Kyverno denies deleting it.
+  # Parking eight boxes on 2026-11-13 depends on that cascade.
   syncPolicy:
     preserveResourcesOnDeletion: true
 
