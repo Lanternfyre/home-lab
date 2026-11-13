@@ -1,7 +1,7 @@
 # H1 -- who may reach the beads Dolt server, and what it may reach.
 #
 # The server holds every agent's issues and memories, and its app user can drop
-# databases. So the door is narrow: the six boxes east-west, the LAN on the
+# databases. So the door is narrow: the agent boxes east-west, the LAN on the
 # LoadBalancer, nothing else -- in particular not the edge node and not the VPN.
 apiVersion: cilium.io/v2
 kind: CiliumNetworkPolicy
@@ -31,23 +31,9 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-alpha
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-bravo
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-charlie
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-delta
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-echo
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-foxtrot
-        # The role boxes added 2026-10-25: ops, implementer-1, implementer-2.
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-golf
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-hotel
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-india
+        # The other eight boxes (bravo to india) were parked on 2026-11-13 and
+        # their lines removed; see "Parked boxes" in claude-boxes/README.md. A
+        # box that comes back with beads on gets its line here in the same change.
       toPorts:
         - ports:
             - {port: "3306", protocol: TCP}

@@ -45,29 +45,9 @@ spec:
     - fromEndpoints:
         - matchLabels:
             io.kubernetes.pod.namespace: claude-box-alpha
-        # box2 and box3 (claude-boxes/bravo, claude-boxes/charlie), each on its
-        # own paired device. Their auq-proxy dials the same ClusterIP east-west.
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-bravo
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-charlie
-        # The techyon boxes (claude-boxes/delta, echo, foxtrot; 2026-10-22),
-        # reusing the Lanternfyre boxes' device tokens pairwise.
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-delta
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-echo
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-foxtrot
-        # The Lanternfyre role boxes added 2026-10-25 (claude-boxes/golf = ops,
-        # hotel = implementer-1, india = implementer-2), reusing alpha's,
-        # bravo's and charlie's device tokens pairwise.
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-golf
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-hotel
-        - matchLabels:
-            io.kubernetes.pod.namespace: claude-box-india
+        # The other eight boxes (bravo to india) were parked on 2026-11-13 and
+        # their lines removed; see "Parked boxes" in claude-boxes/README.md. A
+        # box that comes back with auq on gets its line here in the same change.
 
     # Prometheus. Nothing scrapes auq today; allowed so that adding a
     # ServiceMonitor later is not a silent metrics gap.

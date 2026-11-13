@@ -367,6 +367,13 @@ protected:
       types into directly. The mitigation is convention, not storage: the box
       holds a contents:write token and is expected to push.
 
+  # ⚠️ The eight boxes below (bravo to india) were PARKED on 2026-11-13 to free
+  # worker CPU for CI: their directories under claude-boxes/ were removed, so
+  # their StatefulSets went with their Applications. These claims were kept on
+  # purpose, still protected, Bound and unmounted, in namespaces that stay: a
+  # box comes back by restoring its directory, and its StatefulSet picks the
+  # same claim up by name. Deleting one is a separate operator decision and
+  # goes through the break-glass above.
   - namespace: claude-box-bravo
     claim: home-claude-box-bravo-0
     size: 20Gi

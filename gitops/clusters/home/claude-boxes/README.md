@@ -18,6 +18,7 @@ first. It leaves the running boxes and their namespace policies untouched.
 
 To try the shared Beads runner with either engine in golf, follow
 [Run one Beads pilot on golf](../../../../docs/operate/agent-box-pilot.md).
+golf is [parked](#parked-boxes), so the pilot needs it brought back first.
 It uses a separate worktree and tmux window. The Codex pilot used full access
 inside the hardened pod to work around its inner sandbox restriction and opened
 [draft runbook PR #268](https://github.com/Lanternfyre/home-lab/pull/268).
@@ -25,9 +26,21 @@ The pilot left window 0 unchanged; the chart rollout below still needs review.
 
 ## The boxes
 
+One box runs: the operator's.
+
 | dir | console | Remote Control name | repos | volume | auq |
 |---|---|---|---|---|---|
 | `alpha` | `https://operator.lab.lanternfyre.dev` | `Lanternfyre-operator` | Lanternfyre (all) | 100Gi (claim; the chart renders 40Gi) | on |
+
+## Parked boxes
+
+The other eight were parked on 2026-11-13, at the operator's request ("for
+now"), to free worker CPU for CI's parallel mutation runners (`arc-linux-xl`,
+Necronia core-v2 R463). Each one's `$HOME` is kept, so a box can come back with
+its login, history and checkouts.
+
+| dir | console | Remote Control name | repos | volume | auq |
+|---|---|---|---|---|---|
 | `bravo` | `https://spec-writer.lab.lanternfyre.dev` | `Lanternfyre-spec-writer` | Lanternfyre (all) | 20Gi | on |
 | `charlie` | `https://oracle-ops.lab.lanternfyre.dev` | `Lanternfyre-oracle-ops` | Lanternfyre (all) | 20Gi | on |
 | `golf` | `https://ops.lab.lanternfyre.dev` | `Lanternfyre-ops` | Lanternfyre, clean | 20Gi | on (alpha's token) |
@@ -37,9 +50,41 @@ The pilot left window 0 unchanged; the chart rollout below still needs review.
 | `echo` | `https://box2.lab.techyon.dev` | `Techyon-box2` | t3chy0n | 20Gi | on (bravo's token) |
 | `foxtrot` | `https://box3.lab.techyon.dev` | `Techyon-box3` | t3chy0n | 20Gi | on (charlie's token) |
 
+**What went:** the box's directory here. Its Application went with it, and
+the Application's resources finalizer took the StatefulSet, the pod, the
+console route, the secrets, the network policy and the read-only
+ClusterRoleBinding. The same change removed the box's line from the auq and
+beads ingress policies and its callback from the authentik gate blueprint.
+
+**What stays:** the namespace (`bootstrap/namespaces/claude-box-<dir>.yaml`)
+and the claim `home-claude-box-<dir>-0`, protected, Bound and unmounted (see
+`protected-volumes.yaml`). Deleting the namespace would hang in Terminating,
+because Kyverno refuses to delete the protected claim inside it. The 1Password
+items and the auq device pairings are untouched. alpha's `restartableBy` still
+names bravo and charlie. charlie's namespace also keeps the finished
+`necronia-k0-assets` Job, and `necronia-k0-mysql` still admits only charlie's
+pod.
+
+**To bring one back,** restore what the parking commit removed for that box,
+in one change, and merge:
+
+```sh
+dir=bravo
+commit=$(git log --diff-filter=D -1 --format=%H -- gitops/clusters/home/claude-boxes/$dir)
+git checkout "$commit^" -- gitops/clusters/home/claude-boxes/$dir
+git show "$commit" -- gitops/clusters/home/apps/auq gitops/clusters/home/apps/beads \
+  gitops/clusters/home/apps/authentik   # re-add this box's lines from here by hand
+```
+
+The StatefulSet finds its old claim by name. Check two things first: the
+image pin in `common-values.yaml` may have moved past what the box's chart
+(`0.1.18`) was tested with, and the box's 520m CPU request has to fit beside
+the CI runners (bravo back on k8s-lab6, a 2-core node, still leaves room for
+one `arc-linux-xl` runner at its 1-CPU request).
+
 ## Shared skills in both CLIs
 
-`common-values.yaml` gives all nine boxes the Beadwork and Docs plugins. Claude
+`common-values.yaml` gives every box the Beadwork and Docs plugins. Claude
 Code reads its managed marketplace settings at session start; a box that has not
 logged in or started a new session may show no installed Claude plugins yet.
 Codex reads the system marketplace and enabled plugin defaults from
@@ -86,7 +131,7 @@ render instead of quietly widening the token. The domain is only the
 hostname -- the gate, the Gateway and the listener are the same for both.
 
 What the two groups SHARE (operator, 2026-10-22): the GitHub App and its key,
-the console item (one ttyd credential and SSH host key for all nine), the GHCR
+the console item (one ttyd credential and SSH host key for every box), the GHCR
 pull secret, the github MCP proxy's PAT, and the auq device tokens -- each
 techyon box reuses its Lanternfyre counterpart's, so unpairing that device in
 auq cuts off both. What differs: repos, `github.installations`, hostname, and

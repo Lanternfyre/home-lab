@@ -1,8 +1,12 @@
 # claude-box-foxtrot
 #
-# Apps in this namespace: one Claude Code workspace box, the techyon box
-# box3.lab.techyon.dev (the `foxtrot` directory under
-# gitops/clusters/home/claude-boxes/; added 2026-10-22). A home agent node.
+# Apps in this namespace: none. The Claude Code workspace box that lived here,
+# the techyon box box3.lab.techyon.dev (the `foxtrot` directory under
+# gitops/clusters/home/claude-boxes/), was parked on 2026-11-13 to free worker
+# CPU for CI. The namespace stays because it holds the box's protected claim,
+# home-claude-box-foxtrot-0 (protected-volumes.yaml): deleting the namespace
+# would hang in Terminating. The box comes back by restoring its directory; see
+# "Parked boxes" in claude-boxes/README.md.
 #
 # Same posture as claude-box-alpha, and for the same reasons -- that file's
 # header carries them: `restricted` BY CONSTRUCTION, because the workload is an
