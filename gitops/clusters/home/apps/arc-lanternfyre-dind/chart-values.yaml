@@ -180,8 +180,16 @@ template:
           # cpu request 4 + memory request 8Gi deliberately steer the pod to
           # the large nodes (k8s-4/5: 32/47Gi allocatable) and off 4-CPU/16Gi
           # members + 2-CPU k8s-6. No CPU limit — repo standing rule.
+          #
+          # cpu limit 8 on 2026-11-13, an exception to that rule (the operator:
+          # "limit cpus please"). Until Necronia core-v2 T21 lands, a full run
+          # still mutates every project in this container, at Stryker's
+          # concurrency 8 sized from k8s-lab5's 20 cores, beside the build and
+          # the test suites; with the arc-linux-xl mutation pods on the same
+          # node, k8s-lab5 rebooted at about 12:52Z. 8 cores' time keeps a
+          # full run's own concurrency and leaves lab5 12 for everything else.
           requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
-          limits: {memory: 16Gi, ephemeral-storage: 12Gi}
+          limits: {cpu: "8", memory: 16Gi, ephemeral-storage: 12Gi}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities: {drop: ["ALL"]}
