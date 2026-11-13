@@ -40,7 +40,7 @@ a working login and the required tools in the box.
 
 ## Prepare once, outside the running agent
 
-Golf remains a [clean-side role box](../../gitops/clusters/home/claude-boxes/README.md#the-boxes):
+Golf remains a [clean-side role box](../../gitops/clusters/home/claude-boxes/README.md#parked-boxes):
 no v1 or tainted checkouts, transcripts or memories. Keep
 `BEADWORK_NO_MEMORIES=1`; the helper sets it for every run. Do not reuse another
 box's volume or credential cache. `AGENTS.md` links to the existing `CLAUDE.md`
