@@ -42,6 +42,11 @@ controllerServiceAccount:
   name: arc-controller-gha-rs-controller
 
 template:
+  # The label the dind set's pods carry beside this one names each set's pods
+  # for the anti-affinity below (2026-11-13).
+  metadata:
+    labels:
+      lanternfyre.dev/ci-runner: mutation
   spec:
     automountServiceAccountToken: false
     priorityClassName: ci-runner
@@ -100,6 +105,21 @@ template:
             - matchExpressions:
                 - key: node-role.kubernetes.io/control-plane
                   operator: DoesNotExist
+      # 2026-11-13, the operator's guard after k8s-lab5 rebooted: a mutation
+      # pod never shares a node with a dind runner pod. A full run's verify
+      # job (dind) and its mutation jobs (this set) start together, and with
+      # both on lab5 the node went down; the CPU limits bound each pod, this
+      # keeps the two heaviest kinds of CI apart. Required, so it binds both
+      # ways: the scheduler also keeps a new dind pod off a node holding a
+      # mutation pod. The cost: a dind pod can wait while mutation pods hold
+      # every node with room for its 4-CPU request (lab5 and lab7), and a
+      # mutation pod waits rather than join the dind pod's node.
+      podAntiAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                lanternfyre.dev/ci-runner: dind
     # v4 posture: cluster-wide, no nodeSelector/tolerations (reserve switch:
     # ansible/playbooks/50-ci-taint.yml).
     imagePullSecrets:

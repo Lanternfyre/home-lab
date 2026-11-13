@@ -56,6 +56,11 @@ controllerServiceAccount:
   name: arc-controller-gha-rs-controller
 
 template:
+  # Names this set's pods for arc-linux-xl's required anti-affinity: no
+  # mutation pod on a node with a dind runner pod (2026-11-13).
+  metadata:
+    labels:
+      lanternfyre.dev/ci-runner: dind
   spec:
     automountServiceAccountToken: false
     priorityClassName: ci-runner
