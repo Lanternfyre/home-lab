@@ -119,6 +119,17 @@ template:
             - matchExpressions:
                 - key: node-role.kubernetes.io/control-plane
                   operator: DoesNotExist
+                # 2026-11-13: off k8s-lab5. Its root disk, the DRAM-less SK hynix
+                # BC501A that every runner's emptyDir writes to (the 2026-09-06
+                # incident above), went 63C, 73C, 75C between 12:13 and 12:33Z under
+                # a full run in this set, and the node stopped at 12:36Z. A CPU limit
+                # slows the writes, it does not stop them. The mutation runners
+                # (arc-linux-xl) stay allowed there for now (the operator: see how
+                # lab5 does with more nodes handling CI). Take this out once lab5's
+                # NVMe is cooled or CI writes to another disk.
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values: [k8s-lab5]
     # v4 posture: cluster-wide, no nodeSelector/tolerations (see
     # ansible/playbooks/50-ci-taint.yml for the reserve dedication switch).
     initContainers:
@@ -193,7 +204,11 @@ template:
           # the test suites; with the arc-linux-xl mutation pods on the same
           # node, k8s-lab5 rebooted at about 12:52Z. 8 cores' time keeps a
           # full run's own concurrency and leaves lab5 12 for everything else.
-          requests: {cpu: "4", memory: 8Gi, ephemeral-storage: 4Gi}
+          # cpu 4 -> 3 on 2026-11-13, with lab5 out of reach: of the workers
+          # left, lab7 has about 4.6 cores of requests free and lab4 3.3, so 4
+          # fits lab7 alone and one busy pod there leaves CI with no node; 3
+          # fits both. The 8-CPU limit still lets a run burst on an idle node.
+          requests: {cpu: "3", memory: 8Gi, ephemeral-storage: 4Gi}
           limits: {cpu: "8", memory: 16Gi, ephemeral-storage: 12Gi}
         securityContext:
           allowPrivilegeEscalation: false

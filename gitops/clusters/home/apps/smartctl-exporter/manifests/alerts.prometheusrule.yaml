@@ -163,19 +163,37 @@ spec:
               this is airflow or ambient, not a drive fault -- but sustained
               heat is what turns a healthy drive into a failing one.
 
+        # 2026-11-13: k8s-lab5's NVMe went 63C, 73C, 75C between 12:13 and
+        # 12:33Z under CI and the node stopped at 12:36Z. The old rule, above 75C
+        # for 30m, could not fire before the node died. Measured that day, the
+        # NVMe drives idle at 44-48C (lab5) and 31-33C (the other); the 64C
+        # baseline the old description gave no longer holds.
         - alert: SmartNvmeTemperatureHigh
           expr: |
-            smartctl_device_temperature{temperature_type="current"} > 75
+            smartctl_device_temperature{temperature_type="current"} > 65
               and on (node, device) smartctl_device{protocol="NVMe"}
-          for: 30m
+          for: 5m
           labels:
             severity: warning
           annotations:
             summary: "{{ $labels.node }} {{ $labels.device }} at {{ $value }}C"
             description: >-
-              NVMe above 75C for half an hour. Idle baseline is 64C, so this
-              is roughly 11C of unexplained rise and close to the point where
-              the controller throttles itself.
+              NVMe above 65C for five minutes, about 20C over its idle. On
+              2026-11-13 lab5's reached 75C twenty minutes after passing 63C
+              and the node stopped; look at what CI runs on the node.
+
+        - alert: SmartNvmeTemperatureCritical
+          expr: |
+            smartctl_device_temperature{temperature_type="current"} > 72
+              and on (node, device) smartctl_device{protocol="NVMe"}
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{ $labels.node }} {{ $labels.device }} at {{ $value }}C"
+            description: >-
+              NVMe above 72C for two minutes: on 2026-11-13 lab5 stopped three
+              minutes after reaching 75C. Cordon the node or cancel the CI on it.
 
         # --- is the monitoring itself telling the truth -------------------
         # The failure mode this whole app exists to avoid is a monitoring
