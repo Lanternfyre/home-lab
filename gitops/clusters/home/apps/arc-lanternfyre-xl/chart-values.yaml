@@ -124,8 +124,20 @@ template:
           # with no limit a runner uses what the node has idle, and .NET
           # reports the node's cores, so Stryker's default concurrency follows
           # the node. A group that lands on lab6 (2 cores) is the slow one.
+          #
+          # cpu limit 2 on 2026-11-13, an exception to the no-CPU-limit rule
+          # for this set (the operator: "limit cpus please"). The day #320
+          # merged, Necronia core-v2's first split full run put mutation pods
+          # on lab4, lab5 and lab7 while a full run still mutated everything in
+          # the dind runner on lab5; with no limit each Stryker sized itself
+          # from the node's cores (8 test hosts a pod on lab5) and k8s-lab5
+          # rebooted at about 12:52Z. A limit is a CFS quota: a pod gets 2
+          # cores' time whatever the node has, so four runners use at most 8
+          # cores of the workers. Stryker reads the quota for its concurrency
+          # (core-v2 T21), so it starts 2 test hosts, not 8, and stays inside
+          # the 16Gi memory limit. Request 1 still fits lab6.
           requests: {cpu: "1", memory: 8Gi, ephemeral-storage: 4Gi}
-          limits: {memory: 16Gi, ephemeral-storage: 16Gi}
+          limits: {cpu: "2", memory: 16Gi, ephemeral-storage: 16Gi}
         securityContext:
           allowPrivilegeEscalation: false
           capabilities: {drop: ["ALL"]}
