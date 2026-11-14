@@ -105,6 +105,18 @@ template:
             - matchExpressions:
                 - key: node-role.kubernetes.io/control-plane
                   operator: DoesNotExist
+                # 2026-11-14: k8s-lab7 is kept for the dind runner. With the
+                # dind runner off lab5 (its NVMe) and the anti-affinity below,
+                # a full run's four mutation pods spread over lab4, lab5, lab6
+                # and lab7 the moment its plan job ends, and the verify job's
+                # dind pod then had no node: lab6 is too small for its 3-CPU
+                # request, lab4 short of CPU beside a mutation pod, lab7 held
+                # by one (run 43581618476 waited "0/8 nodes are available").
+                # The verify job then ran only after mutation, not beside it.
+                # Mutation keeps lab4, lab5 and lab6, two pods on lab5 at most.
+                - key: kubernetes.io/hostname
+                  operator: NotIn
+                  values: [k8s-lab7]
       # 2026-11-13, the operator's guard after k8s-lab5 rebooted: a mutation
       # pod never shares a node with a dind runner pod. A full run's verify
       # job (dind) and its mutation jobs (this set) start together, and with
