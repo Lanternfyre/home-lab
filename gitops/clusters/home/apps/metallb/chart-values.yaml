@@ -1,0 +1,57 @@
+# MetalLB 0.15.3, layer 2 only: one IPAddressPool and one L2Advertisement in
+# manifests/, no BGP peers.
+#
+# ── Why this file exists (2026-11-15) ────────────────────────────────────────
+# The speaker on k8s-lab6 was killed 305 times in 87 days, 216 of them the frr
+# container, every one a liveness kill (exit 137/143), never a crash. k8s-lab6
+# has 2 allocatable CPUs and an arc-linux-xl runner (request 1, limit 2) lands
+# there by design; whenever it built, the node sat at 85-99% and the speaker
+# pod, BestEffort with 1 s probe timeouts, missed its probes AND its memberlist
+# gossip. The other six speakers marked k8s-lab6 failed 291 times in one day
+# (lab7: 9, the rest: 0). Every mark-dead or rejoin changes the memberlist set
+# the layer2 election hashes over, so ALL 12 LoadBalancer IPs re-elected at
+# once: identical nodeAssigned timestamps across every service, counters at
+# 291-996. Each move is a gratuitous ARP and a cut connection for that VIP.
+# Prometheus tied it hour by hour: 9-28 pod restarts in every hour a runner
+# used >1.3 cores on lab6, zero in every hour it did not.
+#
+# Three changes, all in the speaker; none in MetalLB's logic.
+
+speaker:
+  # No FRR. We announce over layer 2 only, and FRR's three containers (frr,
+  # reloader, frr-metrics) were BestEffort too, with a liveness probe served by
+  # frr-metrics shelling `vtysh` under a 1 s timeout the chart does not expose
+  # for tuning. MetalLB's install page names native mode the fit for L2-only
+  # and marks FRR mode (without frr-k8s) deprecated, not native. Nothing in
+  # this repo scraped the frr metrics on :7473.
+  frr:
+    enabled: false
+
+  # The speaker answers ARP for every VIP on the LAN; it ranks with the CNI.
+  # The ci-runner PriorityClass is -100, so this only matters for eviction,
+  # not CPU time -- the requests below are what win CPU under contention.
+  priorityClassName: system-node-critical
+
+  # Requests make the pod Burstable and give it CFS shares. Measured use is
+  # ~11m / 63Mi; 100m is ~10% of the runner's weight, which is enough to
+  # answer a probe and a gossip ping while the node is saturated.
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # 1 s was a tight limit for a /metrics scrape on a saturated 2-core node.
+  # 5 s and 5 failures = 50 s of silence before kubelet acts, which is still
+  # faster than memberlist's own suspicion of a dead speaker.
+  livenessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 5
+  readinessProbe:
+    timeoutSeconds: 5
+    failureThreshold: 5
+
+controller:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
