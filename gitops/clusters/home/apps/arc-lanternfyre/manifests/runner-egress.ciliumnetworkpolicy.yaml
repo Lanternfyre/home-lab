@@ -183,6 +183,18 @@ spec:
         - matchName: storage.googleapis.com
         - matchName: ghcr.io
         - matchPattern: "*.ghcr.io"
+        # GitHub Packages, added 2026-11-15 for necronia-cli's release (Necronia2.0
+        # cli-release.yml): nuget.pkg.github.com takes the push and serves the
+        # feed's index, its blobs come from pkg-containers.githubusercontent.com.
+        # GitHub's self-hosted runner docs list both, with ghcr.io above, under
+        # "Needed for downloading or publishing packages or containers to GitHub
+        # Packages". Caught live: `dotnet nuget push` timed out after 100 s on
+        # GET https://nuget.pkg.github.com/Lanternfyre/index.json (Necronia2.0
+        # runs 43690565258, 43690577473) -- a missing FQDN hangs, as above.
+        # matchPATTERN for the wildcard; its '*' spans one label, which covers
+        # nuget.pkg.github.com.
+        - matchPattern: "*.pkg.github.com"
+        - matchName: pkg-containers.githubusercontent.com
         - matchName: api.nuget.org
         - matchName: www.nuget.org
         - matchName: registry.npmjs.org
