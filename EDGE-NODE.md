@@ -584,7 +584,7 @@ Never open 5060/udp to the world.
 not bind the same ports, and two registrations would split the calls.
 
 Operator steps (1Password item `voip-asterisk`, the firewall run, the ElevenLabs
-trunk): the `human` bead home-lab-20a (`bd show home-lab-20a`).
+trunk): the VoIP entry on [Waiting on the operator](docs/operate/waiting-on-the-operator.md).
 
 ---
 

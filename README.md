@@ -39,7 +39,7 @@ any line here.
 
 - **Resuming work?** Open [Modernization: status and plan](MODERNIZATION.md); its "Immediately next" section is the resume point. Its "Hard-won findings" cost real effort: read them, don't re-derive them.
 - **About to change something?** Read the [invariants](#invariants--violating-these-causes-real-damage) first. Breaking them has caused real damage.
-- **What is waiting on you:** beads labelled `human`, the actions that need a human: credentials, sudo, console, judgement calls. Run `bd human list`, or open the [beads board](https://beads-ui.lab.lanternfyre.dev).
+- **What is waiting on you:** [Waiting on the operator](docs/operate/waiting-on-the-operator.md), the actions that need a human: credentials, sudo, console, judgement calls, each with its commands and checks.
 - **A word you don't know?** The [glossary](docs/domain/glossary.md) gives each term these docs use one meaning, from CNPG and KPR to the storage proof and the sign-in gate.
 
 ## Operate
@@ -60,7 +60,7 @@ any line here.
 - [Edge node](EDGE-NODE.md): the public node, raw TCP/UDP for game servers, and a VPN walled off from the LAN.
 - [Cluster join hardening](CLUSTER-JOIN-HARDENING.md): the threat model for a cluster with a public member. The token it was written about was rotated on 2026-09-06.
 - [Hardening levels H0–H5](HARDENING.md): what the six markers mean, from H0 (backups, deferred) to the `H1` tag on every network policy and the `H3` tag on every Kyverno pod constraint.
-- Documented next to their manifests: [beads](gitops/clusters/home/apps/beads/README.md), [Claude Code workspace boxes](gitops/clusters/home/claude-boxes/README.md), [namespace policy](gitops/clusters/home/bootstrap/namespaces/README.md).
+- Documented next to their manifests: [Claude Code workspace boxes](gitops/clusters/home/claude-boxes/README.md), [namespace policy](gitops/clusters/home/bootstrap/namespaces/README.md).
 
 ## Plans and status
 

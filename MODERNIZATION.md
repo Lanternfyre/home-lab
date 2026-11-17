@@ -3,7 +3,7 @@
 **Living document. Update it as things land.** This is the reference to re-read
 when picking the work back up, or after a context reset.
 
-Companions: beads labelled `human` (actions needing a human; `bd human list`),
+Companions: [Waiting on the operator](docs/operate/waiting-on-the-operator.md) (actions needing a human),
 [Standing warnings](docs/operate/standing-warnings.md),
 [`ansible/README.md`](ansible/README.md), and
 [`scripts/audit-protected-volumes.py`](scripts/audit-protected-volumes.py).

@@ -203,7 +203,7 @@ spec:
     # through the login flow. Once a session expires, their polling otherwise
     # starts a new OAuth attempt on every request, minting a new pair of CSRF
     # cookies each time. Eventually the Cookie header exceeds Envoy's HTTP/2
-    # limit and Chrome reports ERR_HTTP2_PROTOCOL_ERROR (seen on beads-ui).
+    # limit and Chrome reports ERR_HTTP2_PROTOCOL_ERROR (seen on a gated app, 2026-10).
     # Return 401 for those requests without starting OAuth. A page navigation
     # has Sec-Fetch-Dest: document and still redirects to authentik as usual.
     denyRedirect:
