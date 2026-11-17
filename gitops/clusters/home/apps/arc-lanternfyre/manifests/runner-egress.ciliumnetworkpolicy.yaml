@@ -355,6 +355,30 @@ spec:
             - port: "443"
               protocol: TCP
 
+    # ⚠️ The toFQDNs rule above is NOT enough on its own since kube-proxy
+    # replacement: socket load balancing rewrites the pod's connection to the
+    # gateway LB into a connection to the Envoy POD on its backend port, 10443,
+    # before policy sees it, so the FQDN:443 match never fires and the SYN is
+    # dropped. Measured 2026-11-17: the NecroniaAssets dry run's `git annex get`
+    # from s3.lab.techyon.dev timed out from arc-linux-xl, while the same key
+    # listed the bucket from the LAN. The estate-wide fix (KUBE-PROXY-REPLACEMENT.md,
+    # ../../silo/manifests/silo-egress.ciliumnetworkpolicy.yaml, verified there):
+    # name the Gateway by LABEL via toServices, on the BACKEND port. Kept next
+    # to the toFQDNs rule so the allow holds whichever way the datapath routes.
+    - toServices:
+        - k8sServiceSelector:
+            namespace: gateway-envoy
+            selector:
+              matchExpressions:
+                - key: gateway.envoyproxy.io/owning-gateway-name
+                  operator: In
+                  values:
+                    - homelab
+      toPorts:
+        - ports:
+            - port: "10443"
+              protocol: TCP
+
     # Certificate revocation infrastructure — plain HTTP :80 by design (CRL
     # and OCSP are pre-TLS protocols). Found the hard way (2026-08-21):
     # Metalama's compile-time assemblies are Authenticode-signed and .NET
