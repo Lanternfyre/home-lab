@@ -16,13 +16,9 @@ For the pending native NDepend integration, use the
 [disposable identity probe](../../../../docs/operate/ndepend-workspace-probe.md)
 first. It leaves the running boxes and their namespace policies untouched.
 
-To try the shared Beads runner with either engine in golf, follow
-[Run one Beads pilot on golf](../../../../docs/operate/agent-box-pilot.md).
-golf is [parked](#parked-boxes), so the pilot needs it brought back first.
-It uses a separate worktree and tmux window. The Codex pilot used full access
-inside the hardened pod to work around its inner sandbox restriction and opened
-[draft runbook PR #268](https://github.com/Lanternfyre/home-lab/pull/268).
-The pilot left window 0 unchanged; the chart rollout below still needs review.
+The beads-driven pilot runner and the role control that came with it were
+retired with beads on 2026-11-17; the boxes are plain workspaces now, and whether
+they stay is on [Waiting on the operator](../../../../docs/operate/waiting-on-the-operator.md).
 
 ## The boxes
 
@@ -53,8 +49,8 @@ its login, history and checkouts.
 **What went:** the box's directory here. Its Application went with it, and
 the Application's resources finalizer took the StatefulSet, the pod, the
 console route, the secrets, the network policy and the read-only
-ClusterRoleBinding. The same change removed the box's line from the auq and
-beads ingress policies and its callback from the authentik gate blueprint.
+ClusterRoleBinding. The same change removed the box's line from the auq
+ingress policy and its callback from the authentik gate blueprint.
 
 **What stays:** the namespace (`bootstrap/namespaces/claude-box-<dir>.yaml`)
 and the claim `home-claude-box-<dir>-0`, protected, Bound and unmounted (see
@@ -72,7 +68,7 @@ in one change, and merge:
 dir=bravo
 commit=$(git log --diff-filter=D -1 --format=%H -- gitops/clusters/home/claude-boxes/$dir)
 git checkout "$commit^" -- gitops/clusters/home/claude-boxes/$dir
-git show "$commit" -- gitops/clusters/home/apps/auq gitops/clusters/home/apps/beads \
+git show "$commit" -- gitops/clusters/home/apps/auq \
   gitops/clusters/home/apps/authentik   # re-add this box's lines from here by hand
 ```
 
@@ -84,7 +80,7 @@ one `arc-linux-xl` runner at its 1-CPU request).
 
 ## Shared skills in both CLIs
 
-`common-values.yaml` gives every box the Beadwork and Docs plugins. Claude
+`common-values.yaml` gives every box the Docs plugin. Claude
 Code reads its managed marketplace settings at session start; a box that has not
 logged in or started a new session may show no installed Claude plugins yet.
 Codex reads the system marketplace and enabled plugin defaults from
@@ -102,7 +98,7 @@ inside these boxes because the pod blocks Codex's inner bubblewrap namespace.
 The pod remains non-root with all capabilities dropped, RuntimeDefault seccomp,
 its existing network policy and the read-only cluster token. This removes
 Codex's own file and network sandbox within that pod; use an isolated worktree
-for a bead and keep review before integration.
+for a task and keep review before integration.
 
 **The Lanternfyre boxes are ROLE boxes (2026-10-25)** -- the Necronia v2 plan's
 clean room (O30, `~/.claude/plans/this-is-project-we-cheerful-pizza.md`,
@@ -118,8 +114,9 @@ volume), so a role can move to another box without orphaning anything.
   `Lanternfyre/Necronia` in `repos:`. `Lanternfyre/Necronia2.0` joins them only
   after M0/S03 removes its tainted docs, as a history-cut clone (a chart change
   still to come); until then the implementers hold a placeholder repo.
-- **Only the operator messages boxes**, and to clean boxes only bead ids and
-  commands, never C++ detail. Work itself is pulled from Beads by role label.
+- **Only the operator messages boxes**, and to clean boxes only task text and
+  commands, never C++ detail. Work is handed to a box by the operator; the
+  beads role queues are gone (2026-11-17).
 - **Every box is `updateStrategy: RollingUpdate`** (chart >= 0.1.10, operator
   2026-10-25): Argo replaces the pod as soon as a spec change syncs -- a merged
   values edit **restarts that box's session**, unannounced.

@@ -2,7 +2,7 @@
 
 This page is for whoever operates the cluster. It collects the facts that cause damage when they are forgotten, with the few procedures that go with them, grouped by topic. Each entry says how we know it: a check, a measurement or a date.
 
-Terms such as KPR and the storage proof are in the [glossary](../domain/glossary.md). Work that is waiting on the operator is not kept here. Each item is a bead labelled `human`: run `bd human list`, or open the beads board at <https://beads-ui.lab.lanternfyre.dev>.
+Terms such as KPR and the storage proof are in the [glossary](../domain/glossary.md). Work that is waiting on the operator is on [Waiting on the operator](waiting-on-the-operator.md), not here.
 
 ## Nodes and storage
 
@@ -18,6 +18,8 @@ Terms such as KPR and the storage proof are in the [glossary](../domain/glossary
   # with the workload scaled to 0 and the volume confirmed unmounted:
   ssh <node> sudo e2fsck -fy /dev/mapper/<mpathX>
   ```
+
+- **The Immich library (57 GB) exists in exactly one place**, on the 2-bay QNAP over SMB, by decision (2026-08-03, risk accepted; recorded so it is a decision rather than an oversight). `reclaimPolicy: Retain`, the protect label and the ArgoCD guards cover deletion from the cluster side; nothing covers NAS failure, RAID loss, QTS corruption, ransomware or a deletion on the NAS itself. An external USB disk or `pc.home` would cost nothing; cloud about €1–2 a month. Revisit when convenient and record the outcome here.
 
 ## Network exposure
 

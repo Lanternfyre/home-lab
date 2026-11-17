@@ -87,27 +87,6 @@ auqProxy:
 remoteControl:
   name: Lanternfyre-operator
 
-# beads, the shared issue graph and memory (chart >= 0.1.9, image >= 0.1.18;
-# apps/beads/README.md). bd reaches beads-dolt.beads:3306 in-cluster, as user
-# `beads` and as BEADS_ACTOR=<remoteControl.name>, so the audit trail and
-# `--claim` say which box did it. The password comes from the `Beads Dolt` item
-# through an ExternalSecret in this namespace; the chart adds the egress rule,
-# and the server's policy admits this namespace by name.
-# ⚠️ OnDelete and no Reloader: after a password rotation bd here fails with
-# "Access denied" until this pod is deleted (README, "Rotate a password").
-beads:
-  enabled: true
-  onePasswordItem: "Beads Dolt"
-  user: bd_operator
-  actor: operator-alpha
-
-# K0 role control: this box is operator-only. The chart mounts the marker and
-# pinned guard read-only; Claude's managed PreToolUse hook checks the marker
-# against the env role on every tool call. The existing Beads password field is
-# reused through the chart's unchanged ExternalSecret.
-roleControl:
-  role: operator
-  bdGuardSha256: 95114da6a3bd41841085e8dd611dbc5a0cc6455313b86514504f4c2b0517da77
 claudeCode:
   managedSettings:
     hooks:
@@ -292,7 +271,3 @@ networkPolicy:
       toPorts:
         - ports: [{port: "443", protocol: TCP}]
 
-# The Necronia v2 plan keeps bd memories out of every session (clean room):
-# the beadwork session hook reads this and runs `bd prime --no-memories`.
-extraEnv:
-  BEADWORK_NO_MEMORIES: "1"

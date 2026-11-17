@@ -29,7 +29,6 @@ claudeCode:
         # when a plugin's `version` changes, which that repo bumps per change.
         autoUpdate: true
     enabledPlugins:
-      beadwork@claude-shared-skills: true
       docs@claude-shared-skills: true
 
 # Public checkout for editing the skills. This list is separate from `repos:`:
@@ -51,8 +50,6 @@ codex:
     source = "https://github.com/Lanternfyre/claude-shared-skills.git"
     ref = "main"
 
-    [plugins."beadwork@claude-shared-skills"]
-    enabled = true
 
     [plugins."docs@claude-shared-skills"]
     enabled = true

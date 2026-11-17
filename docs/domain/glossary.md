@@ -4,7 +4,7 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 
 **Contexts:** GitOps (how git becomes the running cluster) · Nodes (the k3s machines and how they join) · Storage (volumes, the NAS, databases) · Network (traffic in and out, the Gateways) · Policy (admission rules and hardening) · Tooling (the operator's and agents' own tools).
 
-**Terms:** [App-of-apps](#app-of-apps) · [auq](#auq) · [Bootstrap data](#bootstrap-data) · [Captured unit files](#captured-unit-files) · [Claude box](#claude-box) · [CNPG](#cnpg) · [cred/passwd](#credpasswd) · [Edge node](#edge-node) · [Hardening levels](#hardening-levels) · [Human bead](#human-bead) · [KPR](#kpr) · [Kyverno](#kyverno) · [MetalLB](#metallb) · [Operator](#operator) · [Protected volume](#protected-volume) · [QNAP](#qnap) · [selfHeal](#selfheal) · [Sign-in gate](#sign-in-gate) · [Storage gate](#storage-proof) · [Storage proof](#storage-proof) · [Trident](#trident) · [VAP](#vap) · [Velero](#velero)
+**Terms:** [App-of-apps](#app-of-apps) · [auq](#auq) · [Bootstrap data](#bootstrap-data) · [Captured unit files](#captured-unit-files) · [Claude box](#claude-box) · [CNPG](#cnpg) · [cred/passwd](#credpasswd) · [Edge node](#edge-node) · [Hardening levels](#hardening-levels) · [KPR](#kpr) · [Kyverno](#kyverno) · [MetalLB](#metallb) · [Operator](#operator) · [Protected volume](#protected-volume) · [QNAP](#qnap) · [selfHeal](#selfheal) · [Sign-in gate](#sign-in-gate) · [Storage gate](#storage-proof) · [Storage proof](#storage-proof) · [Trident](#trident) · [VAP](#vap) · [Velero](#velero)
 
 ## App-of-apps
 - **Context:** GitOps
@@ -58,12 +58,6 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 - **Example:** every CiliumNetworkPolicy header carries `H1`.
 - **Rules:** → [Hardening levels H0–H5](../../HARDENING.md)
 
-## Human bead
-- **Context:** Tooling
-- **Means:** a bead labelled `human`: a step only the operator can do, such as credentials, sudo, a console or a judgement call. `bd human list` shows them.
-- **Not:** agent work. Agents never claim one.
-- **Rules:** → [CLAUDE.md](../../CLAUDE.md#beads)
-
 ## KPR
 - **Context:** Network
 - **Means:** Cilium's kube-proxy replacement: Service load-balancing done in BPF instead of kube-proxy's iptables. On (`kube-proxy-replacement=true`, no kube-proxy DaemonSet; checked 2026-10-25).
@@ -83,7 +77,7 @@ The words these docs use for this cluster, each with one meaning. Read an entry 
 
 ## Operator
 - **Context:** Tooling
-- **Means:** the person who owns and runs this cluster: answers the agents' questions, does the `human` beads, merges the PRs.
+- **Means:** the person who owns and runs this cluster: answers the agents' questions, does the steps on [Waiting on the operator](../operate/waiting-on-the-operator.md), merges the PRs.
 - **Not:** a Kubernetes operator such as [CNPG](#cnpg); call those controllers. Not the `operator` role box, which is an agent working for the operator.
 
 ## Protected volume
