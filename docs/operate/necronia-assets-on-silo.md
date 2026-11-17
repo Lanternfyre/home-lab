@@ -26,7 +26,9 @@ No email leaves authentik, so an invitation is a link you copy and send over cha
 2. Copy the link (`https://authentik.techyon.dev/if/flow/enrollment-necronia-assets/?itoken=…`) and send it.
 3. After they enrol, Directory → Groups → `silo-necronia-assets-rw` lists them. If it does not, the flow's user-write stage lost its group (the blueprint header has the `ak shell` check). A member of `authentik Admins` who also needs Silo from the command line is added to this group by hand.
 
-What they do next is in the assets repo's README: create an app password in their user portal (`https://authentik.techyon.dev/if/user/#/settings`, the **Credentials** tab, the Tokens and App passwords box, intent App password; authentik 2026.8 has no tab of that name), run `scripts/silo-login.sh`, and `git annex` works. The script asks Silo's STS for 30-day credentials; the server does not enforce that limit, and a hand-made STS call may ask for up to a year. When they expire, git-annex reports `ExpiredToken` and the author re-runs the script, minting a new app password if authentik answers `invalid_grant`.
+What they do next is in the assets repo's README: run `scripts/silo-login.sh`, which opens authentik in the browser; they sign in if they are not already and click **Continue** on the page the script just opened. The script then asks Silo's STS for 30-day credentials and `git annex` works. Nothing is created in the UI and nothing but the S3 credentials is stored. When the credentials expire, git-annex reports `ExpiredToken` and the author re-runs the script and clicks once more. The server does not enforce the 30 days: a hand-made STS call may ask for up to a year.
+
+The login asks for **Continue on every run, by design.** A signed-in person who opens someone else's `/device?code=…` link would otherwise hand that person their S3 credentials in one click (device-code phishing). Tell authors to approve only a page their own script just opened. The `necronia-cli` client's own consent stage is `always_require`; never switch it to the stock consent flow, which remembers consent for four weeks. App passwords were the first design and are gone: authentik makes a non-admin's app password expire within `minutes=30` (the tenant's default token duration), so every login needed a new one.
 
 Forgot password: Directory → Users → the user → Create recovery link, sent the same way. The brand's recovery flow (`recovery-set-password`, #331) asks for a new password and logs them in.
 
@@ -67,7 +69,7 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 
 ## Revoke or rotate
 
-- **A person:** Directory → Users → deactivate them, and delete their app passwords (Tokens). New logins stop at once. Credentials already issued keep working until they expire: 30 days if they came from the login script, longer if the person called STS by hand. To cut them off sooner, remove the policy below.
+- **A person:** Directory → Users → deactivate them (or take them out of `silo-necronia-assets-rw`). New logins stop at once. Credentials already issued keep working until they expire: 30 days if they came from the login script, longer if the person called STS by hand. To cut them off sooner, remove the policy below.
 - **Everyone, now:** STS credentials carry the policy name they were minted with, and the chart never deletes a policy, so renaming it in git is not enough. Do, in this order:
   1. In `chart-values.yaml`, rename the policy (for example to `necronia-assets-rw2`) under `policies:` and in the `necronia-ci` user's `policy:`; rename the group in `blueprint-groups.configmap.yaml` and in the invitation flow's `create_users_group` in `blueprint-necronia-cli.configmap.yaml`. Merge and let both apps sync.
   2. In authentik, move the remaining members into the new group and delete the old one.
@@ -78,7 +80,10 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 
 | Symptom | Meaning | Do |
 |---|---|---|
-| token endpoint answers `invalid_grant` | the login password typed instead of an app password (the first real login on 2026-11-17 did this), wrong username or app password, user inactive, or user in no `silo-*` group | check the user has a token with intent `app_password` (Directory → Tokens and App passwords) and is in the group; mint a new app password |
+| the browser shows "Permission denied" for `necronia-cli` | the account is in no `silo-*` group, or inactive | add them to the group (Directory → Groups) |
+| the script stops with `access_denied` | the person clicked Deny, or the page was for another code | re-run the script and approve the page whose code it printed |
+| the script stops with `expired_token` | nobody approved within the code's lifetime | re-run the script |
+| `/device` answers 404 | the brand lost its device-code flow (`flow_device_code`) | re-apply the `necronia-cli` blueprint; its header has the check |
 | STS answers `aud claim invalid` | the token was minted for another client (for example the console's) | log in with `client_id=necronia-cli` |
 | STS refuses with a policy error (`policy claim missing`, or a policy "not defined") | the login did not request scope `minio`, or a `silo-*` group names a policy that is not in `chart-values.yaml` | fix the script's scope, or add the policy. Exact wording: Unverified until the first live test |
 | `ExpiredToken` or `InvalidAccessKeyId` from git-annex | the credentials expired | re-run the login script |
