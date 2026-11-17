@@ -33,6 +33,12 @@ spec:
   hostnames:
     - s3.lab.techyon.dev
   rules:
-    - backendRefs:
+    # No request timeout: Envoy's default is 15 s per request, which cut a
+    # 1.5 GB `git annex get` from an ARC runner at ~800 MB three times running
+    # (ResponseBodyTooShort, 2026-11-17), as it once cut the console download
+    # (silo-console.httproute.yaml). The public twin, silo-s3-tunnel, has this.
+    - timeouts:
+        request: 0s
+      backendRefs:
         - name: silo
           port: 9000
