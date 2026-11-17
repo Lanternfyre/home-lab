@@ -26,7 +26,7 @@ No email leaves authentik, so an invitation is a link you copy and send over cha
 2. Copy the link (`https://authentik.techyon.dev/if/flow/enrollment-necronia-assets/?itoken=…`) and send it.
 3. After they enrol, Directory → Groups → `silo-necronia-assets-rw` lists them. If it does not, the flow's user-write stage lost its group (the blueprint header has the `ak shell` check). A member of `authentik Admins` who also needs Silo from the command line is added to this group by hand.
 
-What they do next is in the assets repo's README: create an app password in their user portal (`https://authentik.techyon.dev/if/user/#/settings`, Tokens and App passwords), run `scripts/silo-login.sh`, and `git annex` works. The script asks Silo's STS for 30-day credentials; the server does not enforce that limit, and a hand-made STS call may ask for up to a year. When they expire, git-annex reports `ExpiredToken` and the author re-runs the script, minting a new app password if authentik answers `invalid_grant`.
+What they do next is in the assets repo's README: create an app password in their user portal (`https://authentik.techyon.dev/if/user/#/settings`, the **Credentials** tab, the Tokens and App passwords box, intent App password; authentik 2026.8 has no tab of that name), run `scripts/silo-login.sh`, and `git annex` works. The script asks Silo's STS for 30-day credentials; the server does not enforce that limit, and a hand-made STS call may ask for up to a year. When they expire, git-annex reports `ExpiredToken` and the author re-runs the script, minting a new app password if authentik answers `invalid_grant`.
 
 Forgot password: Directory → Users → the user → Create recovery link, sent the same way. The brand's recovery flow (`recovery-set-password`, #331) asks for a new password and logs them in.
 
@@ -78,7 +78,7 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 
 | Symptom | Meaning | Do |
 |---|---|---|
-| token endpoint answers `invalid_grant` | wrong username or app password, user inactive, or user in no `silo-*` group | check group membership, mint a new app password |
+| token endpoint answers `invalid_grant` | the login password typed instead of an app password (the first real login on 2026-11-17 did this), wrong username or app password, user inactive, or user in no `silo-*` group | check the user has a token with intent `app_password` (Directory → Tokens and App passwords) and is in the group; mint a new app password |
 | STS answers `aud claim invalid` | the token was minted for another client (for example the console's) | log in with `client_id=necronia-cli` |
 | STS refuses with a policy error (`policy claim missing`, or a policy "not defined") | the login did not request scope `minio`, or a `silo-*` group names a policy that is not in `chart-values.yaml` | fix the script's scope, or add the policy. Exact wording: Unverified until the first live test |
 | `ExpiredToken` or `InvalidAccessKeyId` from git-annex | the credentials expired | re-run the login script |
