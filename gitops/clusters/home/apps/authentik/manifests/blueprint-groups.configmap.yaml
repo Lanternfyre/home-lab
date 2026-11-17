@@ -1,0 +1,46 @@
+# Every git-managed authentik group, in one place.
+#
+# ── Groups are the access model ─────────────────────────────────────────────
+#
+# authentik decides WHO may use an application through the policy bindings in
+# that application's blueprint; the only thing managed in the admin UI is
+# membership. So a group here is a capability, and the convention is:
+#
+#   silo-<policy>   grants the Silo (MinIO) policy of that exact name to every
+#                   member, through the `necronia-cli` client's `policy` claim
+#                   (blueprint-necronia-cli.configmap.yaml). The policy itself
+#                   is declared in ../../silo/chart-values.yaml. Adding Silo
+#                   access = a policy there, a group here, members in the UI.
+#                   No Silo restart, no new provider, no script change.
+#   <noun>          any other group is bound per application in that
+#                   application's blueprint (one policybinding entry).
+#
+# `authentik Admins` is authentik's built-in superuser group and is not
+# declared here; every application other than `necronia-cli` is bound to it.
+#
+# The map of who can reach what, and the recipe to extend it, is
+# docs/operate/who-can-reach-what.md.
+#
+# ⚠️ Other blueprints reference these groups with `!Find`, which returns None
+# SILENTLY when the group does not exist yet. The verification after every
+# change is `ak shell` on the worker, not the blueprint's "Successful" badge.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-blueprint-groups
+  namespace: authentik
+data:
+  groups.yaml: |
+    version: 1
+    metadata:
+      name: groups
+    entries:
+      # The NecroniaAssets authors: read/write/delete on the `necronia-assets`
+      # bucket, nothing else in Silo. Members enrol through the invitation
+      # flow in blueprint-necronia-cli.configmap.yaml, which puts them here.
+      - model: authentik_core.group
+        identifiers:
+          name: silo-necronia-assets-rw
+        attrs:
+          name: silo-necronia-assets-rw
+          is_superuser: false

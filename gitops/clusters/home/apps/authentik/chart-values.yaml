@@ -27,6 +27,12 @@ blueprints:
     # NetBird's OIDC client is PUBLIC (PKCE, no secret), so it needs no
     # vault entry and lives as a plain ConfigMap like the brand one.
     - authentik-blueprint-netbird
+    # Every git-managed group (the access model: a group is a capability).
+    - authentik-blueprint-groups
+    # The command-line client (public, PKCE / app password) and the invitation
+    # enrollment flow for the people who use it. Depends on the groups
+    # blueprint through `!Find`; see its header for the check.
+    - authentik-blueprint-necronia-cli
 
   secrets:
     - authentik-blueprints

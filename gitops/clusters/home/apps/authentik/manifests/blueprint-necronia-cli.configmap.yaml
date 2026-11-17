@@ -1,0 +1,336 @@
+# The authentik client for every command-line login, and the invitation flow
+# that enrols the people who use it.
+#
+# ── What this client is for ─────────────────────────────────────────────────
+#
+#   * TODAY: scripts/silo-login.sh in the NecroniaAssets repo. A teammate
+#     mints an app password in the user portal, the script posts it to the
+#     token endpoint (grant_type=client_credentials + username + password),
+#     and trades the id_token for 30-day S3 credentials at Silo's STS. The
+#     same path the NetBird reconciler uses (blueprint-netbird-reconciler).
+#   * NEXT: `necronia auth login` opens a browser (authorization_code + PKCE
+#     on a localhost callback) or runs the device-code grant on a box without
+#     one, keeps a refresh token, and mints whatever a later flow needs.
+#   * LATER: any API published for the CLI validates tokens of this audience
+#     (Envoy `jwt` on an Authorization header) and authorises on `groups`.
+#
+# ── A ConfigMap, because there is no secret ─────────────────────────────────
+#
+# PUBLIC client: a script and a CLI cannot keep a secret, so PKCE is used for
+# the browser grant, and the client_credentials branch authentik takes for a
+# username + app password never looks at client_secret at all
+# (authentik/providers/oauth2/token/client_credentials.py: the username branch
+# comes BEFORE the client_secret comparison). `client_id` is just a name this
+# cluster chooses. Same discovery rules as every blueprint: listed in
+# authentik's `blueprints.configMaps`, `.yaml` keys only, worker-mounted only.
+#
+# ── Issuer: tokens come from the PUBLIC host, Silo reads the LAN host ───────
+#
+# Teammates reach authentik.techyon.dev, so their tokens carry that issuer.
+# Silo fetches this client's discovery document from authentik.lab.techyon.dev
+# (../../silo/manifests/silo-oidc-config.external-secret.yaml) and that is
+# fine: Silo validates signature (same signing key on both hosts), `aud` and
+# `exp`, and does NOT check `iss` (pgsty/silo internal/config/identity/openid/
+# jwt.go, Validate). This is a deliberate exception to the rule in
+# authentik-tunnel.httproute.yaml that no client is reachable through both
+# hostnames; that rule exists for consumers that DO pin the issuer (the Envoy
+# gates, NetBird). Do not point an iss-checking consumer at this client.
+#
+# ── Authorisation is group membership ───────────────────────────────────────
+#
+# Who may log in: anyone in a `silo-*` group (the expression policy bound to
+# the application). What they may do in Silo: the `policy` claim lists the
+# suffixes of the user's `silo-*` groups, and Silo applies those named
+# policies (claim mode, MINIO_IDENTITY_OPENID_CLAIM_NAME_CLI=policy). Groups
+# live in blueprint-groups.configmap.yaml; the map is
+# docs/operate/who-can-reach-what.md.
+#
+# ── Redirect URIs ───────────────────────────────────────────────────────────
+#
+# Two localhost ports so `necronia auth login` can fall back when one is
+# busy. STRICT entries, never a regex: authentik urlparse()s every redirect
+# URI to compute CORS origins, and a regex took down the NetBird dashboard's
+# login (blueprint-netbird.configmap.yaml, "WHY STRICT AND NOT REGEX").
+# 🔴 THE PORTS MUST MATCH THE CLI'S LISTENER BYTE FOR BYTE, NO PATH.
+#
+# ── The invitation flow ─────────────────────────────────────────────────────
+#
+# No SMTP is configured, so authentik cannot send anything. An invitation is a
+# single-use, expiring LINK the operator copies from Directory → Invitations
+# and sends by chat; the invitee picks a username and password, and the user
+# write stage puts them in `silo-necronia-assets-rw` (groups cannot ride in an
+# invitation's fixed_data; this stage option is the supported way). INTERNAL
+# users on purpose: external users are shut out of the user portal, and the
+# portal is where app passwords are made. Layout from authentik's own
+# blueprints/example/flows-invitation-enrollment.yaml.
+#
+# ⚠️ `create_users_group` is resolved with `!Find` against the groups
+# blueprint, and `!Find` returns None silently. After an apply, confirm on the
+# worker:
+#   ak shell -c "from authentik.stages.user_write.models import UserWriteStage \
+#     as S; print(S.objects.get(name='necronia-assets-user-write').create_users_group)"
+# must print the group, not None.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-blueprint-necronia-cli
+  namespace: authentik
+data:
+  necronia-cli.yaml: |
+    version: 1
+    metadata:
+      name: necronia-cli
+    entries:
+      # ── The `policy` claim Silo reads ────────────────────────────────────
+      #
+      # scope_name `minio` is its own scope on purpose: a client gets this
+      # claim only when it asks for it (scope=openid profile email minio), so
+      # a token minted for anything else never carries Silo policy names.
+      - id: silo-policies
+        model: authentik_providers_oauth2.scopemapping
+        identifiers:
+          name: necronia-cli-silo-policies
+        attrs:
+          name: necronia-cli-silo-policies
+          scope_name: minio
+          description: "Silo policy names from the user's silo-* groups"
+          expression: |
+            # silo-necronia-assets-rw -> necronia-assets-rw, and so on. Silo
+            # applies every name it finds; an unknown name grants nothing.
+            return {
+                "policy": [
+                    g.name[len("silo-"):]
+                    for g in request.user.ak_groups.all()
+                    if g.name.startswith("silo-")
+                ],
+            }
+
+      - id: necronia-cli-provider
+        model: authentik_providers_oauth2.oauth2provider
+        identifiers:
+          name: necronia-cli
+        attrs:
+          name: necronia-cli
+          client_type: public
+          client_id: necronia-cli
+          # ⚠️ grant_types defaults to an EMPTY list, which permits nothing.
+          #   client_credentials  the bash script (username + app password)
+          #   authorization_code  `necronia auth login` in a browser (PKCE)
+          #   refresh_token       the CLI's silent renewal (needs offline_access)
+          #   device_code         `necronia auth login --device` on a box
+          grant_types:
+            - client_credentials
+            - authorization_code
+            - refresh_token
+            - urn:ietf:params:oauth:grant-type:device_code
+          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+          signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+          # user_username, NOT user_email: Silo refuses a token whose `sub` is
+          # empty, and user_email yields exactly that for a user without an
+          # email (blueprint-netbird-reconciler.external-secret.yaml records
+          # the symptom).
+          sub_mode: user_username
+          include_claims_in_id_token: true
+          redirect_uris:
+            - matching_mode: strict
+              url: http://localhost:48131
+            - matching_mode: strict
+              url: http://localhost:48132
+          property_mappings:
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, openid]]
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, email]]
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, profile]]
+            - !Find [authentik_providers_oauth2.scopemapping, [scope_name, offline_access]]
+            # Defined above and referenced by !KeyOf: a `!Find` that misses
+            # returns None and drops the claim with no error at all.
+            - !KeyOf silo-policies
+
+      - id: necronia-cli-app
+        model: authentik_core.application
+        identifiers:
+          slug: necronia-cli
+        attrs:
+          name: Necronia CLI
+          provider: !KeyOf necronia-cli-provider
+
+      # ── Who may log in: anyone in a silo-* group ─────────────────────────
+      #
+      # One expression instead of one binding per group, so a future
+      # `silo-<policy>` group opens this client without touching this file.
+      # authentik enforces application bindings on the client_credentials
+      # path too (check_policy_access in the username branch), so a user in
+      # no silo-* group gets `invalid_grant` before any token exists.
+      - id: any-silo-group
+        model: authentik_policies_expression.expressionpolicy
+        identifiers:
+          name: necronia-cli-any-silo-group
+        attrs:
+          name: necronia-cli-any-silo-group
+          execution_logging: false
+          expression: |
+            return any(g.name.startswith("silo-") for g in request.user.ak_groups.all())
+      - model: authentik_policies.policybinding
+        identifiers:
+          target: !KeyOf necronia-cli-app
+          policy: !KeyOf any-silo-group
+          order: 0
+        attrs:
+          enabled: true
+          negate: false
+
+      # ── Invitation enrollment ────────────────────────────────────────────
+      - id: enrollment-flow
+        model: authentik_flows.flow
+        identifiers:
+          slug: enrollment-necronia-assets
+        attrs:
+          name: Enrollment - Necronia assets (by invitation)
+          title: Join Necronia assets
+          designation: enrollment
+          authentication: require_unauthenticated
+
+      # The link is the only way in: a bare URL is refused at order 5, before
+      # any prompt is shown.
+      - id: invitation-stage
+        model: authentik_stages_invitation.invitationstage
+        identifiers:
+          name: necronia-assets-invitation
+        attrs:
+          continue_flow_without_invitation: false
+
+      - id: field-username
+        model: authentik_stages_prompt.prompt
+        identifiers:
+          name: necronia-assets-field-username
+        attrs:
+          name: necronia-assets-field-username
+          field_key: username
+          label: Username
+          type: username
+          required: true
+          placeholder: Username
+          placeholder_expression: false
+          order: 0
+      - id: field-password
+        model: authentik_stages_prompt.prompt
+        identifiers:
+          name: necronia-assets-field-password
+        attrs:
+          name: necronia-assets-field-password
+          field_key: password
+          label: Password
+          type: password
+          required: true
+          placeholder: Password
+          placeholder_expression: false
+          order: 1
+      - id: field-password-repeat
+        model: authentik_stages_prompt.prompt
+        identifiers:
+          name: necronia-assets-field-password-repeat
+        attrs:
+          name: necronia-assets-field-password-repeat
+          field_key: password_repeat
+          label: Password (repeat)
+          type: password
+          required: true
+          placeholder: Password (repeat)
+          placeholder_expression: false
+          order: 2
+      - id: field-name
+        model: authentik_stages_prompt.prompt
+        identifiers:
+          name: necronia-assets-field-name
+        attrs:
+          name: necronia-assets-field-name
+          field_key: name
+          label: Name
+          type: text
+          required: true
+          placeholder: Name
+          placeholder_expression: false
+          order: 0
+      # Pre-filled from the invitation's fixed_data ({"email": ...}), which
+      # the invitation stage places in prompt_data.
+      - id: field-email
+        model: authentik_stages_prompt.prompt
+        identifiers:
+          name: necronia-assets-field-email
+        attrs:
+          name: necronia-assets-field-email
+          field_key: email
+          label: Email
+          type: email
+          required: true
+          placeholder: Email
+          placeholder_expression: false
+          order: 1
+
+      - id: prompt-credentials
+        model: authentik_stages_prompt.promptstage
+        identifiers:
+          name: necronia-assets-prompt-credentials
+        attrs:
+          name: necronia-assets-prompt-credentials
+          fields:
+            - !KeyOf field-username
+            - !KeyOf field-password
+            - !KeyOf field-password-repeat
+      - id: prompt-details
+        model: authentik_stages_prompt.promptstage
+        identifiers:
+          name: necronia-assets-prompt-details
+        attrs:
+          name: necronia-assets-prompt-details
+          fields:
+            - !KeyOf field-name
+            - !KeyOf field-email
+
+      - id: user-write
+        model: authentik_stages_user_write.userwritestage
+        identifiers:
+          name: necronia-assets-user-write
+        attrs:
+          name: necronia-assets-user-write
+          user_creation_mode: always_create
+          create_users_as_inactive: false
+          user_type: internal
+          user_path_template: users/necronia
+          create_users_group: !Find [authentik_core.group, [name, silo-necronia-assets-rw]]
+
+      - id: user-login
+        model: authentik_stages_user_login.userloginstage
+        identifiers:
+          name: necronia-assets-user-login
+        attrs:
+          name: necronia-assets-user-login
+
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf enrollment-flow
+          stage: !KeyOf invitation-stage
+          order: 5
+        attrs:
+          evaluate_on_plan: true
+          re_evaluate_policies: true
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf enrollment-flow
+          stage: !KeyOf prompt-credentials
+          order: 10
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf enrollment-flow
+          stage: !KeyOf prompt-details
+          order: 15
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf enrollment-flow
+          stage: !KeyOf user-write
+          order: 20
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf enrollment-flow
+          stage: !KeyOf user-login
+          order: 100
