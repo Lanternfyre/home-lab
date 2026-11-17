@@ -246,8 +246,8 @@ protected:
       strictly less than its size suggests. It is local-path, so cleaning it up
       is deleting a directory on lab3's disk, NOT a tridentctl operation.
 
-# Deliberately NOT protected. Listed so the audit can distinguish "considered
-# and declined" from "nobody looked at it".
+# Protected (the label is on the PVC) but NOT backed up. The entry says what
+# on it cannot be recomputed; the backup is the open gap.
   - namespace: silo
     claim: silo-data
     size: 50Gi                   # grown from 20Gi on 2026-11-07

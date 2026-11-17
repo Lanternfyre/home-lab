@@ -128,9 +128,11 @@ policies:
   # and every teammate whose authentik account is in the group
   # `silo-necronia-assets-rw` -- the name of this policy is what that group's
   # suffix means (apps/authentik/manifests/blueprint-groups.configmap.yaml).
-  # ⚠️ Renaming this policy is a kill switch: STS credentials carry the policy
-  # NAME they were minted with, so after a rename every outstanding
-  # credential grants nothing until its holder logs in again.
+  # ⚠️ Removing this policy FROM SILO is the kill switch: STS credentials carry
+  # the policy NAME they were minted with, so once the name grants nothing
+  # every outstanding credential is dead until its holder logs in again. A
+  # rename here is NOT enough -- the post-job only creates, never deletes --
+  # so the runbook's cut-off ends with `mc admin policy rm` in-pod.
   - name: necronia-assets-rw
     statements:
       - resources:
