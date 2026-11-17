@@ -2,7 +2,7 @@
 
 For the operator granting or removing access: which authentik group opens which application or Silo policy, where each piece is declared, and the recipe for granting access to something new. Group membership, invitations and recovery links are made in the authentik UI; groups, bindings, the gate's claim rule and Silo policies are in git.
 
-Status on 2026-11-17: the groups, the `necronia-cli` client and its claim mapping are in open PR #327, the admin-only bindings in #328, and Silo's claim-mode provider in #330; none is live until merged. The assets repo's login script and the browser login in necronia-cli are Planned.
+Live since 2026-11-17: the groups, the `necronia-cli` client and its claim mapping (#327, #331), the admin-only bindings (#328), Silo's claim-mode provider (#332) and the assets repo's login script. The browser login in necronia-cli is Planned.
 
 ## Who decides who gets in, and what they may do
 
@@ -31,7 +31,7 @@ Where each piece lives (all under `gitops/clusters/home/`):
 ## Grant Silo access to a new bucket or team
 
 1. In `chart-values.yaml`, add the bucket under `buckets:` (`policy: none`) and a policy copied from `necronia-assets-rw` with both resource ARNs changed; set its quota in the pod as in [NecroniaAssets on Silo](necronia-assets-on-silo.md).
-2. Add the group `silo-<that policy name>` to the groups blueprint.
+2. Add the group `silo-<that policy name>` to the groups blueprint. A new or changed blueprint is applied by the hourly discovery unless you enqueue it, a Secret-backed one needs its ExternalSecret refreshed first, and a `!Find` across files needs a second apply; the one-liners are in `blueprint-necronia-cli.configmap.yaml`'s header.
 3. Add members in the UI, or copy the enrollment flow in `blueprint-necronia-cli.configmap.yaml` under a new slug and new stage names, point its `create_users_group` at the new group, and confirm with the blueprint's `ak shell` check that it is not None.
 
 No Silo restart, no new OpenID provider, no change to any login script: the claim mapping and the `silo-*` rule already cover the new group. One limit: `s3.lanternfyre.dev` serves only `necronia-assets` and must not widen (standing warning), so a team outside the LAN needs a design decision for a second public route before step 1.
