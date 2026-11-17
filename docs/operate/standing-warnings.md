@@ -102,6 +102,7 @@ Terms such as KPR and the storage proof are in the [glossary](../domain/glossary
   kubectl -n silo rollout status deploy/silo --timeout=180s
   ```
   Then check from inside the pod: `kubectl -n silo exec deploy/silo -- curl -s --max-time 25 -w "\ntotal=%{time_total}s\n" http://127.0.0.1:9001/api/v1/login` must return a redirect rule naming authentik in well under a second. Broken is `{"loginStrategy":"form","redirectRules":null}` after exactly 10 seconds. The egress policy is not the bug and must not be widened to "fix" it.
+- **One OpenID provider that fails at startup disables all of Silo's OpenID**, the console's included (Silo gives up at the first discovery-document failure). The `_CLI` provider's discovery URL is therefore the LAN authentik host, which needs neither Cloudflare nor the tunnel; never point it at the public host. A `config.env` change also needs `kubectl -n silo rollout restart deploy/silo`, because the chart's checksum does not cover `extraSecret`.
 - **Silo's credentials use letters and digits only** (generator symbols off). Tools interpolate them raw into endpoint URLs, and a `/` in the secret key truncates it silently, which surfaces as `SignatureDoesNotMatch`.
 - **The `silo-auth` secret must exist before the chart syncs.** Without it the chart generates its own root credential and regenerates it on some upgrades, and every stored copy elsewhere stops matching at once.
 - **CI fails hard when the store is unreachable**, by design. Rotate both sides (1Password and the GitHub org secret) in one sitting.
