@@ -63,7 +63,7 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 
 - **What stays:** today, everything ever pushed; nothing prunes yet. Once the assets repo's weekly `prune.yml` lands (Planned), it keeps every version a release tag, `main` or an open PR points at, drops the rest from Silo, then runs `git annex fsck --all --from silo-lan --fast`, which checks that every kept object is present. After deleting branches or tags, run it by hand from the assets repo's Actions tab to free the space at once.
 - **How full:** `silo du local/necronia-assets` and `kubectl -n silo exec deploy/silo -- df -h /export`. Each pushed version of `runtime.cwm` is about 1.5 GiB until pruned.
-- **Only server-side copy.** This bucket is not backed up (`protected-volumes.yaml`, `backup: NONE`). Released versions also live in the GHCR client images and authors keep local copies; an unreleased push exists here and on one laptop until the next release. A second git-annex remote on the already-credentialed Wasabi bucket is the open follow-up, listed on [Waiting on the operator](waiting-on-the-operator.md) once that page exists.
+- **Only server-side copy.** This bucket is not backed up (`protected-volumes.yaml`, `backup: NONE`). Released versions also live in the GHCR client images and authors keep local copies; an unreleased push exists here and on one laptop until the next release. A second git-annex remote on the already-credentialed Wasabi bucket is the open follow-up; it goes on the operator's open-items page when that page lands with the beads retirement.
 
 ## Revoke or rotate
 
