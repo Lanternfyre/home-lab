@@ -105,6 +105,10 @@ Terms such as KPR and the storage proof are in the [glossary](../domain/glossary
 - **Silo's credentials use letters and digits only** (generator symbols off). Tools interpolate them raw into endpoint URLs, and a `/` in the secret key truncates it silently, which surfaces as `SignatureDoesNotMatch`.
 - **The `silo-auth` secret must exist before the chart syncs.** Without it the chart generates its own root credential and regenerates it on some upgrades, and every stored copy elsewhere stops matching at once.
 - **CI fails hard when the store is unreachable**, by design. Rotate both sides (1Password and the GitHub org secret) in one sitting.
+- **The chart never updates an existing user's secret.** Rotating `github-ci` or `necronia-ci` is: change 1Password, `mc admin user rm` in-pod, sync. A changed secret with no removal leaves the old one in force and the new one in every consumer.
+- **`s3.lanternfyre.dev` is the S3 API on the internet, for the `necronia-assets` bucket only.** Every request must be signed; the bucket must never get an `anonymous set` grant, and the route must never widen to another bucket or to `/minio/admin`. `POST /` on that host is Silo's STS, rate-limited to 10 a minute per client address. Runbook: [NecroniaAssets on Silo](necronia-assets-on-silo.md).
+- **Renaming the `necronia-assets-rw` policy cuts everyone off at once.** STS credentials carry the policy name they were minted with; after a rename they grant nothing until their holders log in again. That is the emergency kill switch; there is no per-person revocation before a credential's 30-day expiry.
+- **The `necronia-assets` bucket is the only server-side copy of the assets authors push.** Not backed up (`protected-volumes.yaml`). Released versions also live in the GHCR client images; an unreleased push exists in Silo and on one laptop until the next release.
 
 ## VPN (NetBird)
 

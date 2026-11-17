@@ -261,8 +261,11 @@ protected:
       quality moved over time, and they cannot be recomputed from source at any
       price. Losing them does not break a build; it silently turns every
       regression gate into a no-op, because a gate with no baseline compares
-      against nothing and passes. The `drop` bucket (since 2026-11-07) is
-      disposable: uploads from outside, deleted by a lifecycle rule after 14 days.
+      against nothing and passes. The `necronia-assets` bucket (since 2026-11)
+      holds the NecroniaAssets large files as git-annex objects: every pushed
+      version of a 1.5 GiB sprite pack. This volume is their ONLY server-side
+      copy; released versions also live in the GHCR client images and authors
+      keep local copies, but an unreleased push exists here and on one laptop.
     warning: >-
       Registered on creation, 2026-08-26. NOT BACKED UP — like everything else in
       this cluster since the three ad-hoc CronJobs were removed on 2026-08-15.

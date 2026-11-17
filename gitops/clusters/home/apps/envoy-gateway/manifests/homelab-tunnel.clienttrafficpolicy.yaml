@@ -1,0 +1,31 @@
+# Which address is "the client" on the tunnel Gateway.
+#
+# Every request here arrives from a cloudflared pod, so without this Envoy's
+# idea of the client IP is cloudflared's pod address, and anything per-client
+# (the rate limit on Silo's STS in ../../silo/manifests/
+# silo-s3-tunnel.backendtrafficpolicy.yaml, access logs) treats the whole
+# internet as one client. Cloudflare sets CF-Connecting-IP to the real client
+# address on every proxied request and cloudflared forwards it unchanged, so
+# that header is the client.
+#
+# failClosed: false — a request without the header (none should exist on this
+# Gateway, since everything comes through Cloudflare) falls back to the
+# connection address instead of being refused.
+#
+# ⚠️ This targets the GATEWAY, so it applies to authentik.techyon.dev too.
+# authentik's own events then show real client addresses, which is the
+# intended effect; nothing on this Gateway authorises by source address.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: homelab-tunnel-client-ip
+  namespace: gateway-envoy
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: homelab-tunnel
+  clientIPDetection:
+    customHeader:
+      name: CF-Connecting-IP
+      failClosed: false
