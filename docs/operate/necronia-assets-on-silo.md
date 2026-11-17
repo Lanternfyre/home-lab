@@ -1,8 +1,8 @@
 # NecroniaAssets on Silo
 
-For the operator: how to run the store behind the NecroniaAssets repo, invite an author, keep the bucket healthy, and cut someone off. The repo keeps its large files, chiefly the sprite pack `client/runtime.cwm` at about 1.5 GiB per version, as git-annex objects in Silo's `necronia-assets` bucket; the git history stays on GitHub. Authors reach the bucket from anywhere through the git-annex remote `silo` (`s3.lanternfyre.dev`); CI reaches it over the LAN through `silo-lan` (`s3.lab.techyon.dev`), the same bucket.
+For the operator: how to run the store behind the NecroniaAssets repo, invite an author, keep the bucket healthy, and cut someone off. The repo keeps its large files, chiefly the sprite pack `client/runtime.cwm` at about 1.5 GiB per version, as git-annex objects in Silo's `necronia-assets` bucket; the git history stays on GitHub. Authors reach the bucket from anywhere through the git-annex remote `silo` (`s3.lanternfyre.dev`); CI, and a laptop on the LAN, through `silo-lan` (`s3.lab.techyon.dev`), the same bucket. A LAN clone must first allow that private address, `git config annex.security.allowed-ip-addresses 192.168.32.18` (git-annex refuses private addresses by default; the exact address, a CIDR does not satisfy it); the CI scripts do this themselves.
 
-Status on 2026-11-17: nothing below is live yet. The bucket, policy, `necronia-ci` user, public route and rate limit are in PR #329; Silo's second OpenID provider, the one that accepts `necronia-cli` tokens, in #330; the authentik client, groups and invitation flow in #327; the admin-only bindings in #328. Authors can log in only after all four are merged and synced. The assets repo's login script, CI and weekly prune job land with that repo's recreation and are marked Planned where they appear.
+Live since 2026-11-17: the authentik client, groups, invitation and recovery flows (#327, #331), the admin-only bindings (#328), the bucket, policy, `necronia-ci` user, public route and rate limit (#329), Silo's second OpenID provider (#332), and the recreated assets repo with its login script, CI and weekly prune job. Verified that day end to end: a 1.5 GB upload through Cloudflare in 127 s, downloads at the uplink's ~13 MB/s, a CI fetch over the LAN.
 
 ## What each name is and where it is declared
 
@@ -26,9 +26,9 @@ No email leaves authentik, so an invitation is a link you copy and send over cha
 2. Copy the link (`https://authentik.techyon.dev/if/flow/enrollment-necronia-assets/?itoken=…`) and send it.
 3. After they enrol, Directory → Groups → `silo-necronia-assets-rw` lists them. If it does not, the flow's user-write stage lost its group (the blueprint header has the `ak shell` check). A member of `authentik Admins` who also needs Silo from the command line is added to this group by hand.
 
-What they do next is in the assets repo's README (Planned until that repo is recreated): create an app password in their user portal (`https://authentik.techyon.dev/if/user/#/settings`, Tokens and App passwords), run `scripts/silo-login.sh`, and `git annex` works. The script asks Silo's STS for 30-day credentials; the server does not enforce that limit, and a hand-made STS call may ask for up to a year. When they expire, git-annex reports `ExpiredToken` and the author re-runs the script, minting a new app password if authentik answers `invalid_grant`.
+What they do next is in the assets repo's README: create an app password in their user portal (`https://authentik.techyon.dev/if/user/#/settings`, Tokens and App passwords), run `scripts/silo-login.sh`, and `git annex` works. The script asks Silo's STS for 30-day credentials; the server does not enforce that limit, and a hand-made STS call may ask for up to a year. When they expire, git-annex reports `ExpiredToken` and the author re-runs the script, minting a new app password if authentik answers `invalid_grant`.
 
-Forgot password: Directory → Users → the user → Create recovery link, sent the same way. This needs a recovery flow set on the brand, and none is in git yet (Planned, a small blueprint); until it exists, the button fails with "No recovery flow set".
+Forgot password: Directory → Users → the user → Create recovery link, sent the same way. The brand's recovery flow (`recovery-set-password`, #331) asks for a new password and logs them in.
 
 ## Run mc as root without copying the key
 
@@ -61,7 +61,7 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 
 ## What is kept, how full it is, and what is not backed up
 
-- **What stays:** today, everything ever pushed; nothing prunes yet. Once the assets repo's weekly `prune.yml` lands (Planned), it keeps every version a release tag, `main` or an open PR points at, drops the rest from Silo, then runs `git annex fsck --all --from silo-lan --fast`, which checks that every kept object is present. After deleting branches or tags, run it by hand from the assets repo's Actions tab to free the space at once.
+- **What stays:** every version a release tag, `main` or an open PR points at. The assets repo's weekly `prune.yml` drops the rest from Silo, then runs `git annex fsck --all --from silo-lan --fast`, which checks that every kept object is present. After deleting branches or tags, run it by hand from the assets repo's Actions tab to free the space at once.
 - **How full:** `silo du local/necronia-assets` and `kubectl -n silo exec deploy/silo -- df -h /export`. Each pushed version of `runtime.cwm` is about 1.5 GiB until pruned.
 - **Only server-side copy.** This bucket is not backed up (`protected-volumes.yaml`, `backup: NONE`). Released versions also live in the GHCR client images and authors keep local copies; an unreleased push exists here and on one laptop until the next release. A second git-annex remote on the already-credentialed Wasabi bucket is the open follow-up; it goes on the operator's open-items page when that page lands with the beads retirement.
 
@@ -89,6 +89,8 @@ The volume is 50 Gi and also holds the CI baselines (`protected-volumes.yaml`). 
 | HTTP 429 on `POST /` | more than 10 STS calls a minute from one address | wait a minute; a script in a retry loop is the usual cause |
 | HTTP 404 from Envoy | the request did not name the bucket, or named another one | use path-style addressing and `s3://necronia-assets`; only this bucket and STS are routed |
 | HTTP 403 `AccessDenied` from Silo | unsigned request, or a key whose policy does not cover this bucket | sign the request; decode the id_token and check its `policy` list |
+| `ConnectionRestricted … annex.security.allowed-ip-addresses` from git-annex on the LAN | git-annex refuses the private gateway address by default | `git config annex.security.allowed-ip-addresses 192.168.32.18` in that clone |
+| a runner's `git annex get` from `s3.lab.techyon.dev` times out | the runner namespace's egress lacks the `toServices` rule to the Gateway on port 10443 (socket load balancing rewrites the connection before policy sees it) | add the rule as in `arc-lanternfyre/manifests/runner-egress.ciliumnetworkpolicy.yaml` (#336) |
 | console shows only the password form after a Silo restart | Silo could not load an OpenID discovery document at start, which disables every provider | find the URL in `kubectl -n silo logs deploy/silo`, make it reachable, then `kubectl -n silo rollout restart deploy/silo`; if the log shows the 10-second timeout instead, follow [Standing warnings](standing-warnings.md#silo-object-store) |
 
 ## Remove the bucket and the public route
