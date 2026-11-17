@@ -1,0 +1,62 @@
+# Rate limit for Silo's public STS endpoint (POST / on s3.lanternfyre.dev).
+#
+# A token exchange happens once per login, about monthly per teammate. Anyone
+# else posting here is probing: each invalid token makes Silo re-fetch the
+# JWKS from authentik before it answers. Ten per minute per client IP is far
+# above legitimate use and bounds the cost of a probe; excess gets 429 with
+# `x-envoy-ratelimited: true`.
+#
+# Object traffic on /necronia-assets is NOT limited: a git-annex transfer of a
+# 1.5 GB file is ~25 multipart requests in quick succession, and every one of
+# them is signed.
+#
+# ⚠️ The client IP comes from CF-Connecting-IP, which the ClientTrafficPolicy
+# on the tunnel Gateway tells Envoy to trust
+# (../../envoy-gateway/manifests/homelab-tunnel.clienttrafficpolicy.yaml).
+# Without it every request arrives from cloudflared's pod address and all
+# clients share one bucket.
+#
+# Local, not Global: one Envoy replica serves the tunnel, and Global needs a
+# Redis-backed rate limit service that is not deployed
+# (../../alloy-gateway/manifests/ingest.httproutes.yaml records the same
+# choice). The bucket of a client resets when the proxy restarts; fine here.
+#
+# Two rules because `0.0.0.0/0` covers only IPv4; `::/0` is the IPv6 half.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: silo-s3-tunnel-sts-limit
+  namespace: silo
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: silo-s3-tunnel
+  rateLimit:
+    type: Local
+    local:
+      rules:
+        - clientSelectors:
+            - methods:
+                - value: POST
+              path:
+                type: RegularExpression
+                value: "^//?$"
+              sourceCIDR:
+                type: Distinct
+                value: 0.0.0.0/0
+          limit:
+            requests: 10
+            unit: Minute
+        - clientSelectors:
+            - methods:
+                - value: POST
+              path:
+                type: RegularExpression
+                value: "^//?$"
+              sourceCIDR:
+                type: Distinct
+                value: "::/0"
+          limit:
+            requests: 10
+            unit: Minute

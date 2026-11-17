@@ -1,20 +1,27 @@
-# Silo — S3-compatible object store for CI artifacts.
+# Silo — S3-compatible object store: CI artifacts, and the game's asset sources.
 #
-# Two consumers, two very different access needs, which is what most of the
-# configuration below is about:
+# Two buckets, three access needs, which is what most of the configuration
+# below is about:
 #
-#   reports/   rendered HTML quality reports (NDepend, Stryker, BADASS).
-#              ANONYMOUSLY READABLE so a browser can open them: an HTML report
-#              pulls its CSS and JS through relative links, and a presigned URL
-#              signs exactly one object, so every sub-request would 403 and the
-#              page would render broken.
-#   baseline/  the .ndar analysis result, the trend history, the Stryker
-#              baseline. PRIVATE, and the only data here that is NOT
-#              regenerable — see protected-volumes.yaml.
+#   ci-reports/reports/   rendered HTML quality reports (NDepend, Stryker,
+#              BADASS). ANONYMOUSLY READABLE so a browser can open them: an
+#              HTML report pulls its CSS and JS through relative links, and a
+#              presigned URL signs exactly one object, so every sub-request
+#              would 403 and the page would render broken.
+#   ci-reports/baseline/  the .ndar analysis result, the trend history, the
+#              Stryker baseline. PRIVATE, and NOT regenerable — see
+#              protected-volumes.yaml.
+#   necronia-assets/      the NecroniaAssets repo's large files (git-annex
+#              objects, named by their SHA-256). PRIVATE, published on the
+#              internet as s3.lanternfyre.dev for SIGNED requests only
+#              (manifests/silo-s3-tunnel.httproute.yaml). Teammates sign with
+#              credentials Silo's STS mints from an authentik login; CI signs
+#              as `necronia-ci`. Runbook: docs/operate/necronia-assets-on-silo.md.
 #
-# The access scope is the FIRST key segment on purpose. `mc anonymous set` takes
-# a literal prefix and cannot wildcard, so scope-first makes "every report is
-# readable" one fixed prefix that never changes as projects are added.
+# In ci-reports the access scope is the FIRST key segment on purpose.
+# `mc anonymous set` takes a literal prefix and cannot wildcard, so scope-first
+# makes "every report is readable" one fixed prefix that never changes as
+# projects are added.
 
 # ── Rollout strategy ─────────────────────────────────────────────────────────
 # ⚠️ Recreate, NOT RollingUpdate, and this is load-bearing with an RWO volume —
@@ -59,18 +66,21 @@ buckets:
     policy: none
     purge: false
     versioning: false
-  # Uploads from OUTSIDE the cluster, through drop.lanternfyre.dev
-  # (manifests/silo-drop-tunnel.httproute.yaml). Generic on purpose: what lands
-  # here varies, and each recipient writes under their own drop/<label>/ prefix.
-  # Runbook: docs/operate/silo-upload-drop.md.
+  # The NecroniaAssets large files, as git-annex objects. Every version that
+  # was ever pushed is a whole object here until the repo's weekly prune job
+  # drops what no release tag, main or open PR points at. versioning stays
+  # off: git-annex names objects by content, so an overwrite never happens.
   #
-  # Its quota and 14-day expiry rule are NOT set here. The custom-command
-  # container runs CONCURRENTLY with the one that creates this bucket, so a
-  # `quota set` there could run before the bucket exists, and `ilm rule add`
-  # is not idempotent (it appends a rule per sync). scripts/silo-drop-key.sh
-  # sets both before it mints a key, so they are always in place while a key
-  # exists.
-  - name: drop
+  # Its hard quota is NOT set here: the custom-command container runs
+  # CONCURRENTLY with the one that creates this bucket, so a `quota set` there
+  # could run before the bucket exists. The runbook sets it in-pod once
+  # (`mc quota set local/necronia-assets --size 30GiB`).
+  #
+  # 🔴 NEVER `anonymous set` anything on this bucket. It is reachable from the
+  # internet; the only thing between the objects and the world is the
+  # signature on every request. (The post-job re-applies `anonymous set none`
+  # on every sync, so a stray grant would be undone, but do not rely on it.)
+  - name: necronia-assets
     policy: none
     purge: false
     versioning: false
@@ -113,18 +123,30 @@ policies:
           - "s3:GetBucketLocation"
           - "s3:ListBucketMultipartUploads"
 
-  # WRITE-ONLY into the drop bucket. PutObject also covers the multipart verbs
-  # that create, fill and complete an upload; Abort is listed separately so a
-  # failed upload can clean up after itself. No Get, no List, no Delete: a key
-  # that leaks can add files, never read or remove them. Each key minted under
-  # drop-keys narrows this further, to its own drop/<label>/ prefix.
-  - name: drop-put
+  # Everything git-annex and the prune job need on the assets bucket, and
+  # nothing on any other bucket. Two holders: the `necronia-ci` user below,
+  # and every teammate whose authentik account is in the group
+  # `silo-necronia-assets-rw` -- the name of this policy is what that group's
+  # suffix means (apps/authentik/manifests/blueprint-groups.configmap.yaml).
+  # ⚠️ Renaming this policy is a kill switch: STS credentials carry the policy
+  # NAME they were minted with, so after a rename every outstanding
+  # credential grants nothing until its holder logs in again.
+  - name: necronia-assets-rw
     statements:
       - resources:
-          - "arn:aws:s3:::drop/*"
+          - "arn:aws:s3:::necronia-assets/*"
         actions:
+          - "s3:GetObject"
           - "s3:PutObject"
+          - "s3:DeleteObject"          # the prune job drops unused objects
           - "s3:AbortMultipartUpload"
+          - "s3:ListMultipartUploadParts"
+      - resources:
+          - "arn:aws:s3:::necronia-assets"
+        actions:
+          - "s3:ListBucket"
+          - "s3:GetBucketLocation"
+          - "s3:ListBucketMultipartUploads"
 
 # ⚠️ This list REPLACES the chart default, and it must. The shipped default
 # creates a user `console` with password `console123` and the consoleAdmin
@@ -141,16 +163,16 @@ users:
     existingSecret: silo-auth
     existingSecretKey: ciPassword
     policy: ci-reports-rw
-  # The PARENT of the expiring drop keys; nobody signs with this user itself.
-  # A service account can never exceed its parent's policy, so drop-put is the
-  # ceiling for every key scripts/silo-drop-key.sh mints. Its secret is
-  # generated by ESO (manifests/silo-drop-keys.external-secret.yaml), not kept
-  # in 1Password: a regenerated one breaks nothing, because keys carry their own
-  # secrets.
-  - accessKey: drop-keys
-    existingSecret: silo-drop-keys
-    existingSecretKey: password
-    policy: drop-put
+  # The NecroniaAssets CI jobs (ARC runners, in-cluster): `git annex get` for
+  # a build, and the weekly prune. Static key; the secret is in 1Password and
+  # in that repo's Actions secrets SILO_ACCESS_KEY_ID / SILO_SECRET_ACCESS_KEY.
+  # ⚠️ The chart creates a user only if it is ABSENT and never updates its
+  # secret (_helper_create_user.txt). Rotation is: change 1Password, then
+  # `mc admin user rm local necronia-ci` in-pod, then a sync recreates it.
+  - accessKey: necronia-ci
+    existingSecret: silo-auth
+    existingSecretKey: necroniaCiPassword
+    policy: necronia-assets-rw
 
 # ── Services ─────────────────────────────────────────────────────────────────
 # ClusterIP both: exposure is via HTTPRoutes in manifests/, not LoadBalancers.

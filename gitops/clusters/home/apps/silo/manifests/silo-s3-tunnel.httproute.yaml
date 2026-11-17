@@ -1,0 +1,122 @@
+# s3.lanternfyre.dev: the S3 API for ONE bucket, published to the internet.
+#
+# This is how the NecroniaAssets authors, who are not on the LAN, push and pull
+# the game's large files: git-annex talks S3 to this host with credentials that
+# Silo's STS mints from an authentik login. Runbook:
+# docs/operate/necronia-assets-on-silo.md. It replaced drop.lanternfyre.dev,
+# the one-off write-only upload path, on 2026-11.
+#
+# ── Why this is safe on the ungated tunnel Gateway ──────────────────────────
+# homelab-tunnel publishes to the whole internet with no sign-in gate, so every
+# route on it must say why it is safe unauthenticated. Here:
+#
+#   * Every object request needs a valid SigV4 signature. Without a key, Silo
+#     answers AccessDenied. The keys that can sign for this bucket are the
+#     `necronia-ci` user and STS credentials whose policy claim came from an
+#     authentik login (policy necronia-assets-rw, that bucket and nothing
+#     else). The bucket has no anonymous grant and MUST NEVER get one.
+#   * Only /necronia-assets is routed for object traffic. Every other bucket,
+#     the anonymous ci-reports/reports/ prefix and /minio/admin get Envoy's
+#     404 and never reach Silo.
+#   * POST on the root serves Silo's STS only: AssumeRoleWithWebIdentity
+#     accepts only JWTs signed by authentik for the necronia-cli client;
+#     AssumeRole needs a signature from a non-temporary credential; LDAP,
+#     certificate and custom-token STS are not configured and answer
+#     "disabled". It is rate-limited per client IP
+#     (silo-s3-tunnel.backendtrafficpolicy.yaml), because each invalid token
+#     costs Silo a JWKS re-fetch.
+#
+# 🔴 Do NOT widen the path or add other buckets here.
+#
+# ── Why the STS rule is a REGEX, not `Exact /` ──────────────────────────────
+# The tunnel delivers the bare root path as `//`, and the Lua rewrite that
+# fixes it (../../envoy-gateway/manifests/tunnel-root-path.envoyextensionpolicy.yaml)
+# runs AFTER route selection. A host whose rules are `Exact /` and a
+# PathPrefix would answer 404 to `POST //` before the rewrite ever ran
+# (probed 2026-11-17 on drop.lanternfyre.dev: `--path-as-is //` -> 404 with no
+# x-homelab-root-path header). The regex matches both spellings; the rewrite
+# then hands Silo `/`. STS is unsigned, so the rewrite cannot break a
+# signature. The HTTPRoute CRD forbids `//` only in Exact and PathPrefix
+# values, not in a RegularExpression.
+#
+# ── Why it works for a 1.5 GB file ──────────────────────────────────────────
+# Cloudflare refuses any request body over 100 MB (Free and Pro plans), so
+# uploads must be multipart: git-annex's `partsize=64MiB` keeps every part
+# under the cap. Downloads are one GET of the whole object; Envoy's default
+# 15 s route timeout would cut that at ~1.3 GB (measured on the console route),
+# hence `timeouts.request: 0s` on the object rule. The STS rule keeps the
+# default: a token exchange is a few hundred bytes.
+#
+# ── Why lanternfyre.dev ─────────────────────────────────────────────────────
+# cloudflared already has a wildcard rule for *.lanternfyre.dev
+# (cloudflare-tunnel/cloudflared.configmap.yaml), so attaching this route is the
+# whole change. A techyon.dev name would also need its own ingress entry there.
+#
+# ⚠️ SigV4 signs the Host header. A key works on this host and on
+# s3.lab.techyon.dev alike, because the client signs for whichever one it
+# calls; git-annex keeps two remotes for exactly that (silo, silo-lan). A
+# PRESIGNED URL made for one host fails on the other.
+#
+# ⚠️ external-dns runs with `policy: upsert-only`. Deleting this route stops the
+# routing but leaves the DNS record behind; remove it by hand in Cloudflare.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: silo-s3-tunnel
+  namespace: silo
+  annotations:
+    # 🔴 REQUIRED ON EVERY ROUTE ON THIS GATEWAY. Without it the CNAME is
+    # created unproxied and resolves to nothing a client can reach. See
+    # ../../authentik/manifests/authentik-tunnel.httproute.yaml.
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
+spec:
+  parentRefs:
+    - name: homelab-tunnel
+      namespace: gateway-envoy
+  hostnames:
+    - s3.lanternfyre.dev
+  rules:
+    # Path-style S3: /necronia-assets/<key>. PathPrefix matches whole path
+    # segments, so /necronia-assets matches the bucket and its objects, not
+    # /necronia-assets-other.
+    #   GET     fetch an object, list the bucket (git-annex and the prune job)
+    #   HEAD    presence checks (git annex fsck --fast, checkpresent)
+    #   PUT     put an object, upload one part
+    #   POST    start or complete a multipart upload
+    #   DELETE  drop an unused object, abort a multipart upload
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /necronia-assets
+          method: GET
+        - path:
+            type: PathPrefix
+            value: /necronia-assets
+          method: HEAD
+        - path:
+            type: PathPrefix
+            value: /necronia-assets
+          method: PUT
+        - path:
+            type: PathPrefix
+            value: /necronia-assets
+          method: POST
+        - path:
+            type: PathPrefix
+            value: /necronia-assets
+          method: DELETE
+      timeouts:
+        request: 0s
+      backendRefs:
+        - name: silo
+          port: 9000
+    # Silo's STS (AssumeRoleWithWebIdentity): POST on the root, see the header
+    # for why this is a regex.
+    - matches:
+        - path:
+            type: RegularExpression
+            value: "^//?$"
+          method: POST
+      backendRefs:
+        - name: silo
+          port: 9000
