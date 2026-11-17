@@ -1,0 +1,169 @@
+---
+# Operator-run SSH hardening after the 2026-11-17 edge incident triage.
+# From ansible/: ansible-playbook playbooks/64-edge-ssh.yml --ask-become-pass
+# Keep an existing SSH session open until the fresh-login proof passes.
+# Reloads SSH only; does not restart the node or change console/sudo passwords.
+- name: Require public-key SSH and disable root SSH on edge-1
+  hosts: k3s_edge
+  gather_facts: false
+  become: true
+  any_errors_fatal: true
+  vars:
+    ansible_host_key_checking: true
+    ansible_ssh_args: >-
+      -o ControlMaster=auto -o ControlPersist=60s -o ConnectTimeout=10
+      -o StrictHostKeyChecking=yes -o ForwardAgent=no
+    edge_ssh_dropin: /etc/ssh/sshd_config.d/00-homelab-edge.conf
+    # A separate connection proves login without borrowing Ansible's already
+    # authenticated multiplexed session or falling back to a password.
+    edge_ssh_probe_argv:
+      - ssh
+      - -o
+      - BatchMode=yes
+      - -o
+      - StrictHostKeyChecking=yes
+      - -o
+      - ForwardAgent=no
+      - -o
+      - ClearAllForwardings=yes
+      - -o
+      - ControlMaster=no
+      - -o
+      - ControlPath=none
+      - -o
+      - PreferredAuthentications=publickey
+      - -o
+      - PasswordAuthentication=no
+      - -o
+      - KbdInteractiveAuthentication=no
+      - -o
+      - ConnectTimeout=10
+      - "{{ ansible_user }}@{{ ansible_host }}"
+      - id -un
+
+  tasks:
+    - name: Refuse a different host or a root management account
+      ansible.builtin.assert:
+        that:
+          - inventory_hostname == 'edge-1.edge'
+          - ansible_user != 'root'
+
+    - name: Prove a fresh key-only operator login before changing SSH
+      ansible.builtin.command:
+        argv: "{{ edge_ssh_probe_argv }}"
+      delegate_to: localhost
+      become: false
+      register: edge_ssh_before
+      changed_when: false
+      check_mode: false
+      failed_when: edge_ssh_before.rc != 0 or edge_ssh_before.stdout | trim != ansible_user
+
+    - name: Capture the source address for effective SSH Match checks
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: edge_ssh_connection
+      changed_when: false
+      check_mode: false
+      failed_when: edge_ssh_connection.rc != 0 or edge_ssh_connection.stdout.split() | length != 4
+
+    - name: Inspect the existing managed drop-in
+      ansible.builtin.stat:
+        path: "{{ edge_ssh_dropin }}"
+      register: edge_ssh_original
+
+    - name: Refuse to replace a symlink or special file
+      ansible.builtin.assert:
+        that:
+          - not edge_ssh_original.stat.exists or (edge_ssh_original.stat.isreg | default(false))
+
+    - name: Apply, verify and roll back this drop-in on failure
+      block:
+        - name: Install an early SSH drop-in before cloud-init settings
+          ansible.builtin.copy:
+            dest: "{{ edge_ssh_dropin }}"
+            owner: root
+            group: root
+            mode: "0644"
+            backup: true
+            content: |
+              # Managed by ansible/playbooks/64-edge-ssh.yml
+              PermitRootLogin no
+              PubkeyAuthentication yes
+              PasswordAuthentication no
+              KbdInteractiveAuthentication no
+              AuthenticationMethods publickey
+            validate: /usr/sbin/sshd -t -f %s
+          register: edge_ssh_install
+
+        - name: Verify the complete SSH configuration
+          ansible.builtin.command: /usr/sbin/sshd -t
+          changed_when: false
+          when: not ansible_check_mode
+
+        - name: Assert effective settings for operator and root before reload
+          ansible.builtin.command:
+            argv:
+              - /usr/sbin/sshd
+              - -T
+              - -C
+              - "user={{ item }},host={{ edge_ssh_connection.stdout.split()[0] }},addr={{ edge_ssh_connection.stdout.split()[0] }}"
+          loop: ["{{ ansible_user }}", root]
+          register: edge_ssh_effective
+          changed_when: false
+          when: not ansible_check_mode
+          failed_when: >-
+            edge_ssh_effective.rc != 0 or
+            'permitrootlogin no' not in edge_ssh_effective.stdout_lines or
+            'pubkeyauthentication yes' not in edge_ssh_effective.stdout_lines or
+            'passwordauthentication no' not in edge_ssh_effective.stdout_lines or
+            'kbdinteractiveauthentication no' not in edge_ssh_effective.stdout_lines or
+            'authenticationmethods publickey' not in edge_ssh_effective.stdout_lines
+
+        - name: Reload SSH while retaining established sessions
+          ansible.builtin.systemd_service:
+            name: ssh
+            state: reloaded
+          when: not ansible_check_mode
+
+        - name: Prove a fresh key-only login after the reload
+          ansible.builtin.command:
+            argv: "{{ edge_ssh_probe_argv }}"
+          delegate_to: localhost
+          become: false
+          register: edge_ssh_after
+          changed_when: false
+          when: not ansible_check_mode
+          failed_when: edge_ssh_after.rc != 0 or edge_ssh_after.stdout | trim != ansible_user
+
+      rescue:
+        # Ansible retains its original connection while the separate probe runs.
+        - name: Restore the old drop-in if it was replaced
+          ansible.builtin.copy:
+            src: "{{ edge_ssh_install.backup_file }}"
+            dest: "{{ edge_ssh_dropin }}"
+            remote_src: true
+            owner: "{{ edge_ssh_original.stat.uid }}"
+            group: "{{ edge_ssh_original.stat.gid }}"
+            mode: "{{ edge_ssh_original.stat.mode }}"
+          when: edge_ssh_install.backup_file is defined
+
+        - name: Remove a newly created drop-in
+          ansible.builtin.file:
+            path: "{{ edge_ssh_dropin }}"
+            state: absent
+          when:
+            - not edge_ssh_original.stat.exists
+            - edge_ssh_install is changed
+
+        - name: Validate the restored configuration
+          ansible.builtin.command: /usr/sbin/sshd -t
+          changed_when: false
+
+        - name: Reload the restored SSH configuration
+          ansible.builtin.systemd_service:
+            name: ssh
+            state: reloaded
+
+        - name: Stop after rollback
+          ansible.builtin.fail:
+            msg: SSH hardening failed; restored the previous drop-in state. Keep your existing session open and inspect the failed check.
