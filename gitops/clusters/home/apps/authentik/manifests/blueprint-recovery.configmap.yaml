@@ -1,0 +1,61 @@
+# Password recovery by link, so "Create recovery link" in the admin UI works.
+#
+# No SMTP is configured here, so recovery cannot be self-service by email;
+# the operator creates a recovery link (Directory → Users → the user → Create
+# recovery link) and sends it by chat. authentik refuses to make that link
+# ("No recovery flow set") unless the brand names a recovery flow, and none
+# existed: the stock blueprints ship no recovery flow, only email-based
+# examples. This flow is the minimal link-only one: the link already proves
+# who the person is (it carries a token bound to the user), so it asks for a
+# new password, writes it, and logs them in. The prompt and write stages are
+# the stock password-change ones, reused by `!Find`, not redefined.
+#
+# The brand entry below sets ONLY `flow_recovery` on the one brand; the rest
+# of the brand lives in blueprint-brand.configmap.yaml and is untouched (a
+# blueprint entry updates the attrs it lists and no others). Same-file
+# `!KeyOf` on purpose: a `!Find` across files resolves to None when the
+# files apply in the wrong order (blueprint-necronia-cli.configmap.yaml).
+#
+# Same discovery rules as every blueprint: listed in authentik's
+# `blueprints.configMaps`, `.yaml` keys only, worker-mounted only, and a NEW
+# file waits for the hourly discovery unless it is enqueued.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authentik-blueprint-recovery
+  namespace: authentik
+data:
+  recovery.yaml: |
+    version: 1
+    metadata:
+      name: recovery
+    entries:
+      - id: recovery-flow
+        model: authentik_flows.flow
+        identifiers:
+          slug: recovery-set-password
+        attrs:
+          name: Recovery - set a new password (by link)
+          title: Set a new password
+          designation: recovery
+          authentication: require_unauthenticated
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf recovery-flow
+          stage: !Find [authentik_stages_prompt.promptstage, [name, default-password-change-prompt]]
+          order: 10
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf recovery-flow
+          stage: !Find [authentik_stages_user_write.userwritestage, [name, default-password-change-write]]
+          order: 20
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf recovery-flow
+          stage: !Find [authentik_stages_user_login.userloginstage, [name, default-authentication-login]]
+          order: 100
+      - model: authentik_brands.brand
+        identifiers:
+          domain: authentik-default
+        attrs:
+          flow_recovery: !KeyOf recovery-flow
