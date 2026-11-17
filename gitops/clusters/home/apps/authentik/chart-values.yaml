@@ -33,6 +33,9 @@ blueprints:
     # enrollment flow for the people who use it. Depends on the groups
     # blueprint through `!Find`; see its header for the check.
     - authentik-blueprint-necronia-cli
+    # Password recovery by link (no SMTP here): the flow "Create recovery
+    # link" needs, and the brand's pointer to it.
+    - authentik-blueprint-recovery
 
   secrets:
     - authentik-blueprints

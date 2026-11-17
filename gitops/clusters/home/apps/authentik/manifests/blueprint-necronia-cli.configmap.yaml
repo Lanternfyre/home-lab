@@ -65,11 +65,28 @@
 # blueprints/example/flows-invitation-enrollment.yaml.
 #
 # ⚠️ `create_users_group` is resolved with `!Find` against the groups
-# blueprint, and `!Find` returns None silently. After an apply, confirm on the
-# worker:
+# blueprint, and `!Find` returns None silently. Files apply in no fixed order:
+# on 2026-11-17 this file applied 0.2 s BEFORE groups.yaml and the stage came
+# out with no group. The fix is a second apply (any apply re-resolves it):
+#   ak shell -c "from authentik.blueprints.models import BlueprintInstance as B; \
+#     from authentik.blueprints.v1.tasks import apply_blueprint; \
+#     apply_blueprint.send_with_options(args=(str(B.objects.get(name='necronia-cli').pk),))"
+# then confirm:
 #   ak shell -c "from authentik.stages.user_write.models import UserWriteStage \
 #     as S; print(S.objects.get(name='necronia-assets-user-write').create_users_group)"
 # must print the group, not None.
+#
+# ⚠️ A NEW blueprint file is only picked up by discovery, which runs hourly.
+# After the worker mounts a new ConfigMap or Secret, either wait or enqueue it:
+#   ak shell -c "from authentik.blueprints.v1.tasks import blueprints_discovery; \
+#     blueprints_discovery.send()"
+# A CHANGED Secret-backed blueprint first needs ESO to refresh the Secret
+# (refreshInterval 1h): `kubectl -n authentik annotate externalsecret <name> \
+# force-sync=$(date +%s) --overwrite`, then discovery. Measured 2026-11-17 on
+# the six admin-only bindings.
+#
+# `request.user.groups`, not `ak_groups`: the latter is deprecated in 2026.8 and
+# raises a configuration warning on every evaluation.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -100,7 +117,7 @@ data:
             return {
                 "policy": [
                     g.name[len("silo-"):]
-                    for g in request.user.ak_groups.all()
+                    for g in request.user.groups.all()
                     if g.name.startswith("silo-")
                 ],
             }
@@ -169,7 +186,7 @@ data:
           name: necronia-cli-any-silo-group
           execution_logging: false
           expression: |
-            return any(g.name.startswith("silo-") for g in request.user.ak_groups.all())
+            return any(g.name.startswith("silo-") for g in request.user.groups.all())
       - model: authentik_policies.policybinding
         identifiers:
           target: !KeyOf necronia-cli-app
