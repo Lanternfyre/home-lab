@@ -29,7 +29,8 @@ blueprints:
     - authentik-blueprint-netbird
     # Every git-managed group (the access model: a group is a capability).
     - authentik-blueprint-groups
-    # The command-line client (public, PKCE / app password) and the invitation
+    # The command-line client (public; browser and device-code login, consent
+    # every time), the brand's device-code flow, and the invitation
     # enrollment flow for the people who use it. Depends on the groups
     # blueprint through `!Find`; see its header for the check.
     - authentik-blueprint-necronia-cli

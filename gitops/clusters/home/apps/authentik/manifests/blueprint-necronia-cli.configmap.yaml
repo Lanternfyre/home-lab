@@ -3,11 +3,16 @@
 #
 # ── What this client is for ─────────────────────────────────────────────────
 #
-#   * TODAY: scripts/silo-login.sh in the NecroniaAssets repo. A teammate
-#     mints an app password in the user portal, the script posts it to the
-#     token endpoint (grant_type=client_credentials + username + password),
-#     and trades the id_token for 30-day S3 credentials at Silo's STS. The
-#     same path the NetBird reconciler uses (blueprint-netbird-reconciler).
+#   * TODAY: scripts/silo-login.sh in the NecroniaAssets repo, a BROWSER
+#     login by the device-code grant: the script asks /application/o/device/
+#     for a code, opens /device?code=... in the browser, the person signs in
+#     (or already is) and clicks Continue, and the script polls the token
+#     endpoint until the id_token arrives, then trades it for 30-day S3
+#     credentials at Silo's STS. Nothing to create in the UI, nothing stored.
+#     It replaced app passwords (client_credentials + username + app
+#     password) on 2026-11-17: authentik forces a NON-ADMIN's app password to
+#     expire within the tenant's default_token_duration, minutes=30 here
+#     (authentik/core/api/tokens.py), so every login needed a new one.
 #   * NEXT: `necronia auth login` opens a browser (authorization_code + PKCE
 #     on a localhost callback) or runs the device-code grant on a box without
 #     one, keeps a refresh token, and mints whatever a later flow needs.
@@ -16,12 +21,9 @@
 #
 # ── A ConfigMap, because there is no secret ─────────────────────────────────
 #
-# PUBLIC client: a script and a CLI cannot keep a secret, so PKCE is used for
-# the browser grant, and the client_credentials branch authentik takes for a
-# username + app password never looks at client_secret at all
-# (authentik/providers/oauth2/token/client_credentials.py: the username branch
-# comes BEFORE the client_secret comparison). `client_id` is just a name this
-# cluster chooses. Same discovery rules as every blueprint: listed in
+# PUBLIC client: a script and a CLI cannot keep a secret, so the browser
+# grant uses PKCE and the device-code grant needs none. `client_id` is just a
+# name this cluster chooses. Same discovery rules as every blueprint: listed in
 # authentik's `blueprints.configMaps`, `.yaml` keys only, worker-mounted only.
 #
 # ── Issuer: tokens come from the PUBLIC host, Silo reads the LAN host ───────
@@ -60,8 +62,8 @@
 # and sends by chat; the invitee picks a username and password, and the user
 # write stage puts them in `silo-necronia-assets-rw` (groups cannot ride in an
 # invitation's fixed_data; this stage option is the supported way). INTERNAL
-# users on purpose: external users are shut out of the user portal, and the
-# portal is where app passwords are made. Layout from authentik's own
+# users on purpose: external users are shut out of the user portal, where
+# people change their own password. Layout from authentik's own
 # blueprints/example/flows-invitation-enrollment.yaml.
 #
 # ⚠️ `create_users_group` is resolved with `!Find` against the groups
@@ -84,6 +86,30 @@
 # (refreshInterval 1h): `kubectl -n authentik annotate externalsecret <name> \
 # force-sync=$(date +%s) --overwrite`, then discovery. Measured 2026-11-17 on
 # the six admin-only bindings.
+#
+# ── Browser login: consent EVERY time, and the brand's device-code flow ─────
+#
+# 🔴 Device-code phishing: whoever holds a user code can send a signed-in
+# teammate the link /device?code=...; if approving it took no click, that one
+# click on a link would hand the sender the teammate's S3 credentials. So
+# this client's authorization flow has its own consent stage in
+# `always_require` mode: every login shows "You're about to sign into
+# necronia-cli" and waits for Continue. The stock explicit-consent flow will
+# not do: its stage remembers consent for weeks=4. The consent page does not
+# show the code, so the rule for people is: approve only a page your own
+# script just opened (the assets README says so).
+#
+# The device-code page needs a flow on the BRAND (flow_device_code), or
+# /device answers 404 ("Brand has no device code flow configured"); authentik
+# ships none. It is empty on purpose (designation stage_configuration; the
+# code-entry stage is appended in memory) and runs only when someone opens
+# /device WITHOUT a code. `authentication: none`, not require_authenticated:
+# DeviceEntryView turns a non-applicable flow into a bare 404 for a
+# signed-out visitor, while the code check itself (CodeValidatorView, a
+# PolicyAccessView) sends them to the login and back, then applies the
+# application's policy binding. The brand entry sets ONLY flow_device_code;
+# the rest of the brand lives in blueprint-brand and blueprint-recovery.
+# Source: authentik 2026.8.0 providers/oauth2/views/device_init.py.
 #
 # `request.user.groups`, not `ak_groups`: the latter is deprecated in 2026.8 and
 # raises a configuration warning on every evaluation.
@@ -122,6 +148,28 @@ data:
                 ],
             }
 
+      # ── Consent on every login (see the header: device-code phishing) ───
+      - id: consent-every-time
+        model: authentik_stages_consent.consentstage
+        identifiers:
+          name: necronia-cli-consent-every-time
+        attrs:
+          mode: always_require
+      - id: authorization-flow
+        model: authentik_flows.flow
+        identifiers:
+          slug: necronia-cli-authorization
+        attrs:
+          name: necronia-cli - authorize (asks every time)
+          title: Sign in a command-line tool
+          designation: authorization
+          authentication: require_authenticated
+      - model: authentik_flows.flowstagebinding
+        identifiers:
+          target: !KeyOf authorization-flow
+          stage: !KeyOf consent-every-time
+          order: 10
+
       - id: necronia-cli-provider
         model: authentik_providers_oauth2.oauth2provider
         identifiers:
@@ -131,16 +179,22 @@ data:
           client_type: public
           client_id: necronia-cli
           # ⚠️ grant_types defaults to an EMPTY list, which permits nothing.
-          #   client_credentials  the bash script (username + app password)
+          #   device_code         scripts/silo-login.sh, and later
+          #                       `necronia auth login --device` on a box
           #   authorization_code  `necronia auth login` in a browser (PKCE)
           #   refresh_token       the CLI's silent renewal (needs offline_access)
-          #   device_code         `necronia auth login --device` on a box
+          # No client_credentials: app passwords are gone (see the header).
           grant_types:
-            - client_credentials
             - authorization_code
             - refresh_token
             - urn:ietf:params:oauth:grant-type:device_code
-          authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+          authorization_flow: !KeyOf authorization-flow
+          # How long a device code (and an authorization code) lives. The
+          # default minutes=1 is shorter than signing in takes: the device
+          # endpoint hands out expires_in from this (device_backchannel.py),
+          # and a person who must still log in would see "expired_token".
+          # Ten minutes is RFC 6749's ceiling for an authorization code.
+          access_code_validity: minutes=10
           invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
           signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
           # user_username, NOT user_email: Silo refuses a token whose `sub` is
@@ -351,3 +405,19 @@ data:
           target: !KeyOf enrollment-flow
           stage: !KeyOf user-login
           order: 100
+
+      # ── The brand's device-code flow (see the header) ────────────────────
+      - id: device-code-flow
+        model: authentik_flows.flow
+        identifiers:
+          slug: device-code
+        attrs:
+          name: Device code - enter the code a command-line tool shows
+          title: Sign in a command-line tool
+          designation: stage_configuration
+          authentication: none
+      - model: authentik_brands.brand
+        identifiers:
+          domain: authentik-default
+        attrs:
+          flow_device_code: !KeyOf device-code-flow
