@@ -11,7 +11,9 @@
 # ratchet (the record's performance block); the oracle differential (totals,
 # per recording, annotated by reason); flakiness (one commit with green and
 # red runs) and drift (one commit, different numbers); every count of the
-# producer blocks.
+# producer blocks; and the test time: each suite's seconds and its ten slowest
+# tests, and each mutated project's seconds against its budget (the record's
+# times block, Necronia2.0 M2-T22, R555; runs from before it show no data).
 #
 # Panels that list projects, suites, recordings, annotation reasons or a
 # block's counts take them from the data, so a new one shows up without an
@@ -459,12 +461,325 @@ data:
         },
         {
           "type": "row",
+          "id": 32,
+          "title": "Test time",
+          "collapsed": false,
+          "gridPos": {
+            "x": 0,
+            "y": 17,
+            "w": 24,
+            "h": 1
+          },
+          "panels": []
+        },
+        {
+          "type": "timeseries",
+          "title": "Suite seconds",
+          "description": "Each test suite's seconds, run by run: one unit suite per project and the architecture, scenario, e2e, shell, performance and black-box suites, from the record's times block (M2-T22). Runs from before the block show no data.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then kind || ' ' || assembly || ' · ' || branch else kind || ' ' || assembly end as metric, seconds as value\nfrom health.time_suite\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 33,
+          "gridPos": {
+            "x": 0,
+            "y": 18,
+            "w": 12,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Mutation seconds against budget",
+          "description": "Each mutated project's Stryker seconds in the run, beside its budget (1.5 times its last full CI run's). Only a whole run on CI is judged; a run over its budget raises the record's mutationBudget flag, a warning that never turns the run red.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "right",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then project || ' · ' || branch else project end as metric, seconds as value\nfrom health.time_mutation\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\n  and project = any(array[${project:sqlstring}]::text[])\norder by at"
+            }
+          ],
+          "id": 34,
+          "gridPos": {
+            "x": 12,
+            "y": 18,
+            "w": 12,
+            "h": 9
+          }
+        },
+        {
+          "type": "table",
+          "title": "Slowest tests, newest run per branch",
+          "description": "Each suite's ten slowest tests in the newest run per branch that has a times block, by code name; a theory's cases are summed as one test. Over budget lists the newest run's mutated projects past their budget.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/time$/"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, kind, assembly, rank, test, cases, seconds, run_id as \"run\"\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.time_test v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by branch, seconds desc, kind, assembly, rank"
+            }
+          ],
+          "id": 35,
+          "gridPos": {
+            "x": 0,
+            "y": 27,
+            "w": 16,
+            "h": 10
+          }
+        },
+        {
+          "type": "table",
+          "title": "Mutation time, newest run per branch",
+          "description": "Each mutated project's seconds and budget in the newest run per branch that mutated one. Whole is false for a changed-files run, which is never judged against its budget.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byRegexp",
+                  "options": "/time$/"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "s"
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, project, whole, seconds, budget_seconds as \"budget\", over_budget as \"over budget\", run_id as \"run\"\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.time_mutation v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by branch, seconds desc"
+            }
+          ],
+          "id": 36,
+          "gridPos": {
+            "x": 16,
+            "y": 27,
+            "w": 8,
+            "h": 10
+          }
+        },
+        {
+          "type": "row",
           "id": 6,
           "title": "Coverage",
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 17,
+            "y": 37,
             "w": 24,
             "h": 1
           },
@@ -538,7 +853,7 @@ data:
           "id": 7,
           "gridPos": {
             "x": 0,
-            "y": 18,
+            "y": 38,
             "w": 12,
             "h": 9
           }
@@ -611,7 +926,7 @@ data:
           "id": 8,
           "gridPos": {
             "x": 12,
-            "y": 18,
+            "y": 38,
             "w": 12,
             "h": 9
           }
@@ -700,7 +1015,7 @@ data:
           "id": 9,
           "gridPos": {
             "x": 0,
-            "y": 27,
+            "y": 47,
             "w": 24,
             "h": 9
           }
@@ -712,7 +1027,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 36,
+            "y": 56,
             "w": 24,
             "h": 1
           },
@@ -880,7 +1195,7 @@ data:
           "id": 11,
           "gridPos": {
             "x": 0,
-            "y": 37,
+            "y": 57,
             "w": 12,
             "h": 14
           }
@@ -999,7 +1314,7 @@ data:
           "id": 12,
           "gridPos": {
             "x": 12,
-            "y": 37,
+            "y": 57,
             "w": 12,
             "h": 14
           }
@@ -1072,7 +1387,7 @@ data:
           "id": 13,
           "gridPos": {
             "x": 0,
-            "y": 51,
+            "y": 71,
             "w": 24,
             "h": 7
           }
@@ -1137,7 +1452,7 @@ data:
           "id": 17,
           "gridPos": {
             "x": 0,
-            "y": 58,
+            "y": 78,
             "w": 24,
             "h": 10
           }
@@ -1211,7 +1526,7 @@ data:
           "id": 18,
           "gridPos": {
             "x": 0,
-            "y": 68,
+            "y": 88,
             "w": 8,
             "h": 9
           }
@@ -1285,7 +1600,7 @@ data:
           "id": 19,
           "gridPos": {
             "x": 8,
-            "y": 68,
+            "y": 88,
             "w": 8,
             "h": 9
           }
@@ -1359,7 +1674,7 @@ data:
           "id": 20,
           "gridPos": {
             "x": 16,
-            "y": 68,
+            "y": 88,
             "w": 8,
             "h": 9
           }
@@ -1371,7 +1686,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 77,
+            "y": 97,
             "w": 24,
             "h": 1
           },
@@ -1488,7 +1803,7 @@ data:
           "id": 22,
           "gridPos": {
             "x": 0,
-            "y": 78,
+            "y": 98,
             "w": 24,
             "h": 4
           }
@@ -1588,7 +1903,7 @@ data:
           "id": 23,
           "gridPos": {
             "x": 0,
-            "y": 82,
+            "y": 102,
             "w": 24,
             "h": 8
           }
@@ -1600,7 +1915,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 90,
+            "y": 110,
             "w": 24,
             "h": 1
           },
@@ -1717,7 +2032,7 @@ data:
           "id": 25,
           "gridPos": {
             "x": 0,
-            "y": 91,
+            "y": 111,
             "w": 24,
             "h": 4
           }
@@ -1812,7 +2127,7 @@ data:
           "id": 26,
           "gridPos": {
             "x": 0,
-            "y": 95,
+            "y": 115,
             "w": 24,
             "h": 15
           }
@@ -1860,7 +2175,7 @@ data:
           "id": 27,
           "gridPos": {
             "x": 0,
-            "y": 110,
+            "y": 130,
             "w": 8,
             "h": 9
           }
@@ -1974,7 +2289,7 @@ data:
           "id": 28,
           "gridPos": {
             "x": 8,
-            "y": 110,
+            "y": 130,
             "w": 8,
             "h": 9
           }
@@ -2048,7 +2363,7 @@ data:
           "id": 29,
           "gridPos": {
             "x": 16,
-            "y": 110,
+            "y": 130,
             "w": 8,
             "h": 9
           }
@@ -2060,7 +2375,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 119,
+            "y": 139,
             "w": 24,
             "h": 1
           },
@@ -2109,7 +2424,7 @@ data:
           "id": 15,
           "gridPos": {
             "x": 0,
-            "y": 120,
+            "y": 140,
             "w": 24,
             "h": 6
           }
@@ -2157,7 +2472,7 @@ data:
           "id": 16,
           "gridPos": {
             "x": 0,
-            "y": 126,
+            "y": 146,
             "w": 24,
             "h": 6
           }
@@ -2169,7 +2484,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 132,
+            "y": 152,
             "w": 24,
             "h": 1
           },
@@ -2235,7 +2550,7 @@ data:
           "id": 31,
           "gridPos": {
             "x": 0,
-            "y": 133,
+            "y": 153,
             "w": 24,
             "h": 10
           }

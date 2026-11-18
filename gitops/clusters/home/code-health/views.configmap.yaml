@@ -10,7 +10,8 @@
 # The views are projections of the health record (health_run.record, jsonb),
 # one per block the two dashboards draw: run, project, step, suite, ndepend,
 # ndepend_gate, ndepend_rule, ndepend_assembly, ndepend_namespace,
-# worst_method, and flake_candidate and drift over commits recorded more than
+# worst_method, the test and mutation times (time_suite, time_test,
+# time_mutation), and flake_candidate and drift over commits recorded more than
 # once (run_time and repeated_commit are their helpers). The aggregates across
 # projects, one row per run, are overall_mutation (the score of the mutants
 # that ran, over project_mutation: each project's measured or carried mutants)
@@ -174,6 +175,44 @@ data:
       round(health.num(u #> '{tests,durationMs}') / 1000, 1) as test_seconds
     from health.run r
     cross join lateral health.elements(r.record -> 'suites') u;
+
+    -- The times block (Necronia2.0 M2-T22, R555): one row per run and suite, every
+    -- unit suite and the tiers suites, its seconds from the verify step. A record
+    -- from before the block has no rows here, not zeros.
+    create view health.time_suite as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      u ->> 'kind' as kind, u ->> 'assembly' as assembly,
+      health.num(u -> 'seconds') as seconds
+    from health.run r
+    cross join lateral health.elements(r.record #> '{times,suites}') u;
+
+    -- Each suite's ten slowest tests, by code name, a theory's cases summed as one
+    -- test; rank 1 is the slowest.
+    create view health.time_test as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      u ->> 'kind' as kind, u ->> 'assembly' as assembly,
+      t.position as rank, t.test ->> 'test' as test, health.num(t.test -> 'cases') as cases,
+      round(health.num(t.test -> 'durationMs') / 1000, 3) as seconds
+    from health.run r
+    cross join lateral health.elements(r.record #> '{times,suites}') u
+    cross join lateral health.elements(u -> 'slowest') with ordinality as t(test, position);
+
+    -- Each mutated project's Stryker time in this run against its budget (1.5
+    -- times its last full CI run's, the quality tool's mutation-budgets.json).
+    -- Only a whole run on CI is judged: over_budget is null for a changed-files
+    -- run, and the record's mutationBudget flag is the warning (never red).
+    create view health.time_mutation as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      m ->> 'project' as project, health.bool(m -> 'whole') as whole,
+      round(health.num(m -> 'elapsedMs') / 1000, 1) as seconds,
+      health.num(m -> 'budgetSeconds') as budget_seconds,
+      case when health.bool(m -> 'whole') and r.record #>> '{key,host}' = 'ci'
+        then health.num(m -> 'elapsedMs') / 1000 > health.num(m -> 'budgetSeconds') end as over_budget
+    from health.run r
+    cross join lateral health.elements(r.record #> '{times,mutation}') m;
 
     -- NDepend's trend, one row per run that has an ndepend block.
     create view health.ndepend as
