@@ -2694,7 +2694,7 @@ data:
         {
           "type": "timeseries",
           "title": "Issues by severity",
-          "description": "NDepend's issues by severity, run by run.",
+          "description": "NDepend's issues by severity, run by run. From Necronia2.0 commit 44376d5a (18 Nov 2026, R560) NDepend analyses the test projects and the Godot client as callers and judges nothing in them, so the count falls from about 676 to about 332: a change of measurement, not of code.",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "code-health"
@@ -3181,7 +3181,7 @@ data:
         {
           "type": "table",
           "title": "Design: assemblies, newest run per branch",
-          "description": "NDepend's design metrics and debt rating per assembly. The Project variable filters it: Necronia2.0's assemblies are its projects.",
+          "description": "NDepend's design metrics and debt rating per assembly. The Project variable filters it: Necronia2.0's assemblies are its projects. From Necronia2.0 commit 53925917 (18 Nov 2026, M2-T22, R568) the record lists only the 35 production assemblies NDepend rates, not the callers; afferent coupling and instability count the callers' uses since 44376d5a (R560).",
           "datasource": {
             "type": "grafana-postgresql-datasource",
             "uid": "code-health"
