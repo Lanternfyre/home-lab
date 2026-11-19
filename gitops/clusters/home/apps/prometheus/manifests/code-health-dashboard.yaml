@@ -11,9 +11,9 @@
 # trend); Runs (the count by verdict, green or red per branch as a state
 # timeline, and every recorded run, linked to GitHub); coverage and mutation
 # against the floors, mutation time against the 240 s flag and the 300 s
-# trigger, CRAP max and test-gap mass per project; NDepend's six groups (debt
-# and issues trend, quality gates, rules, design per assembly, namespace debt,
-# worst methods); CI time (wall and build time per run, step time).
+# trigger, CRAP max and test-gap mass per project; NDepend's groups (debt and
+# issues trend, quality gates, rules, issues per rule, the production members
+# only tests use, design per assembly, namespace debt, worst methods); CI time (wall and build time per run, step time).
 #
 # Necronia2.0's milestone-ritual falsifier reads the Runs table: every
 # recorded run on the milestone branch and main, green and red, none missing.
@@ -3179,6 +3179,271 @@ data:
           }
         },
         {
+          "type": "timeseries",
+          "title": "Issues per rule",
+          "description": "Each violated NDepend rule's issues, run by run, as build/ndepend-ratchet.json holds them (M2-T28b): a rise is red in the gate, so a step up here is a raised ratchet. Runs from before 19 Nov 2026 show no data.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then rule || ' ' || name || ' · ' || branch else rule || ' ' || name end as metric, issues as value\nfrom health.ndepend_issue\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 46,
+          "gridPos": {
+            "x": 0,
+            "y": 99,
+            "w": 12,
+            "h": 9
+          }
+        },
+        {
+          "type": "timeseries",
+          "title": "Production members only tests use",
+          "description": "How many production methods and types are called only by tests (the report query 'Code health: production members only tests use', R563): a metric to act on, not a gate. A rise raises the record's testOnlyMembers flag, a warning that never turns the run red.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "color": {
+                "mode": "palette-classic"
+              },
+              "custom": {
+                "drawStyle": "line",
+                "lineWidth": 1,
+                "pointSize": 5,
+                "showPoints": "always",
+                "spanNulls": true,
+                "fillOpacity": 0,
+                "stacking": {
+                  "mode": "none",
+                  "group": "A"
+                },
+                "thresholdsStyle": {
+                  "mode": "off"
+                }
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {
+                    "color": "green",
+                    "value": null
+                  }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "list",
+              "placement": "bottom",
+              "showLegend": true
+            },
+            "tooltip": {
+              "mode": "multi",
+              "sort": "desc"
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "time_series",
+              "rawQuery": true,
+              "rawSql": "select at as time, case when cardinality(array[${branch:sqlstring}]::text[]) > 1 then 'members · ' || branch else 'members' end as metric, matched as value\nfrom health.test_only\nwhere repo = any(array[${repo:sqlstring}]::text[])\n  and branch = any(array[${branch:sqlstring}]::text[])\n  and $__timeFilter(at)\norder by at"
+            }
+          ],
+          "id": 47,
+          "gridPos": {
+            "x": 12,
+            "y": 99,
+            "w": 12,
+            "h": 9
+          }
+        },
+        {
+          "type": "table",
+          "title": "Members only tests use, newest run per branch",
+          "description": "The production members whose every caller is a test, in the newest run per branch that ran the query (at most 200 listed). Each is dead, or a test seam to name in the query's exemption list with a reason.",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "code-health"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "align": "auto",
+                "cellOptions": {
+                  "type": "auto"
+                },
+                "filterable": true
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "status"
+                },
+                "properties": [
+                  {
+                    "id": "mappings",
+                    "value": [
+                      {
+                        "type": "value",
+                        "options": {
+                          "pass": {
+                            "text": "pass",
+                            "color": "green",
+                            "index": 0
+                          },
+                          "warn": {
+                            "text": "warn",
+                            "color": "orange",
+                            "index": 1
+                          },
+                          "fail": {
+                            "text": "fail",
+                            "color": "red",
+                            "index": 2
+                          },
+                          "error": {
+                            "text": "error",
+                            "color": "red",
+                            "index": 3
+                          },
+                          "violated": {
+                            "text": "violated",
+                            "color": "red",
+                            "index": 4
+                          },
+                          "ok": {
+                            "text": "ok",
+                            "color": "green",
+                            "index": 5
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "id": "custom.cellOptions",
+                    "value": {
+                      "type": "color-text"
+                    }
+                  }
+                ]
+              },
+              {
+                "matcher": {
+                  "id": "byName",
+                  "options": "run"
+                },
+                "properties": [
+                  {
+                    "id": "unit",
+                    "value": "none"
+                  },
+                  {
+                    "id": "decimals",
+                    "value": 0
+                  }
+                ]
+              }
+            ]
+          },
+          "options": {
+            "showHeader": true,
+            "cellHeight": "sm",
+            "footer": {
+              "show": false
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "grafana-postgresql-datasource",
+                "uid": "code-health"
+              },
+              "editorMode": "code",
+              "format": "table",
+              "rawQuery": true,
+              "rawSql": "select branch, assembly, member, run_id as \"run\"\nfrom (\n  select v.*, dense_rank() over (partition by v.branch order by v.run_id desc, v.run_attempt desc) as newest\n  from health.test_only_member v\n  where repo = any(array[${repo:sqlstring}]::text[])\n    and branch = any(array[${branch:sqlstring}]::text[])\n    and $__timeFilter(at)\n) x\nwhere newest = 1\norder by branch, assembly, member"
+            }
+          ],
+          "id": 48,
+          "gridPos": {
+            "x": 0,
+            "y": 108,
+            "w": 24,
+            "h": 9
+          }
+        },
+        {
           "type": "table",
           "title": "Design: assemblies, newest run per branch",
           "description": "NDepend's design metrics and debt rating per assembly. The Project variable filters it: Necronia2.0's assemblies are its projects. From Necronia2.0 commit 53925917 (18 Nov 2026, M2-T22, R568) the record lists only the 35 production assemblies NDepend rates, not the callers; afferent coupling and instability count the callers' uses since 44376d5a (R560).",
@@ -3238,7 +3503,7 @@ data:
           "id": 19,
           "gridPos": {
             "x": 0,
-            "y": 99,
+            "y": 117,
             "w": 24,
             "h": 9
           }
@@ -3303,7 +3568,7 @@ data:
           "id": 20,
           "gridPos": {
             "x": 0,
-            "y": 108,
+            "y": 126,
             "w": 12,
             "h": 10
           }
@@ -3380,7 +3645,7 @@ data:
           "id": 21,
           "gridPos": {
             "x": 12,
-            "y": 108,
+            "y": 126,
             "w": 12,
             "h": 10
           }
@@ -3392,7 +3657,7 @@ data:
           "collapsed": false,
           "gridPos": {
             "x": 0,
-            "y": 118,
+            "y": 136,
             "w": 24,
             "h": 1
           },
@@ -3466,7 +3731,7 @@ data:
           "id": 23,
           "gridPos": {
             "x": 0,
-            "y": 119,
+            "y": 137,
             "w": 12,
             "h": 9
           }
@@ -3519,7 +3784,7 @@ data:
           "id": 24,
           "gridPos": {
             "x": 12,
-            "y": 119,
+            "y": 137,
             "w": 12,
             "h": 9
           }
