@@ -10,8 +10,9 @@
 # The views are projections of the health record (health_run.record, jsonb),
 # one per block the two dashboards draw: run, project, step, suite, ndepend,
 # ndepend_gate, ndepend_rule, ndepend_assembly, ndepend_namespace,
-# worst_method, the test and mutation times (time_suite, time_test,
-# time_mutation), and flake_candidate and drift over commits recorded more than
+# worst_method, NDepend's issues per rule and the production members only
+# tests use (ndepend_issue, test_only, test_only_member), the test and mutation
+# times (time_suite, time_test, time_mutation), and flake_candidate and drift over commits recorded more than
 # once (run_time and repeated_commit are their helpers). The aggregates across
 # projects, one row per run, are overall_mutation (the score of the mutants
 # that ran, over project_mutation: each project's measured or carried mutants)
@@ -175,6 +176,34 @@ data:
       round(health.num(u #> '{tests,durationMs}') / 1000, 1) as test_seconds
     from health.run r
     cross join lateral health.elements(r.record -> 'suites') u;
+
+    -- NDepend's issues per rule (Necronia2.0 M2-T28b, R560): every violated rule,
+    -- any severity, with the count build/ndepend-ratchet.json holds. A record from
+    -- before the field has no rows here, not zeros.
+    create view health.ndepend_issue as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      i ->> 'rule' as rule, i ->> 'name' as name, health.num(i -> 'issues') as issues
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,rules,issues}') i;
+
+    -- The production members only tests call (M2-T28b, R563): one row per run that
+    -- ran the query, its count (a rise raises the record's testOnlyMembers flag, a
+    -- warning, never red); members lists at most 200, so chart matched.
+    create view health.test_only as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      health.num(r.record #> '{ndepend,testOnly,matched}') as matched,
+      (select count(*) from health.elements(r.record #> '{ndepend,testOnly,members}')) as listed
+    from health.run r
+    where jsonb_typeof(r.record #> '{ndepend,testOnly}') = 'object';
+
+    create view health.test_only_member as
+    select
+      r.repo, r.branch, r.run_id, r.run_attempt, r.at,
+      m ->> 'assembly' as assembly, m ->> 'member' as member
+    from health.run r
+    cross join lateral health.elements(r.record #> '{ndepend,testOnly,members}') m;
 
     -- The times block (Necronia2.0 M2-T22, R555): one row per run and suite, every
     -- unit suite and the tiers suites, its seconds from the verify step. A record
